@@ -65,6 +65,12 @@ function createPlugin(host) {
     return value;
   }
 
+  function integerNumber(value, name) {
+    const result = finite(value, name);
+    if (!Number.isInteger(result)) throw new Error(name + " must be an integer");
+    return result;
+  }
+
   function cxxRound(value) {
     value = finite(value, "value");
     return value >= 0 ? Math.floor(value + 0.5) : Math.ceil(value - 0.5);
@@ -348,19 +354,25 @@ function createPlugin(host) {
   function runGbs(body) {
     body = body || {};
     const selected = String(body.algorithm || state.gbsAlgorithm || "GbS1");
-    const actualMs = numberOr(body.actualBrewTimeMs,
+    const actualMsValue = numberOr(body.actualBrewTimeMs,
       numberOr(body.actualBrewTimeSeconds, NaN) * 1000);
-    const targetMs = numberOr(body.targetBrewTimeMs,
+    const targetMsValue = numberOr(body.targetBrewTimeMs,
       numberOr(body.targetBrewTimeSeconds, state.targetBrewTimeSeconds) * 1000);
-    const estimated = numberOr(body.estimatedDdDum, numberOr(body.currentDdDum, NaN));
-    const setpoint = numberOr(body.setpointDdDum, estimated);
-    const tolerance = numberOr(body.toleranceMs, 1000);
-    if (!isFinite(estimated)) throw new Error("GBS DD inputs are required");
+    const estimatedValue = numberOr(body.estimatedDdDum, numberOr(body.currentDdDum, NaN));
+    const setpointValue = numberOr(body.setpointDdDum, estimatedValue);
+    const toleranceValue = numberOr(body.toleranceMs, 1000);
+    const estimated = integerNumber(estimatedValue, "estimatedDdDum");
     if (selected === "DdEff") {
+      if (body.calls !== undefined) {
+        const calls = integerNumber(body.calls, "calls");
+        if (calls < 0) throw new Error("calls must be non-negative");
+      }
       return gbsDdEffAdjust(state.gbs.ddEff, estimated, body.calls, body.reset === true);
     }
-    if (!isFinite(actualMs) || !isFinite(targetMs)) throw new Error("GBS actual and target brew times are required");
-    if (!isFinite(setpoint)) throw new Error("GBS DD inputs are required");
+    const actualMs = integerNumber(actualMsValue, "actualBrewTimeMs");
+    const targetMs = integerNumber(targetMsValue, "targetBrewTimeMs");
+    const setpoint = integerNumber(setpointValue, "setpointDdDum");
+    const tolerance = integerNumber(toleranceValue, "toleranceMs");
     if (selected === "GbS1" || !["GbS2", "GbS3", "GbS4"].includes(selected)) {
       const result = gbsV1Adjust(state.gbs.v1, actualMs * 0.001, targetMs * 0.001);
       result.selectedAlgorithm = selected;

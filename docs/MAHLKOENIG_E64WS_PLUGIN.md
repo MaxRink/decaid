@@ -69,9 +69,9 @@ The model endpoint is:
 POST /api/v1/plugins/mahlkoenig-e64ws.reaplugin/gbsAdjust
 ```
 
-It accepts the recovered algorithm name and explicit finite inputs such as
-`actualBrewTimeMs`, `targetBrewTimeMs`, `estimatedDdDum`, `setpointDdDum`, and
-`toleranceMs`. Unknown algorithm names follow the firmware's V1 fallback. The
+It accepts the recovered algorithm name and explicit finite integer ABI inputs
+such as `actualBrewTimeMs`, `targetBrewTimeMs`, `estimatedDdDum`,
+`setpointDdDum`, and `toleranceMs`. Unknown algorithm names follow the
 implementation preserves the known thresholds, history lengths, regression
 orientation, blend weights, state gates, and DdEff six/six/six sequence for
 the analyzed build. It deliberately does not claim that a numeric DD
