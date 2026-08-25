@@ -7,6 +7,12 @@ import 'plugins/plugin_test_helpers.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('does not install a raw E64 bridge by default', () async {
+    final service = PluginLoaderService(kvStore: FakeKeyValueStoreService());
+    expect(service.pluginManager.grinderBridge, isNull);
+    await service.dispose();
+  });
+
   test('dispose is shared and rejects later loader work', () async {
     final service = PluginLoaderService(kvStore: FakeKeyValueStoreService());
 

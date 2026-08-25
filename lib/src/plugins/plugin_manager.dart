@@ -8,6 +8,7 @@ import 'package:logging/logging.dart';
 
 import 'plugin_manifest.dart';
 import 'plugin_decent_proxy_bridge.dart';
+import 'plugin_grinder_bridge.dart';
 import 'plugin_runtime.dart';
 import 'plugin_types.dart';
 import '../services/storage/kv_store_service.dart';
@@ -16,7 +17,7 @@ import '../models/device/de1_interface.dart';
 import '../models/device/machine.dart';
 import '../services/account/decent_proxy_service.dart';
 
-enum _PendingOpKind { fetch, pluginHttp, decentProxy }
+enum _PendingOpKind { fetch, pluginHttp, decentProxy, grinder }
 
 enum PluginManagerLifecycle { active, disposing, disposed }
 
@@ -57,6 +58,7 @@ class PluginManager {
   final KeyValueStoreService kvStore;
   final DecentProxyService? decentProxyService;
   late final PluginDecentProxyBridge _decentProxyBridge;
+  final PluginGrinderBridge? grinderBridge;
   final Map<String, String> _pluginBridgeTokens = {};
   final Map<String, String> _pluginIdsByBridgeToken = {};
   final Set<String> _loggedPermissionDenials = {};
@@ -97,6 +99,7 @@ class PluginManager {
   PluginManager({
     required this.kvStore,
     this.decentProxyService,
+    this.grinderBridge,
     this.fetchTimeout = const Duration(seconds: 30),
     this.maxFetchResponseBytes = 10 * 1024 * 1024,
     this.pluginHttpTimeout = const Duration(seconds: 30),
@@ -258,6 +261,8 @@ class PluginManager {
 
         const __pendingDecentProxyRequests = new Map();
         let __decentProxySeq = 0;
+        const __pendingGrinderRequests = new Map();
+        let __grinderSeq = 0;
         const __decentProxyNonce =
           Date.now().toString(36) + "_" + Math.random().toString(36).slice(2);
 
@@ -371,12 +376,87 @@ class PluginManager {
           }
         }
 
+        function __pendingGrinderByPlugin(pluginId) {
+          if (!__mapHas(__pendingGrinderRequests, pluginId)) {
+            __mapSet(__pendingGrinderRequests, pluginId, new Map());
+          }
+          return __mapGet(__pendingGrinderRequests, pluginId);
+        }
+
+        function __grinder(pluginId, generation, bridgeToken, operation, args) {
+          const requestId = "__grinder_" + (++__grinderSeq);
+          const promise = new __NativePromise((resolve, reject) => {
+            const pendingByPlugin = __pendingGrinderByPlugin(pluginId);
+            __mapSet(pendingByPlugin, requestId, {
+              generation: generation,
+              resolve: resolve,
+              reject: reject
+            });
+            try {
+              __sendHostMessage({
+                pluginId: pluginId,
+                generation: generation,
+                bridgeToken: bridgeToken,
+                type: "grinder",
+                requestId: requestId,
+                operation: operation,
+                arguments: args || {}
+              });
+            } catch (e) {
+              __mapDelete(pendingByPlugin, requestId);
+              reject(e);
+            }
+          });
+          return __wrapDecentProxyPromise(promise);
+        }
+
+        function __completeGrinderRequest(pluginId, requestId, response) {
+          const pendingByPlugin = __mapGet(__pendingGrinderRequests, pluginId);
+          if (!pendingByPlugin) return;
+          const pending = __mapGet(pendingByPlugin, requestId);
+          if (!pending) return;
+          __mapDelete(pendingByPlugin, requestId);
+          if (pendingByPlugin.size === 0) {
+            __mapDelete(__pendingGrinderRequests, pluginId);
+          }
+          if (response && response.error) {
+            const error = new __NativeError(response.error);
+            if (response.code) error.code = response.code;
+            pending.reject(error);
+            return;
+          }
+          pending.resolve(response);
+        }
+
+        function __cancelGrinderRequestsForPlugin(pluginId, error) {
+          const pendingByPlugin = __mapGet(__pendingGrinderRequests, pluginId);
+          if (!pendingByPlugin) return;
+          __mapDelete(__pendingGrinderRequests, pluginId);
+          for (const pending of pendingByPlugin.values()) {
+            pending.reject(new __NativeError(error));
+          }
+        }
+
+        function __cancelAllGrinderRequests(error) {
+          for (const pluginId of Array.from(__pendingGrinderRequests.keys())) {
+            __cancelGrinderRequestsForPlugin(pluginId, error);
+          }
+        }
+
+        function __cancelAllBridgeRequests(error) {
+          __cancelAllDecentProxyRequests(error);
+          __cancelAllGrinderRequests(error);
+        }
+
         Object.defineProperty(globalThis, "__reaprimePluginBridge", {
           value: __nativeFreeze({
             decentProxy: __decentProxy,
+            grinder: __grinder,
             completeDecentProxyRequest: __completeDecentProxyRequest,
+            completeGrinderRequest: __completeGrinderRequest,
             cancelForPlugin: __cancelDecentProxyRequestsForPlugin,
-            cancelAll: __cancelAllDecentProxyRequests
+            cancelGrinderForPlugin: __cancelGrinderRequestsForPlugin,
+            cancelAll: __cancelAllBridgeRequests
           }),
           writable: false,
           configurable: false,
@@ -675,6 +755,7 @@ class PluginManager {
                 storage: globalThis.host.storage,
                 permissionDenied: globalThis.host.permissionDenied,
                 fetch: globalThis.__fetchFor,
+                grinder: globalThis.__reaprimePluginBridge.grinder,
                 timerSet: globalThis.__timerSet,
                 timerClear: globalThis.__timerClear
               }),
@@ -919,6 +1000,23 @@ class PluginManager {
               options.body ?? null,
               options.contentType ?? null
             );
+          },
+          grinder: (operation, arguments = {}) => {
+            const name = String(operation || "");
+            const needsActuation = name === "action" || name === "add_brew_event";
+            if (needsActuation && !${manifest.permissions.contains(PluginPermissions.deviceGrinderActuate)}) {
+              return rejectPermission("device.grinder.actuate");
+            }
+            if (!needsActuation && !${manifest.permissions.contains(PluginPermissions.deviceGrinderRead)}) {
+              return rejectPermission("device.grinder.read");
+            }
+            return globalThis.__reaprimePluginBridge.grinder(
+              pluginId,
+              pluginGeneration,
+              pluginBridgeToken,
+              name,
+              arguments
+            );
           }
         };
         
@@ -1064,6 +1162,9 @@ class PluginManager {
         globalThis.__reaprimePluginBridge.cancelForPlugin(
           ${jsonEncode(pluginId)}, "plugin unloaded"
         );
+        globalThis.__reaprimePluginBridge.cancelGrinderForPlugin(
+          ${jsonEncode(pluginId)}, "plugin unloaded"
+        );
       ''');
       while (js.executePendingJob() > 0) {}
     });
@@ -1166,6 +1267,10 @@ class PluginManager {
 
       case 'decentProxy':
         await _handleDecentProxyMessage(pluginId, msg);
+        break;
+
+      case 'grinder':
+        await _handleGrinderMessage(pluginId, msg);
         break;
     }
   }
@@ -1359,6 +1464,13 @@ class PluginManager {
           '${jsonEncode(payload)});',
         );
         while (js.executePendingJob() > 0) {}
+      case _PendingOpKind.grinder:
+        js.evaluate(
+          'globalThis.__reaprimePluginBridge.completeGrinderRequest('
+          '${jsonEncode(op.pluginId)}, ${jsonEncode(op.requestId)}, '
+          '${jsonEncode(payload)});',
+        );
+        while (js.executePendingJob() > 0) {}
     }
   }
 
@@ -1430,6 +1542,71 @@ class PluginManager {
       );
     } catch (e) {
       _completeOp(op, error: e.toString());
+    }
+  }
+
+  Future<void> _handleGrinderMessage(
+    String pluginId,
+    Map<String, dynamic> msg,
+  ) async {
+    final requestId = msg['requestId'] as String?;
+    if (requestId == null) {
+      _log.warning('Grinder message from $pluginId missing requestId');
+      return;
+    }
+    final generation = msg['generation'] is num
+        ? (msg['generation'] as num).toInt()
+        : 0;
+    final op = _PendingOp(
+      kind: _PendingOpKind.grinder,
+      pluginId: pluginId,
+      generation: generation,
+      requestId: requestId,
+    );
+    _pendingOps[op.key] = op;
+
+    if (generation != _pluginGenerations[pluginId] ||
+        _plugins[pluginId]?.isAlive != true) {
+      _completeOp(op, error: 'Plugin generation changed');
+      return;
+    }
+    final operation = PluginGrinderOperation.fromWire(msg['operation']);
+    if (operation == null) {
+      _completeOp(op, error: 'Unknown grinder operation');
+      return;
+    }
+    final permission = operation.requiresActuation
+        ? PluginPermissions.deviceGrinderActuate
+        : PluginPermissions.deviceGrinderRead;
+    if (!_hasPermission(pluginId, permission)) {
+      _completeOp(op, error: _permissionError(pluginId, permission));
+      return;
+    }
+    final bridge = grinderBridge;
+    if (bridge == null) {
+      _completeOp(op, error: 'Local grinder bridge is not configured');
+      return;
+    }
+    op.timeout = Timer(const Duration(seconds: 30), () {
+      _completeOp(op, error: 'Local grinder request timed out');
+    });
+
+    try {
+      final arguments = msg['arguments'];
+      final request = <String, dynamic>{
+        'operation': operation.wireName,
+        'arguments': arguments is Map
+            ? arguments.map((key, value) => MapEntry(key.toString(), value))
+            : <String, dynamic>{},
+      };
+      final response = await bridge.request(
+        pluginId: pluginId,
+        manifest: _plugins[pluginId]!.manifest,
+        request: request,
+      );
+      _completeOp(op, result: response);
+    } catch (error) {
+      _completeOp(op, error: error.toString());
     }
   }
 

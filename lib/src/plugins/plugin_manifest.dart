@@ -75,7 +75,9 @@ enum PluginPermissions {
   eventsMachine('events.machine'),
   eventsShots('events.shots'),
   proxyDecentApi('proxy.decent_api'),
-  proxyDecentApiWrite('proxy.decent_api.write');
+  proxyDecentApiWrite('proxy.decent_api.write'),
+  deviceGrinderRead('device.grinder.read'),
+  deviceGrinderActuate('device.grinder.actuate');
 
   final String wireName;
 

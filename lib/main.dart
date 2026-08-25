@@ -39,6 +39,7 @@ import 'package:reaprime/src/models/data/workflow.dart';
 import 'package:reaprime/src/models/device/device.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
 import 'package:reaprime/src/plugins/plugin_source_service.dart';
+import 'package:reaprime/src/plugins/e64ws_plugin_bridge.dart';
 import 'package:reaprime/src/services/android_updater.dart';
 import 'package:reaprime/src/services/wifi/wifi_scale_discovery_service.dart';
 import 'package:reaprime/src/services/database/database.dart' hide Workflow;
@@ -176,6 +177,12 @@ ActiveSkinConsent? _activeSkinConsent(String path, WebUIStorage storage) {
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   final cliArgs = parseCliArgs(args);
+  // Offline is a deliberate test/build profile.  It prevents account-backed
+  // services from being initialized and is the only profile that injects the
+  // development E64 bridge.  The normal production loader remains read-only
+  // with respect to connected grinders until a native credential-owned adapter
+  // is wired.
+  const offlineMode = String.fromEnvironment('offline') != '';
   if (cliArgs.printStoragePaths) {
     await _printStoragePaths();
   }
@@ -232,7 +239,9 @@ void main(List<String> args) async {
   );
 
   final isDebugOrSimulate =
-      kDebugMode || const String.fromEnvironment("simulate").isNotEmpty;
+      kDebugMode ||
+      offlineMode ||
+      const String.fromEnvironment("simulate") != '';
   if (!Platform.isLinux && !Platform.isWindows && !isDebugOrSimulate) {
     try {
       await Firebase.initializeApp(
@@ -415,8 +424,13 @@ void main(List<String> args) async {
   CredentialStore? credentialStore;
   AccountConsentGate? consentGate;
   final proxyTokenService = ProxyTokenService();
-  if (cliArgs.noAccount) {
-    log.info('--no-account: skipping credential store and account service');
+  final accountDisabled = cliArgs.noAccount || offlineMode;
+  if (accountDisabled) {
+    log.info(
+      cliArgs.noAccount
+          ? '--no-account: skipping credential store and account service'
+          : 'offline: skipping credential store and account service',
+    );
     decentAccountService = null;
     decentProxyService = null;
   } else {
@@ -471,6 +485,7 @@ void main(List<String> args) async {
     kvStore: HiveStoreService(defaultNamespace: "plugins")..initialize(),
     decentProxyService: decentProxyService,
     credentialStore: credentialStore,
+    grinderBridge: offlineMode ? const E64WsPluginBridge() : null,
   );
   await pluginService.pluginManager.attachDe1Controller(de1Controller);
   persistenceController.onShotStored = (shotId) =>
@@ -626,9 +641,11 @@ void main(List<String> args) async {
       ) ??
       Level.FINE;
 
-  Future.delayed(Duration(minutes: 10), () async {
-    await updateCheckService.initialize();
-  });
+  if (!offlineMode) {
+    Future.delayed(Duration(minutes: 10), () async {
+      await updateCheckService.initialize();
+    });
+  }
 
   WidgetsBinding.instance.addObserver(
     AppLifecycleObserver(

@@ -11,6 +11,7 @@ import 'package:reaprime/src/services/storage/kv_store_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:reaprime/src/plugins/plugin_manager.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
+import 'package:reaprime/src/plugins/plugin_grinder_bridge.dart';
 import 'package:reaprime/src/plugins/plugin_package.dart';
 import 'package:reaprime/src/plugins/plugin_runtime.dart';
 import 'package:reaprime/src/plugins/plugin_version.dart';
@@ -63,10 +64,15 @@ class PluginLoaderService {
     required KeyValueStoreService kvStore,
     DecentProxyService? decentProxyService,
     CredentialStore? credentialStore,
+    PluginGrinderBridge? grinderBridge,
   }) : _credentialStore = credentialStore,
        pluginManager = PluginManager(
          kvStore: kvStore,
          decentProxyService: decentProxyService,
+         // Device bridges are opt-in until the native credential store and
+         // typed grinder controller are wired.  In particular, never make a
+         // bearer-token/raw-action bridge the default plugin capability.
+         grinderBridge: grinderBridge,
        );
 
   bool _initialized = false;
@@ -872,7 +878,7 @@ class PluginLoaderService {
   }
 
   Future<List<String>> _getBundledPluginPaths() async {
-    return [
+    final paths = <String>[
       'assets/plugins/time-to-ready.reaplugin',
       'assets/plugins/visualizer.reaplugin',
       'assets/plugins/settings.reaplugin',
@@ -880,6 +886,13 @@ class PluginLoaderService {
       'assets/plugins/decent-profile.reaplugin',
       'assets/plugins/shot-upload.reaplugin',
     ];
+    // The E64 plugin and raw bridge are deliberately absent from normal
+    // builds.  They are included only in the explicit offline test profile,
+    // where the user points the plugin at an owner-local simulator/device.
+    if (const String.fromEnvironment('offline') != '') {
+      paths.add('assets/plugins/mahlkoenig-e64ws.reaplugin');
+    }
+    return paths;
   }
 
   Future<void> _scanAvailablePlugins() async {

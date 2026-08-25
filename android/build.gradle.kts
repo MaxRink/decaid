@@ -13,6 +13,10 @@ subprojects {
         extensions.findByName("android")?.let { ext ->
             (ext as com.android.build.gradle.BaseExtension).apply {
                 compileSdkVersion(36)
+                // Keep Android library plugins on the NDK already provisioned
+                // in this workspace.  Without this, flutter_js falls back to
+                // an implicit NDK 27 download during configuration.
+                ndkVersion = "28.2.13676358"
             }
         }
     }

@@ -1,0 +1,152 @@
+{
+  "id": "mahlkoenig-e64ws.reaplugin",
+  "author": "Local E64 WS research",
+  "name": "Mahlkönig E64 WS (local)",
+  "description": "Connects Decaid to an owner-controlled Mahlkönig E64 WS over its local TLS WebSocket API. Cloud access is not used. Read-only by default; physical actions require an explicit setting and confirmation.",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "permissions": [
+    "log",
+    "api",
+    "emit",
+    "events.shots",
+    "device.grinder.read",
+    "device.grinder.actuate"
+  ],
+  "settings": {
+    "Host": {
+      "type": "string",
+      "description": "E64 hostname or IP address on the local network (never logged)"
+    },
+    "Port": {
+      "type": "number",
+      "default": 9997,
+      "description": "E64 local WSS port"
+    },
+    "Token": {
+      "type": "string",
+      "secure": true,
+      "description": "E64 local WSS bearer token; stored as a secure plugin setting"
+    },
+    "AllowInsecureTls": {
+      "type": "boolean",
+      "default": false,
+      "description": "Accept the grinder's self-signed certificate; use only on an isolated owner-controlled LAN"
+    },
+    "Transport": {
+      "type": "enum",
+      "values": ["wss", "ws"],
+      "default": "wss",
+      "description": "Transport; ws is restricted to the loopback simulator"
+    },
+    "PollIntervalSeconds": {
+      "type": "number",
+      "default": 3,
+      "description": "Driver-state polling interval; minimum 1 second"
+    },
+    "EnableActuation": {
+      "type": "boolean",
+      "default": false,
+      "description": "Allow the plugin action endpoint to request physical or maintenance actions (each request still needs confirmed=true)"
+    },
+    "TargetBrewTimeSeconds": {
+      "type": "number",
+      "default": 28,
+      "description": "Target brew duration used by the conservative recommendation helper"
+    },
+    "Flavor": {
+      "type": "string",
+      "description": "Optional sensory note such as acidic, bitter, dry, or balanced"
+    },
+    "GbsAlgorithm": {
+      "type": "enum",
+      "values": ["GbS1", "GbS2", "GbS3", "GbS4", "DdEff"],
+      "default": "GbS1",
+      "description": "Recovered V01.16-24 GBS selector; unknown names use the firmware's V1 fallback"
+    }
+  },
+  "api": [
+    {
+      "id": "status",
+      "type": "http",
+      "data": {}
+    },
+    {
+      "id": "recommend",
+      "type": "http",
+      "data": {
+        "actualBrewTimeSeconds": {
+          "type": "number"
+        },
+        "targetBrewTimeSeconds": {
+          "type": "number"
+        },
+        "flavor": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "id": "gbsAdjust",
+      "type": "http",
+      "data": {
+        "algorithm": {
+          "type": "string"
+        },
+        "actualBrewTimeMs": {
+          "type": "number"
+        },
+        "targetBrewTimeMs": {
+          "type": "number"
+        },
+        "estimatedDdDum": {
+          "type": "number"
+        },
+        "setpointDdDum": {
+          "type": "number"
+        },
+        "toleranceMs": {
+          "type": "number"
+        }
+      }
+    },
+    {
+      "id": "gbsReport",
+      "type": "http",
+      "data": {}
+    },
+    {
+      "id": "action",
+      "type": "http",
+      "data": {
+        "suffix": {
+          "type": "string"
+        },
+        "data": {
+          "type": "object"
+        },
+        "confirmed": {
+          "type": "boolean"
+        }
+      }
+    },
+    {
+      "id": "state",
+      "type": "websocket",
+      "data": {
+        "observedAt": {
+          "type": "string"
+        },
+        "connected": {
+          "type": "boolean"
+        },
+        "driverState": {
+          "type": "object"
+        },
+        "lastRecommendation": {
+          "type": "object"
+        }
+      }
+    }
+  ]
+}

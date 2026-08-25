@@ -25,7 +25,9 @@ abstract class TelemetryService {
 
   static TelemetryService create({required LogBuffer logBuffer}) {
     final isDebugMode = kDebugMode;
-    final isSimulateMode = const bool.hasEnvironment('simulate');
+    final isSimulateMode =
+        const bool.hasEnvironment('simulate') ||
+        const String.fromEnvironment('offline') != '';
     final isLinuxOrWindows = Platform.isLinux || Platform.isWindows;
 
     if (isDebugMode || isSimulateMode || isLinuxOrWindows) {
