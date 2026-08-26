@@ -2,12 +2,14 @@ import 'package:drift/drift.dart';
 import 'package:drift_flutter/drift_flutter.dart';
 import 'package:reaprime/src/services/database/converters/json_converters.dart';
 import 'package:reaprime/src/services/database/daos/bean_dao.dart';
+import 'package:reaprime/src/services/database/daos/coffee_grind_profile_dao.dart';
 import 'package:reaprime/src/services/database/daos/grinder_dao.dart';
 import 'package:reaprime/src/services/database/daos/profile_dao.dart';
 import 'package:reaprime/src/services/database/daos/shot_dao.dart';
 import 'package:reaprime/src/services/database/daos/steam_dao.dart';
 import 'package:reaprime/src/services/database/daos/workflow_dao.dart';
 import 'package:reaprime/src/services/database/tables/bean_tables.dart';
+import 'package:reaprime/src/services/database/tables/coffee_grind_profile_tables.dart';
 import 'package:reaprime/src/services/database/tables/grinder_tables.dart';
 import 'package:reaprime/src/services/database/tables/profile_tables.dart';
 import 'package:reaprime/src/services/database/tables/shot_tables.dart';
@@ -22,12 +24,21 @@ part 'database.g.dart';
     Beans,
     BeanBatches,
     Grinders,
+    CoffeeGrindProfiles,
     ShotRecords,
     SteamRecords,
     Workflows,
     ProfileRecords,
   ],
-  daos: [BeanDao, GrinderDao, ShotDao, SteamDao, WorkflowDao, ProfileDao],
+  daos: [
+    BeanDao,
+    CoffeeGrindProfileDao,
+    GrinderDao,
+    ShotDao,
+    SteamDao,
+    WorkflowDao,
+    ProfileDao,
+  ],
 )
 class AppDatabase extends _$AppDatabase {
   AppDatabase(super.e);
@@ -44,7 +55,7 @@ class AppDatabase extends _$AppDatabase {
   }
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration {
@@ -65,6 +76,10 @@ class AppDatabase extends _$AppDatabase {
         if (from < 4) {
           await m.addColumn(shotRecords, shotRecords.stopReason);
         }
+        if (from < 5) {
+          await m.createTable(coffeeGrindProfiles);
+          await _createCoffeeGrindProfileIndices();
+        }
       },
       beforeOpen: (details) async {
         await customStatement('PRAGMA foreign_keys = ON');
@@ -78,12 +93,24 @@ class AppDatabase extends _$AppDatabase {
       'ON shot_records (timestamp DESC)',
     );
     await _createSteamIndices();
+    await _createCoffeeGrindProfileIndices();
   }
 
   Future<void> _createSteamIndices() async {
     await customStatement(
       'CREATE INDEX IF NOT EXISTS idx_steam_records_timestamp '
       'ON steam_records (timestamp DESC)',
+    );
+  }
+
+  Future<void> _createCoffeeGrindProfileIndices() async {
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_coffee_grind_profiles_lookup '
+      'ON coffee_grind_profiles (grinder_device_id, bean_id, bean_batch_id, recipe_id)',
+    );
+    await customStatement(
+      'CREATE INDEX IF NOT EXISTS idx_coffee_grind_profiles_updated '
+      'ON coffee_grind_profiles (updated_at DESC)',
     );
   }
 }

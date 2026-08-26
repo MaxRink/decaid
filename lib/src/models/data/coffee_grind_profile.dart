@@ -31,6 +31,42 @@ class CoffeeGrindProfile {
     this.extras = const {},
   });
 
+  factory CoffeeGrindProfile.fromJson(Map<String, dynamic> json) {
+    final id = json['id'];
+    final grinderDeviceId = json['grinderDeviceId'];
+    final algorithmVersion = json['algorithmVersion'];
+    final updatedAt = json['updatedAt'];
+    final setting = json['setting'];
+    final revision = json['revision'];
+    if (id is! String || id.isEmpty ||
+        grinderDeviceId is! String || grinderDeviceId.isEmpty ||
+        algorithmVersion is! String || algorithmVersion.isEmpty ||
+        updatedAt is! String || setting is! Map ||
+        (revision != null &&
+            (revision is! num || !revision.isFinite || revision < 0 ||
+                revision != revision.truncateToDouble()))) {
+      throw const FormatException('Invalid coffee grind profile');
+    }
+    return CoffeeGrindProfile(
+      id: id,
+      beanId: json['beanId'] as String?,
+      beanBatchId: json['beanBatchId'] as String?,
+      recipeId: json['recipeId'] as String?,
+      grinderDeviceId: grinderDeviceId,
+      setting: GrinderSetting.fromJson(
+        setting.map((key, value) => MapEntry(key.toString(), value)),
+      ),
+      algorithmVersion: algorithmVersion,
+      firmwareBuild: json['firmwareBuild'] as String?,
+      revision: (revision as num?)?.toInt() ?? 0,
+      updatedAt: DateTime.parse(updatedAt),
+      extras: (json['extras'] as Map?)?.map(
+            (key, value) => MapEntry(key.toString(), value),
+          ) ??
+          const {},
+    );
+  }
+
   Map<String, dynamic> toJson() => {
     'id': id,
     if (beanId != null) 'beanId': beanId,
@@ -73,7 +109,15 @@ class CoffeeGrindProfileResolver {
         )
         .where((profile) => _matches(profile, selection))
         .toList();
-    candidates.sort((a, b) => _specificity(b).compareTo(_specificity(a)));
+    candidates.sort((a, b) {
+      final specificity = _specificity(b).compareTo(_specificity(a));
+      if (specificity != 0) return specificity;
+      final updated = b.updatedAt.compareTo(a.updatedAt);
+      if (updated != 0) return updated;
+      final revision = b.revision.compareTo(a.revision);
+      if (revision != 0) return revision;
+      return a.id.compareTo(b.id);
+    });
     return candidates.isEmpty ? null : candidates.first;
   }
 

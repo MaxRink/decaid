@@ -3071,6 +3071,693 @@ class GrindersCompanion extends UpdateCompanion<Grinder> {
   }
 }
 
+class $CoffeeGrindProfilesTable extends CoffeeGrindProfiles
+    with TableInfo<$CoffeeGrindProfilesTable, CoffeeGrindProfile> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $CoffeeGrindProfilesTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _beanIdMeta = const VerificationMeta('beanId');
+  @override
+  late final GeneratedColumn<String> beanId = GeneratedColumn<String>(
+    'bean_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _beanBatchIdMeta = const VerificationMeta(
+    'beanBatchId',
+  );
+  @override
+  late final GeneratedColumn<String> beanBatchId = GeneratedColumn<String>(
+    'bean_batch_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _recipeIdMeta = const VerificationMeta(
+    'recipeId',
+  );
+  @override
+  late final GeneratedColumn<String> recipeId = GeneratedColumn<String>(
+    'recipe_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _grinderDeviceIdMeta = const VerificationMeta(
+    'grinderDeviceId',
+  );
+  @override
+  late final GeneratedColumn<String> grinderDeviceId = GeneratedColumn<String>(
+    'grinder_device_id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  @override
+  late final GeneratedColumnWithTypeConverter<Map<String, dynamic>, String>
+  setting =
+      GeneratedColumn<String>(
+        'setting',
+        aliasedName,
+        false,
+        type: DriftSqlType.string,
+        requiredDuringInsert: true,
+      ).withConverter<Map<String, dynamic>>(
+        $CoffeeGrindProfilesTable.$convertersetting,
+      );
+  static const VerificationMeta _algorithmVersionMeta = const VerificationMeta(
+    'algorithmVersion',
+  );
+  @override
+  late final GeneratedColumn<String> algorithmVersion = GeneratedColumn<String>(
+    'algorithm_version',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _firmwareBuildMeta = const VerificationMeta(
+    'firmwareBuild',
+  );
+  @override
+  late final GeneratedColumn<String> firmwareBuild = GeneratedColumn<String>(
+    'firmware_build',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _revisionMeta = const VerificationMeta(
+    'revision',
+  );
+  @override
+  late final GeneratedColumn<int> revision = GeneratedColumn<int>(
+    'revision',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
+    'updatedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> updatedAt = GeneratedColumn<DateTime>(
+    'updated_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  @override
+  late final GeneratedColumnWithTypeConverter<Map<String, dynamic>?, String>
+  extras =
+      GeneratedColumn<String>(
+        'extras',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      ).withConverter<Map<String, dynamic>?>(
+        $CoffeeGrindProfilesTable.$converterextras,
+      );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    beanId,
+    beanBatchId,
+    recipeId,
+    grinderDeviceId,
+    setting,
+    algorithmVersion,
+    firmwareBuild,
+    revision,
+    updatedAt,
+    extras,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'coffee_grind_profiles';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<CoffeeGrindProfile> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('bean_id')) {
+      context.handle(
+        _beanIdMeta,
+        beanId.isAcceptableOrUnknown(data['bean_id']!, _beanIdMeta),
+      );
+    }
+    if (data.containsKey('bean_batch_id')) {
+      context.handle(
+        _beanBatchIdMeta,
+        beanBatchId.isAcceptableOrUnknown(
+          data['bean_batch_id']!,
+          _beanBatchIdMeta,
+        ),
+      );
+    }
+    if (data.containsKey('recipe_id')) {
+      context.handle(
+        _recipeIdMeta,
+        recipeId.isAcceptableOrUnknown(data['recipe_id']!, _recipeIdMeta),
+      );
+    }
+    if (data.containsKey('grinder_device_id')) {
+      context.handle(
+        _grinderDeviceIdMeta,
+        grinderDeviceId.isAcceptableOrUnknown(
+          data['grinder_device_id']!,
+          _grinderDeviceIdMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_grinderDeviceIdMeta);
+    }
+    if (data.containsKey('algorithm_version')) {
+      context.handle(
+        _algorithmVersionMeta,
+        algorithmVersion.isAcceptableOrUnknown(
+          data['algorithm_version']!,
+          _algorithmVersionMeta,
+        ),
+      );
+    } else if (isInserting) {
+      context.missing(_algorithmVersionMeta);
+    }
+    if (data.containsKey('firmware_build')) {
+      context.handle(
+        _firmwareBuildMeta,
+        firmwareBuild.isAcceptableOrUnknown(
+          data['firmware_build']!,
+          _firmwareBuildMeta,
+        ),
+      );
+    }
+    if (data.containsKey('revision')) {
+      context.handle(
+        _revisionMeta,
+        revision.isAcceptableOrUnknown(data['revision']!, _revisionMeta),
+      );
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(
+        _updatedAtMeta,
+        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_updatedAtMeta);
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  CoffeeGrindProfile map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return CoffeeGrindProfile(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      beanId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}bean_id'],
+      ),
+      beanBatchId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}bean_batch_id'],
+      ),
+      recipeId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}recipe_id'],
+      ),
+      grinderDeviceId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}grinder_device_id'],
+      )!,
+      setting: $CoffeeGrindProfilesTable.$convertersetting.fromSql(
+        attachedDatabase.typeMapping.read(
+          DriftSqlType.string,
+          data['${effectivePrefix}setting'],
+        )!,
+      ),
+      algorithmVersion: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}algorithm_version'],
+      )!,
+      firmwareBuild: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}firmware_build'],
+      ),
+      revision: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}revision'],
+      )!,
+      updatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}updated_at'],
+      )!,
+      extras: $CoffeeGrindProfilesTable.$converterextras.fromSql(
+        attachedDatabase.typeMapping.read(
+          DriftSqlType.string,
+          data['${effectivePrefix}extras'],
+        ),
+      ),
+    );
+  }
+
+  @override
+  $CoffeeGrindProfilesTable createAlias(String alias) {
+    return $CoffeeGrindProfilesTable(attachedDatabase, alias);
+  }
+
+  static TypeConverter<Map<String, dynamic>, String> $convertersetting =
+      const JsonMapConverter();
+  static TypeConverter<Map<String, dynamic>?, String?> $converterextras =
+      const NullableJsonMapConverter();
+}
+
+class CoffeeGrindProfile extends DataClass
+    implements Insertable<CoffeeGrindProfile> {
+  final String id;
+  final String? beanId;
+  final String? beanBatchId;
+  final String? recipeId;
+  final String grinderDeviceId;
+  final Map<String, dynamic> setting;
+  final String algorithmVersion;
+  final String? firmwareBuild;
+  final int revision;
+  final DateTime updatedAt;
+  final Map<String, dynamic>? extras;
+  const CoffeeGrindProfile({
+    required this.id,
+    this.beanId,
+    this.beanBatchId,
+    this.recipeId,
+    required this.grinderDeviceId,
+    required this.setting,
+    required this.algorithmVersion,
+    this.firmwareBuild,
+    required this.revision,
+    required this.updatedAt,
+    this.extras,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    if (!nullToAbsent || beanId != null) {
+      map['bean_id'] = Variable<String>(beanId);
+    }
+    if (!nullToAbsent || beanBatchId != null) {
+      map['bean_batch_id'] = Variable<String>(beanBatchId);
+    }
+    if (!nullToAbsent || recipeId != null) {
+      map['recipe_id'] = Variable<String>(recipeId);
+    }
+    map['grinder_device_id'] = Variable<String>(grinderDeviceId);
+    {
+      map['setting'] = Variable<String>(
+        $CoffeeGrindProfilesTable.$convertersetting.toSql(setting),
+      );
+    }
+    map['algorithm_version'] = Variable<String>(algorithmVersion);
+    if (!nullToAbsent || firmwareBuild != null) {
+      map['firmware_build'] = Variable<String>(firmwareBuild);
+    }
+    map['revision'] = Variable<int>(revision);
+    map['updated_at'] = Variable<DateTime>(updatedAt);
+    if (!nullToAbsent || extras != null) {
+      map['extras'] = Variable<String>(
+        $CoffeeGrindProfilesTable.$converterextras.toSql(extras),
+      );
+    }
+    return map;
+  }
+
+  CoffeeGrindProfilesCompanion toCompanion(bool nullToAbsent) {
+    return CoffeeGrindProfilesCompanion(
+      id: Value(id),
+      beanId: beanId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(beanId),
+      beanBatchId: beanBatchId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(beanBatchId),
+      recipeId: recipeId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(recipeId),
+      grinderDeviceId: Value(grinderDeviceId),
+      setting: Value(setting),
+      algorithmVersion: Value(algorithmVersion),
+      firmwareBuild: firmwareBuild == null && nullToAbsent
+          ? const Value.absent()
+          : Value(firmwareBuild),
+      revision: Value(revision),
+      updatedAt: Value(updatedAt),
+      extras: extras == null && nullToAbsent
+          ? const Value.absent()
+          : Value(extras),
+    );
+  }
+
+  factory CoffeeGrindProfile.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return CoffeeGrindProfile(
+      id: serializer.fromJson<String>(json['id']),
+      beanId: serializer.fromJson<String?>(json['beanId']),
+      beanBatchId: serializer.fromJson<String?>(json['beanBatchId']),
+      recipeId: serializer.fromJson<String?>(json['recipeId']),
+      grinderDeviceId: serializer.fromJson<String>(json['grinderDeviceId']),
+      setting: serializer.fromJson<Map<String, dynamic>>(json['setting']),
+      algorithmVersion: serializer.fromJson<String>(json['algorithmVersion']),
+      firmwareBuild: serializer.fromJson<String?>(json['firmwareBuild']),
+      revision: serializer.fromJson<int>(json['revision']),
+      updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
+      extras: serializer.fromJson<Map<String, dynamic>?>(json['extras']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'beanId': serializer.toJson<String?>(beanId),
+      'beanBatchId': serializer.toJson<String?>(beanBatchId),
+      'recipeId': serializer.toJson<String?>(recipeId),
+      'grinderDeviceId': serializer.toJson<String>(grinderDeviceId),
+      'setting': serializer.toJson<Map<String, dynamic>>(setting),
+      'algorithmVersion': serializer.toJson<String>(algorithmVersion),
+      'firmwareBuild': serializer.toJson<String?>(firmwareBuild),
+      'revision': serializer.toJson<int>(revision),
+      'updatedAt': serializer.toJson<DateTime>(updatedAt),
+      'extras': serializer.toJson<Map<String, dynamic>?>(extras),
+    };
+  }
+
+  CoffeeGrindProfile copyWith({
+    String? id,
+    Value<String?> beanId = const Value.absent(),
+    Value<String?> beanBatchId = const Value.absent(),
+    Value<String?> recipeId = const Value.absent(),
+    String? grinderDeviceId,
+    Map<String, dynamic>? setting,
+    String? algorithmVersion,
+    Value<String?> firmwareBuild = const Value.absent(),
+    int? revision,
+    DateTime? updatedAt,
+    Value<Map<String, dynamic>?> extras = const Value.absent(),
+  }) => CoffeeGrindProfile(
+    id: id ?? this.id,
+    beanId: beanId.present ? beanId.value : this.beanId,
+    beanBatchId: beanBatchId.present ? beanBatchId.value : this.beanBatchId,
+    recipeId: recipeId.present ? recipeId.value : this.recipeId,
+    grinderDeviceId: grinderDeviceId ?? this.grinderDeviceId,
+    setting: setting ?? this.setting,
+    algorithmVersion: algorithmVersion ?? this.algorithmVersion,
+    firmwareBuild: firmwareBuild.present
+        ? firmwareBuild.value
+        : this.firmwareBuild,
+    revision: revision ?? this.revision,
+    updatedAt: updatedAt ?? this.updatedAt,
+    extras: extras.present ? extras.value : this.extras,
+  );
+  CoffeeGrindProfile copyWithCompanion(CoffeeGrindProfilesCompanion data) {
+    return CoffeeGrindProfile(
+      id: data.id.present ? data.id.value : this.id,
+      beanId: data.beanId.present ? data.beanId.value : this.beanId,
+      beanBatchId: data.beanBatchId.present
+          ? data.beanBatchId.value
+          : this.beanBatchId,
+      recipeId: data.recipeId.present ? data.recipeId.value : this.recipeId,
+      grinderDeviceId: data.grinderDeviceId.present
+          ? data.grinderDeviceId.value
+          : this.grinderDeviceId,
+      setting: data.setting.present ? data.setting.value : this.setting,
+      algorithmVersion: data.algorithmVersion.present
+          ? data.algorithmVersion.value
+          : this.algorithmVersion,
+      firmwareBuild: data.firmwareBuild.present
+          ? data.firmwareBuild.value
+          : this.firmwareBuild,
+      revision: data.revision.present ? data.revision.value : this.revision,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+      extras: data.extras.present ? data.extras.value : this.extras,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('CoffeeGrindProfile(')
+          ..write('id: $id, ')
+          ..write('beanId: $beanId, ')
+          ..write('beanBatchId: $beanBatchId, ')
+          ..write('recipeId: $recipeId, ')
+          ..write('grinderDeviceId: $grinderDeviceId, ')
+          ..write('setting: $setting, ')
+          ..write('algorithmVersion: $algorithmVersion, ')
+          ..write('firmwareBuild: $firmwareBuild, ')
+          ..write('revision: $revision, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('extras: $extras')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    beanId,
+    beanBatchId,
+    recipeId,
+    grinderDeviceId,
+    setting,
+    algorithmVersion,
+    firmwareBuild,
+    revision,
+    updatedAt,
+    extras,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is CoffeeGrindProfile &&
+          other.id == this.id &&
+          other.beanId == this.beanId &&
+          other.beanBatchId == this.beanBatchId &&
+          other.recipeId == this.recipeId &&
+          other.grinderDeviceId == this.grinderDeviceId &&
+          other.setting == this.setting &&
+          other.algorithmVersion == this.algorithmVersion &&
+          other.firmwareBuild == this.firmwareBuild &&
+          other.revision == this.revision &&
+          other.updatedAt == this.updatedAt &&
+          other.extras == this.extras);
+}
+
+class CoffeeGrindProfilesCompanion extends UpdateCompanion<CoffeeGrindProfile> {
+  final Value<String> id;
+  final Value<String?> beanId;
+  final Value<String?> beanBatchId;
+  final Value<String?> recipeId;
+  final Value<String> grinderDeviceId;
+  final Value<Map<String, dynamic>> setting;
+  final Value<String> algorithmVersion;
+  final Value<String?> firmwareBuild;
+  final Value<int> revision;
+  final Value<DateTime> updatedAt;
+  final Value<Map<String, dynamic>?> extras;
+  final Value<int> rowid;
+  const CoffeeGrindProfilesCompanion({
+    this.id = const Value.absent(),
+    this.beanId = const Value.absent(),
+    this.beanBatchId = const Value.absent(),
+    this.recipeId = const Value.absent(),
+    this.grinderDeviceId = const Value.absent(),
+    this.setting = const Value.absent(),
+    this.algorithmVersion = const Value.absent(),
+    this.firmwareBuild = const Value.absent(),
+    this.revision = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+    this.extras = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  CoffeeGrindProfilesCompanion.insert({
+    required String id,
+    this.beanId = const Value.absent(),
+    this.beanBatchId = const Value.absent(),
+    this.recipeId = const Value.absent(),
+    required String grinderDeviceId,
+    required Map<String, dynamic> setting,
+    required String algorithmVersion,
+    this.firmwareBuild = const Value.absent(),
+    this.revision = const Value.absent(),
+    required DateTime updatedAt,
+    this.extras = const Value.absent(),
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       grinderDeviceId = Value(grinderDeviceId),
+       setting = Value(setting),
+       algorithmVersion = Value(algorithmVersion),
+       updatedAt = Value(updatedAt);
+  static Insertable<CoffeeGrindProfile> custom({
+    Expression<String>? id,
+    Expression<String>? beanId,
+    Expression<String>? beanBatchId,
+    Expression<String>? recipeId,
+    Expression<String>? grinderDeviceId,
+    Expression<String>? setting,
+    Expression<String>? algorithmVersion,
+    Expression<String>? firmwareBuild,
+    Expression<int>? revision,
+    Expression<DateTime>? updatedAt,
+    Expression<String>? extras,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (beanId != null) 'bean_id': beanId,
+      if (beanBatchId != null) 'bean_batch_id': beanBatchId,
+      if (recipeId != null) 'recipe_id': recipeId,
+      if (grinderDeviceId != null) 'grinder_device_id': grinderDeviceId,
+      if (setting != null) 'setting': setting,
+      if (algorithmVersion != null) 'algorithm_version': algorithmVersion,
+      if (firmwareBuild != null) 'firmware_build': firmwareBuild,
+      if (revision != null) 'revision': revision,
+      if (updatedAt != null) 'updated_at': updatedAt,
+      if (extras != null) 'extras': extras,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  CoffeeGrindProfilesCompanion copyWith({
+    Value<String>? id,
+    Value<String?>? beanId,
+    Value<String?>? beanBatchId,
+    Value<String?>? recipeId,
+    Value<String>? grinderDeviceId,
+    Value<Map<String, dynamic>>? setting,
+    Value<String>? algorithmVersion,
+    Value<String?>? firmwareBuild,
+    Value<int>? revision,
+    Value<DateTime>? updatedAt,
+    Value<Map<String, dynamic>?>? extras,
+    Value<int>? rowid,
+  }) {
+    return CoffeeGrindProfilesCompanion(
+      id: id ?? this.id,
+      beanId: beanId ?? this.beanId,
+      beanBatchId: beanBatchId ?? this.beanBatchId,
+      recipeId: recipeId ?? this.recipeId,
+      grinderDeviceId: grinderDeviceId ?? this.grinderDeviceId,
+      setting: setting ?? this.setting,
+      algorithmVersion: algorithmVersion ?? this.algorithmVersion,
+      firmwareBuild: firmwareBuild ?? this.firmwareBuild,
+      revision: revision ?? this.revision,
+      updatedAt: updatedAt ?? this.updatedAt,
+      extras: extras ?? this.extras,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (beanId.present) {
+      map['bean_id'] = Variable<String>(beanId.value);
+    }
+    if (beanBatchId.present) {
+      map['bean_batch_id'] = Variable<String>(beanBatchId.value);
+    }
+    if (recipeId.present) {
+      map['recipe_id'] = Variable<String>(recipeId.value);
+    }
+    if (grinderDeviceId.present) {
+      map['grinder_device_id'] = Variable<String>(grinderDeviceId.value);
+    }
+    if (setting.present) {
+      map['setting'] = Variable<String>(
+        $CoffeeGrindProfilesTable.$convertersetting.toSql(setting.value),
+      );
+    }
+    if (algorithmVersion.present) {
+      map['algorithm_version'] = Variable<String>(algorithmVersion.value);
+    }
+    if (firmwareBuild.present) {
+      map['firmware_build'] = Variable<String>(firmwareBuild.value);
+    }
+    if (revision.present) {
+      map['revision'] = Variable<int>(revision.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<DateTime>(updatedAt.value);
+    }
+    if (extras.present) {
+      map['extras'] = Variable<String>(
+        $CoffeeGrindProfilesTable.$converterextras.toSql(extras.value),
+      );
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('CoffeeGrindProfilesCompanion(')
+          ..write('id: $id, ')
+          ..write('beanId: $beanId, ')
+          ..write('beanBatchId: $beanBatchId, ')
+          ..write('recipeId: $recipeId, ')
+          ..write('grinderDeviceId: $grinderDeviceId, ')
+          ..write('setting: $setting, ')
+          ..write('algorithmVersion: $algorithmVersion, ')
+          ..write('firmwareBuild: $firmwareBuild, ')
+          ..write('revision: $revision, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('extras: $extras, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 class $ShotRecordsTable extends ShotRecords
     with TableInfo<$ShotRecordsTable, ShotRecord> {
   @override
@@ -3525,9 +4212,6 @@ class ShotRecord extends DataClass implements Insertable<ShotRecord> {
   final double? targetYield;
   final double? enjoyment;
   final String? espressoNotes;
-
-  /// Why the shot ended (ShotDecisionReason.name, open set). Added in schema
-  /// v4; null for shots recorded before then or not sequenced by the app.
   final String? stopReason;
   final Map<String, dynamic> workflowJson;
   final Map<String, dynamic>? annotationsJson;
@@ -5411,11 +6095,15 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $BeansTable beans = $BeansTable(this);
   late final $BeanBatchesTable beanBatches = $BeanBatchesTable(this);
   late final $GrindersTable grinders = $GrindersTable(this);
+  late final $CoffeeGrindProfilesTable coffeeGrindProfiles =
+      $CoffeeGrindProfilesTable(this);
   late final $ShotRecordsTable shotRecords = $ShotRecordsTable(this);
   late final $SteamRecordsTable steamRecords = $SteamRecordsTable(this);
   late final $WorkflowsTable workflows = $WorkflowsTable(this);
   late final $ProfileRecordsTable profileRecords = $ProfileRecordsTable(this);
   late final BeanDao beanDao = BeanDao(this as AppDatabase);
+  late final CoffeeGrindProfileDao coffeeGrindProfileDao =
+      CoffeeGrindProfileDao(this as AppDatabase);
   late final GrinderDao grinderDao = GrinderDao(this as AppDatabase);
   late final ShotDao shotDao = ShotDao(this as AppDatabase);
   late final SteamDao steamDao = SteamDao(this as AppDatabase);
@@ -5429,6 +6117,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     beans,
     beanBatches,
     grinders,
+    coffeeGrindProfiles,
     shotRecords,
     steamRecords,
     workflows,
@@ -7030,6 +7719,354 @@ typedef $$GrindersTableProcessedTableManager =
       Grinder,
       PrefetchHooks Function()
     >;
+typedef $$CoffeeGrindProfilesTableCreateCompanionBuilder =
+    CoffeeGrindProfilesCompanion Function({
+      required String id,
+      Value<String?> beanId,
+      Value<String?> beanBatchId,
+      Value<String?> recipeId,
+      required String grinderDeviceId,
+      required Map<String, dynamic> setting,
+      required String algorithmVersion,
+      Value<String?> firmwareBuild,
+      Value<int> revision,
+      required DateTime updatedAt,
+      Value<Map<String, dynamic>?> extras,
+      Value<int> rowid,
+    });
+typedef $$CoffeeGrindProfilesTableUpdateCompanionBuilder =
+    CoffeeGrindProfilesCompanion Function({
+      Value<String> id,
+      Value<String?> beanId,
+      Value<String?> beanBatchId,
+      Value<String?> recipeId,
+      Value<String> grinderDeviceId,
+      Value<Map<String, dynamic>> setting,
+      Value<String> algorithmVersion,
+      Value<String?> firmwareBuild,
+      Value<int> revision,
+      Value<DateTime> updatedAt,
+      Value<Map<String, dynamic>?> extras,
+      Value<int> rowid,
+    });
+
+class $$CoffeeGrindProfilesTableFilterComposer
+    extends Composer<_$AppDatabase, $CoffeeGrindProfilesTable> {
+  $$CoffeeGrindProfilesTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get beanId => $composableBuilder(
+    column: $table.beanId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get beanBatchId => $composableBuilder(
+    column: $table.beanBatchId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get recipeId => $composableBuilder(
+    column: $table.recipeId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get grinderDeviceId => $composableBuilder(
+    column: $table.grinderDeviceId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnWithTypeConverterFilters<
+    Map<String, dynamic>,
+    Map<String, dynamic>,
+    String
+  >
+  get setting => $composableBuilder(
+    column: $table.setting,
+    builder: (column) => ColumnWithTypeConverterFilters(column),
+  );
+
+  ColumnFilters<String> get algorithmVersion => $composableBuilder(
+    column: $table.algorithmVersion,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get firmwareBuild => $composableBuilder(
+    column: $table.firmwareBuild,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get revision => $composableBuilder(
+    column: $table.revision,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnWithTypeConverterFilters<
+    Map<String, dynamic>?,
+    Map<String, dynamic>,
+    String
+  >
+  get extras => $composableBuilder(
+    column: $table.extras,
+    builder: (column) => ColumnWithTypeConverterFilters(column),
+  );
+}
+
+class $$CoffeeGrindProfilesTableOrderingComposer
+    extends Composer<_$AppDatabase, $CoffeeGrindProfilesTable> {
+  $$CoffeeGrindProfilesTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get beanId => $composableBuilder(
+    column: $table.beanId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get beanBatchId => $composableBuilder(
+    column: $table.beanBatchId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get recipeId => $composableBuilder(
+    column: $table.recipeId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get grinderDeviceId => $composableBuilder(
+    column: $table.grinderDeviceId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get setting => $composableBuilder(
+    column: $table.setting,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get algorithmVersion => $composableBuilder(
+    column: $table.algorithmVersion,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get firmwareBuild => $composableBuilder(
+    column: $table.firmwareBuild,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get revision => $composableBuilder(
+    column: $table.revision,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get extras => $composableBuilder(
+    column: $table.extras,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$CoffeeGrindProfilesTableAnnotationComposer
+    extends Composer<_$AppDatabase, $CoffeeGrindProfilesTable> {
+  $$CoffeeGrindProfilesTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get beanId =>
+      $composableBuilder(column: $table.beanId, builder: (column) => column);
+
+  GeneratedColumn<String> get beanBatchId => $composableBuilder(
+    column: $table.beanBatchId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get recipeId =>
+      $composableBuilder(column: $table.recipeId, builder: (column) => column);
+
+  GeneratedColumn<String> get grinderDeviceId => $composableBuilder(
+    column: $table.grinderDeviceId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumnWithTypeConverter<Map<String, dynamic>, String> get setting =>
+      $composableBuilder(column: $table.setting, builder: (column) => column);
+
+  GeneratedColumn<String> get algorithmVersion => $composableBuilder(
+    column: $table.algorithmVersion,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get firmwareBuild => $composableBuilder(
+    column: $table.firmwareBuild,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get revision =>
+      $composableBuilder(column: $table.revision, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+
+  GeneratedColumnWithTypeConverter<Map<String, dynamic>?, String> get extras =>
+      $composableBuilder(column: $table.extras, builder: (column) => column);
+}
+
+class $$CoffeeGrindProfilesTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $CoffeeGrindProfilesTable,
+          CoffeeGrindProfile,
+          $$CoffeeGrindProfilesTableFilterComposer,
+          $$CoffeeGrindProfilesTableOrderingComposer,
+          $$CoffeeGrindProfilesTableAnnotationComposer,
+          $$CoffeeGrindProfilesTableCreateCompanionBuilder,
+          $$CoffeeGrindProfilesTableUpdateCompanionBuilder,
+          (
+            CoffeeGrindProfile,
+            BaseReferences<
+              _$AppDatabase,
+              $CoffeeGrindProfilesTable,
+              CoffeeGrindProfile
+            >,
+          ),
+          CoffeeGrindProfile,
+          PrefetchHooks Function()
+        > {
+  $$CoffeeGrindProfilesTableTableManager(
+    _$AppDatabase db,
+    $CoffeeGrindProfilesTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$CoffeeGrindProfilesTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$CoffeeGrindProfilesTableOrderingComposer(
+                $db: db,
+                $table: table,
+              ),
+          createComputedFieldComposer: () =>
+              $$CoffeeGrindProfilesTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String?> beanId = const Value.absent(),
+                Value<String?> beanBatchId = const Value.absent(),
+                Value<String?> recipeId = const Value.absent(),
+                Value<String> grinderDeviceId = const Value.absent(),
+                Value<Map<String, dynamic>> setting = const Value.absent(),
+                Value<String> algorithmVersion = const Value.absent(),
+                Value<String?> firmwareBuild = const Value.absent(),
+                Value<int> revision = const Value.absent(),
+                Value<DateTime> updatedAt = const Value.absent(),
+                Value<Map<String, dynamic>?> extras = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => CoffeeGrindProfilesCompanion(
+                id: id,
+                beanId: beanId,
+                beanBatchId: beanBatchId,
+                recipeId: recipeId,
+                grinderDeviceId: grinderDeviceId,
+                setting: setting,
+                algorithmVersion: algorithmVersion,
+                firmwareBuild: firmwareBuild,
+                revision: revision,
+                updatedAt: updatedAt,
+                extras: extras,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                Value<String?> beanId = const Value.absent(),
+                Value<String?> beanBatchId = const Value.absent(),
+                Value<String?> recipeId = const Value.absent(),
+                required String grinderDeviceId,
+                required Map<String, dynamic> setting,
+                required String algorithmVersion,
+                Value<String?> firmwareBuild = const Value.absent(),
+                Value<int> revision = const Value.absent(),
+                required DateTime updatedAt,
+                Value<Map<String, dynamic>?> extras = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => CoffeeGrindProfilesCompanion.insert(
+                id: id,
+                beanId: beanId,
+                beanBatchId: beanBatchId,
+                recipeId: recipeId,
+                grinderDeviceId: grinderDeviceId,
+                setting: setting,
+                algorithmVersion: algorithmVersion,
+                firmwareBuild: firmwareBuild,
+                revision: revision,
+                updatedAt: updatedAt,
+                extras: extras,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$CoffeeGrindProfilesTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $CoffeeGrindProfilesTable,
+      CoffeeGrindProfile,
+      $$CoffeeGrindProfilesTableFilterComposer,
+      $$CoffeeGrindProfilesTableOrderingComposer,
+      $$CoffeeGrindProfilesTableAnnotationComposer,
+      $$CoffeeGrindProfilesTableCreateCompanionBuilder,
+      $$CoffeeGrindProfilesTableUpdateCompanionBuilder,
+      (
+        CoffeeGrindProfile,
+        BaseReferences<
+          _$AppDatabase,
+          $CoffeeGrindProfilesTable,
+          CoffeeGrindProfile
+        >,
+      ),
+      CoffeeGrindProfile,
+      PrefetchHooks Function()
+    >;
 typedef $$ShotRecordsTableCreateCompanionBuilder =
     ShotRecordsCompanion Function({
       required String id,
@@ -8209,6 +9246,8 @@ class $AppDatabaseManager {
       $$BeanBatchesTableTableManager(_db, _db.beanBatches);
   $$GrindersTableTableManager get grinders =>
       $$GrindersTableTableManager(_db, _db.grinders);
+  $$CoffeeGrindProfilesTableTableManager get coffeeGrindProfiles =>
+      $$CoffeeGrindProfilesTableTableManager(_db, _db.coffeeGrindProfiles);
   $$ShotRecordsTableTableManager get shotRecords =>
       $$ShotRecordsTableTableManager(_db, _db.shotRecords);
   $$SteamRecordsTableTableManager get steamRecords =>

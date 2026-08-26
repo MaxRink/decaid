@@ -1,5 +1,6 @@
 import 'grinder_operation.dart';
 import 'grinder_scale_binding.dart';
+import 'grinder_setting.dart';
 
 /// Capability vocabulary shared by connected and guidance-only grinders.
 ///
@@ -22,6 +23,9 @@ class GrinderSafetyConstraints {
   final bool requiresIdleForAdjustment;
   final bool requiresReadback;
   final bool supportsEmergencyStop;
+  /// Maximum permitted difference between a commanded numeric setting and
+  /// the subsequent device readback, in the setting's native unit.
+  final double readbackTolerance;
 
   const GrinderSafetyConstraints({
     this.minimumSetting,
@@ -30,9 +34,11 @@ class GrinderSafetyConstraints {
     this.requiresIdleForAdjustment = true,
     this.requiresReadback = true,
     this.supportsEmergencyStop = false,
-  });
+    this.readbackTolerance = 0,
+  }) : assert(readbackTolerance >= 0);
 
   bool accepts(num value) {
+    if (!value.isFinite) return false;
     if (minimumSetting != null && value < minimumSetting!) return false;
     if (maximumSetting != null && value > maximumSetting!) return false;
     return true;
@@ -45,6 +51,7 @@ class GrinderSafetyConstraints {
     'requiresIdleForAdjustment': requiresIdleForAdjustment,
     'requiresReadback': requiresReadback,
     'supportsEmergencyStop': supportsEmergencyStop,
+    'readbackTolerance': readbackTolerance,
   };
 }
 
@@ -62,6 +69,15 @@ class GrinderCapabilities {
   final bool acceptsBrewEvidence;
   final bool exposesNativeGbsReport;
   final bool supportsStop;
+  /// Number of native setting units represented by one assistant step.
+  ///
+  /// A relative command remains expressed in assistant steps at the generic
+  /// boundary. Adapters convert it into their native dial unit using this
+  /// value, instead of adding an untyped step count to a device reading.
+  final double relativeStepSize;
+  /// Optional native unit required by relative adjustments. A null unit means
+  /// "the current numeric setting's unit" for generic adapters.
+  final String? relativeStepUnit;
   final List<GrinderScaleBinding> scaleBindings;
   final GrinderSafetyConstraints safety;
 
@@ -77,9 +93,11 @@ class GrinderCapabilities {
     this.acceptsBrewEvidence = false,
     this.exposesNativeGbsReport = false,
     this.supportsStop = false,
+    this.relativeStepSize = 1,
+    this.relativeStepUnit,
     this.scaleBindings = const [],
     this.safety = const GrinderSafetyConstraints(),
-  });
+  }) : assert(relativeStepSize > 0);
 
   /// Whether the host may expose an operation through this contract.
   /// Static protocol evidence never enables physical actuation by itself.
@@ -95,10 +113,12 @@ class GrinderCapabilities {
       case GrinderOperationId.addBrewEvidence:
         return acceptsBrewEvidence;
       case GrinderOperationId.prepareApply:
-      case GrinderOperationId.applyAbsolute:
-      case GrinderOperationId.applyRelative:
         return adjustment == GrinderAdjustmentMode.absolute ||
             adjustment == GrinderAdjustmentMode.relative;
+      case GrinderOperationId.applyAbsolute:
+        return adjustment == GrinderAdjustmentMode.absolute;
+      case GrinderOperationId.applyRelative:
+        return adjustment == GrinderAdjustmentMode.relative;
     }
   }
 
@@ -114,9 +134,22 @@ class GrinderCapabilities {
     'acceptsBrewEvidence': acceptsBrewEvidence,
     'exposesNativeGbsReport': exposesNativeGbsReport,
     'supportsStop': supportsStop,
+    'relativeStepSize': relativeStepSize,
+    if (relativeStepUnit != null) 'relativeStepUnit': relativeStepUnit,
     'scaleBindings': scaleBindings.map((binding) => binding.toJson()).toList(),
     'safety': safety.toJson(),
   };
+
+  /// Converts an assistant relative step count to the native numeric setting.
+  /// Returns null when the setting is non-numeric or has the wrong unit.
+  double? relativeTarget(GrinderSetting current, int delta) {
+    if (current is! NumericGrinderSetting) return null;
+    if (relativeStepUnit != null && current.unit != relativeStepUnit) {
+      return null;
+    }
+    final target = current.value + delta * relativeStepSize;
+    return target.isFinite ? target : null;
+  }
 
   /// The static profile for an E64 WS before physical validation.
   ///

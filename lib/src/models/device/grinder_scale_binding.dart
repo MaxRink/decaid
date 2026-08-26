@@ -32,6 +32,31 @@ class GrinderScaleBinding {
     this.resolutionGrams,
   });
 
+  factory GrinderScaleBinding.fromJson(Map<String, dynamic> json) {
+    final sourceId = json['sourceId'];
+    final owner = _enumValue(GrinderScaleOwner.values, json['owner']);
+    final phase = _enumValue(GrinderMassPhase.values, json['phase']);
+    final resolution = json['resolutionGrams'];
+    if (sourceId is! String || sourceId.trim().isEmpty ||
+        owner == null || phase == null ||
+        json['readsMass'] is! bool ||
+        json['stableReadingRequired'] is! bool ||
+        json['calibrationRequired'] is! bool ||
+        (resolution != null &&
+            (resolution is! num || !resolution.isFinite || resolution <= 0))) {
+      throw const FormatException('Invalid grinder scale binding');
+    }
+    return GrinderScaleBinding(
+      sourceId: sourceId,
+      owner: owner,
+      phase: phase,
+      readsMass: json['readsMass'] as bool,
+      stableReadingRequired: json['stableReadingRequired'] as bool,
+      calibrationRequired: json['calibrationRequired'] as bool,
+      resolutionGrams: (resolution as num?)?.toDouble(),
+    );
+  }
+
   Map<String, dynamic> toJson() => {
     'sourceId': sourceId,
     'owner': owner.name,
@@ -41,4 +66,12 @@ class GrinderScaleBinding {
     'calibrationRequired': calibrationRequired,
     if (resolutionGrams != null) 'resolutionGrams': resolutionGrams,
   };
+}
+
+T? _enumValue<T extends Enum>(List<T> values, Object? raw) {
+  if (raw is! String) return null;
+  for (final value in values) {
+    if (value.name == raw) return value;
+  }
+  return null;
 }

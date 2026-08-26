@@ -6,6 +6,44 @@ abstract class GrinderSetting {
   const GrinderSetting({required this.domain, required this.displayValue});
 
   Map<String, dynamic> toJson();
+
+  /// Decodes the stable JSON form used by plugin and persistence boundaries.
+  ///
+  /// Keeping this parser here prevents each adapter from inventing a subtly
+  /// different representation for numeric versus named grinder settings.
+  static GrinderSetting fromJson(Map<String, dynamic> json) {
+    final kind = json['kind'];
+    final domain = json['domain'];
+    if (domain is! String || domain.isEmpty) {
+      throw const FormatException('Grinder setting domain is required');
+    }
+    switch (kind) {
+      case 'numeric':
+        final value = json['value'];
+        final unit = json['unit'];
+        if (value is! num || !value.isFinite || unit is! String || unit.isEmpty) {
+          throw const FormatException('Invalid numeric grinder setting');
+        }
+        return NumericGrinderSetting(
+          domain: domain,
+          value: value.toDouble(),
+          unit: unit,
+          displayValue: json['displayValue'] as String?,
+        );
+      case 'named':
+        final value = json['value'];
+        if (value is! String || value.isEmpty) {
+          throw const FormatException('Invalid named grinder setting');
+        }
+        return NamedGrinderSetting(
+          domain: domain,
+          value: value,
+          displayValue: json['displayValue'] as String?,
+        );
+      default:
+        throw FormatException('Unknown grinder setting kind: $kind');
+    }
+  }
 }
 
 class NumericGrinderSetting extends GrinderSetting {

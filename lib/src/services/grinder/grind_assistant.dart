@@ -1,5 +1,7 @@
 import '../../models/device/grinder_capabilities.dart';
+import '../../models/device/grind_evidence.dart';
 import '../../models/device/grinder_operation.dart';
+import '../../models/device/grinder_setting.dart';
 import '../../models/device/grinder_snapshot.dart';
 
 /// The user-selectable authority of the grind assistant.
@@ -56,6 +58,25 @@ class ShotMetrics {
     if (targetYieldGrams != null) 'targetYieldGrams': targetYieldGrams,
     if (brewRatio != null) 'brewRatio': brewRatio,
   };
+
+  factory ShotMetrics.fromEvidence(GrindEvidence evidence) {
+    final dose = evidence.doseGrams;
+    final yield = evidence.yieldGrams;
+    final duration = evidence.durationSeconds;
+    final targetDuration = evidence.targetDurationSeconds;
+    if (dose == null || yield == null || duration == null || targetDuration == null) {
+      throw const FormatException(
+        'Mass-backed shot metrics require dose, yield, duration, and target duration',
+      );
+    }
+    return ShotMetrics(
+      doseGrams: dose,
+      yieldGrams: yield,
+      durationSeconds: duration,
+      targetDurationSeconds: targetDuration,
+      targetYieldGrams: evidence.targetYieldGrams,
+    );
+  }
 }
 
 class GrindAssistantPolicy {
@@ -64,6 +85,7 @@ class GrindAssistantPolicy {
   final double durationToleranceFraction;
   final bool requireFreshSnapshot;
   final Duration maxSnapshotAge;
+  final double minimumAutomationConfidence;
 
   const GrindAssistantPolicy({
     this.mode = GrindAssistantMode.recommend,
@@ -71,8 +93,10 @@ class GrindAssistantPolicy {
     this.durationToleranceFraction = 0.15,
     this.requireFreshSnapshot = true,
     this.maxSnapshotAge = const Duration(seconds: 5),
+    this.minimumAutomationConfidence = 0.5,
   }) : assert(maxRelativeSteps > 0),
-       assert(durationToleranceFraction >= 0 && durationToleranceFraction < 1);
+       assert(durationToleranceFraction >= 0 && durationToleranceFraction < 1),
+       assert(minimumAutomationConfidence >= 0 && minimumAutomationConfidence <= 1);
 
   Map<String, dynamic> toJson() => {
     'mode': mode.name,
@@ -80,6 +104,7 @@ class GrindAssistantPolicy {
     'durationToleranceFraction': durationToleranceFraction,
     'requireFreshSnapshot': requireFreshSnapshot,
     'maxSnapshotAgeMs': maxSnapshotAge.inMilliseconds,
+    'minimumAutomationConfidence': minimumAutomationConfidence,
   };
 }
 
@@ -93,6 +118,7 @@ class GrindAssistantRecommendation {
   final List<String> reasons;
   final ShotMetrics metrics;
   final Set<SensoryFeedback> feedback;
+  final double minimumAutomationConfidence;
 
   const GrindAssistantRecommendation({
     required this.mode,
@@ -104,6 +130,7 @@ class GrindAssistantRecommendation {
     required this.reasons,
     required this.metrics,
     required this.feedback,
+    this.minimumAutomationConfidence = 0.5,
   });
 
   bool get isActionable =>
@@ -118,13 +145,27 @@ class GrindAssistantRecommendation {
     required DateTime now,
     required bool userApprovedAutomation,
   }) {
-    if (!automationEligible || !userApprovedAutomation || !isActionable)
+    if (!automationEligible || !userApprovedAutomation || !isActionable) {
       return null;
-    if (!snapshot.connected || !snapshot.idle || snapshot.motorRunning)
+    }
+    if (!snapshot.connected ||
+        (capabilities.safety.requiresIdleForAdjustment &&
+            (!snapshot.idle || snapshot.motorRunning))) {
       return null;
-    if (!snapshot.isFresh(now, capabilities.safety.freshSnapshotAge))
+    }
+    if (!snapshot.isFresh(now, capabilities.safety.freshSnapshotAge)) {
       return null;
+    }
     if (!capabilities.allows(GrinderOperationId.applyRelative)) return null;
+    if (confidence < minimumAutomationConfidence) return null;
+    final current = snapshot.currentSetting;
+    if (current is NumericGrinderSetting) {
+      final signedDelta = direction == GrindDirection.finer
+          ? -relativeSteps
+          : relativeSteps;
+      final target = capabilities.relativeTarget(current, signedDelta);
+      if (target == null || !capabilities.safety.accepts(target)) return null;
+    }
     return GrinderCommand(
       operation: GrinderOperationId.applyRelative,
       operationId: operationId,
@@ -153,6 +194,7 @@ class GrindAssistantRecommendation {
     'reasons': reasons,
     'metrics': metrics.toJson(),
     'sensoryFeedback': feedback.map((value) => value.name).toList()..sort(),
+    'minimumAutomationConfidence': minimumAutomationConfidence,
   };
 }
 
@@ -160,6 +202,76 @@ class GrindAssistantRecommendation {
 /// grinder adapters.
 class GrindAssistant {
   const GrindAssistant();
+
+  /// Converts normalized evidence into the mass-backed policy when possible.
+  ///
+  /// Flow-only evidence is intentionally returned as a non-actionable
+  /// recommendation. It can still be persisted and displayed, but it must not
+  /// be silently promoted to a vendor-valid scale event.
+  GrindAssistantRecommendation recommendEvidence({
+    required GrindAssistantPolicy policy,
+    required GrindEvidence evidence,
+    required GrinderSnapshot snapshot,
+    required GrinderCapabilities capabilities,
+    required DateTime now,
+  }) {
+    final feedback = evidence.sensoryFeedback
+        .map(_sensoryFeedbackFromName)
+        .whereType<SensoryFeedback>()
+        .toSet();
+    if (evidence.isFlowOnly) {
+      return _result(
+        policy,
+        const ShotMetrics(
+          doseGrams: 0,
+          yieldGrams: 0,
+          durationSeconds: 0,
+          targetDurationSeconds: 0,
+        ),
+        feedback,
+        GrindDirection.hold,
+        0,
+        0,
+        false,
+        'Flow-only evidence recorded; connect a mass source before automatic adjustment.',
+        const ['evidence:flow-only', 'automation:mass-source-required'],
+      );
+    }
+    try {
+      return recommend(
+        policy: policy,
+        metrics: ShotMetrics.fromEvidence(evidence),
+        feedback: feedback,
+        snapshot: snapshot,
+        capabilities: capabilities,
+        now: now,
+      );
+    } on FormatException {
+      return _result(
+        policy,
+        const ShotMetrics(
+          doseGrams: 0,
+          yieldGrams: 0,
+          durationSeconds: 0,
+          targetDurationSeconds: 0,
+        ),
+        feedback,
+        GrindDirection.hold,
+        0,
+        0,
+        false,
+        'Evidence is incomplete; no grind change is recommended.',
+        const ['evidence:incomplete'],
+      );
+    }
+  }
+
+  SensoryFeedback? _sensoryFeedbackFromName(String name) {
+    for (final value in SensoryFeedback.values) {
+      if (value.name == name) return value;
+    }
+    return null;
+  }
 
   GrindAssistantRecommendation recommend({
     required GrindAssistantPolicy policy,
@@ -264,16 +376,16 @@ class GrindAssistant {
         : (durationDelta.abs() > tolerance * 2 ? 2 : 1).clamp(
                 1,
                 policy.maxRelativeSteps,
-              )
-              as int;
+              );
     final canAutomate =
         policy.mode == GrindAssistantMode.automate &&
         direction != GrindDirection.hold &&
+        confidence >= policy.minimumAutomationConfidence &&
         capabilities.adjustment == GrinderAdjustmentMode.relative &&
         capabilities.safety.requiresReadback &&
         snapshot.connected &&
-        snapshot.idle &&
-        !snapshot.motorRunning &&
+        (!capabilities.safety.requiresIdleForAdjustment ||
+            (snapshot.idle && !snapshot.motorRunning)) &&
         (!policy.requireFreshSnapshot ||
             snapshot.isFresh(now, policy.maxSnapshotAge));
     final displayDirection = direction == GrindDirection.finer
@@ -317,5 +429,6 @@ class GrindAssistant {
     reasons: List.unmodifiable(reasons),
     metrics: metrics,
     feedback: Set.unmodifiable(feedback),
+    minimumAutomationConfidence: policy.minimumAutomationConfidence,
   );
 }
