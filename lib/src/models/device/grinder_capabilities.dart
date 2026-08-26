@@ -1,4 +1,5 @@
 import 'grinder_operation.dart';
+import 'grinder_scale_binding.dart';
 
 /// Capability vocabulary shared by connected and guidance-only grinders.
 ///
@@ -61,6 +62,7 @@ class GrinderCapabilities {
   final bool acceptsBrewEvidence;
   final bool exposesNativeGbsReport;
   final bool supportsStop;
+  final List<GrinderScaleBinding> scaleBindings;
   final GrinderSafetyConstraints safety;
 
   const GrinderCapabilities({
@@ -75,6 +77,7 @@ class GrinderCapabilities {
     this.acceptsBrewEvidence = false,
     this.exposesNativeGbsReport = false,
     this.supportsStop = false,
+    this.scaleBindings = const [],
     this.safety = const GrinderSafetyConstraints(),
   });
 
@@ -111,6 +114,7 @@ class GrinderCapabilities {
     'acceptsBrewEvidence': acceptsBrewEvidence,
     'exposesNativeGbsReport': exposesNativeGbsReport,
     'supportsStop': supportsStop,
+    'scaleBindings': scaleBindings.map((binding) => binding.toJson()).toList(),
     'safety': safety.toJson(),
   };
 

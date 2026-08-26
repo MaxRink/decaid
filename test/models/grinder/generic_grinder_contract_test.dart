@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reaprime/src/models/device/grinder_capabilities.dart';
+import 'package:reaprime/src/models/device/grinder_scale_binding.dart';
 import 'package:reaprime/src/models/device/grinder_operation.dart';
 import 'package:reaprime/src/models/device/grinder_setting.dart';
 import 'package:reaprime/src/models/device/grinder_snapshot.dart';
@@ -68,5 +69,18 @@ void main() {
     expect(bounded.accepts(10000.0), isTrue);
     expect(bounded.accepts(10000.1), isFalse);
     expect(GrinderCapabilities.e64Ws.safety.accepts(100000), isTrue);
+  });
+
+  test('a Decent-attached scale is a reusable external mass source', () {
+    const binding = GrinderScaleBinding(
+      sourceId: 'decent-scale-1',
+      owner: GrinderScaleOwner.decentMachine,
+      phase: GrinderMassPhase.shotOutput,
+      resolutionGrams: 0.1,
+    );
+    const capabilities = GrinderCapabilities(scaleBindings: [binding]);
+    expect(capabilities.toJson()['scaleBindings'], [binding.toJson()]);
+    expect(binding.toJson()['owner'], 'decentMachine');
+    expect(binding.toJson()['phase'], 'shotOutput');
   });
 }
