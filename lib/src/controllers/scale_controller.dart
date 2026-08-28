@@ -14,6 +14,8 @@ class ScaleController {
 
   StreamSubscription<ConnectionState>? _scaleConnection;
   StreamSubscription<ScaleSnapshot>? _scaleSnapshot;
+  StreamSubscription<ScaleButton>? _scaleButtons;
+  bool _skaleUsbPowered = false;
 
   String? _lastConnectedDeviceId;
   String? get lastConnectedDeviceId => _lastConnectedDeviceId;
@@ -32,11 +34,16 @@ class ScaleController {
     _scaleSnapshot = null;
     _scaleConnection?.cancel();
     _scaleConnection = null;
+    _scaleButtons?.cancel();
+    _scaleButtons = null;
     if (!_connectionController.isClosed) {
       _connectionController.close();
     }
     if (!_weightSnapshotController.isClosed) {
       _weightSnapshotController.close();
+    }
+    if (!_buttonController.isClosed) {
+      _buttonController.close();
     }
     _snapshotSessionActive = false;
     _currentWeightSnapshot = null;
@@ -59,6 +66,7 @@ class ScaleController {
         );
       }
     }
+    _configureScale(scale);
     _scaleSnapshot = scale.currentSnapshot.listen(_processSnapshot);
     try {
       await scale.onConnect();
@@ -81,6 +89,7 @@ class ScaleController {
     _scale = scale;
     _lastConnectedDeviceId = scale.deviceId;
     _scaleConnection = scale.connectionState.listen(_processConnection);
+    _subscribeToButtons(scale);
   }
 
   Future<void> adoptScale(Scale scale) async {
@@ -100,6 +109,7 @@ class ScaleController {
         );
       }
     }
+    _configureScale(scale);
     _scaleSnapshot = scale.currentSnapshot.listen(_processSnapshot);
     final state = await scale.connectionState.first;
     if (state != ConnectionState.connected) {
@@ -113,6 +123,33 @@ class ScaleController {
     _scale = scale;
     _lastConnectedDeviceId = scale.deviceId;
     _scaleConnection = scale.connectionState.listen(_processConnection);
+    _subscribeToButtons(scale);
+  }
+
+  final StreamController<ScaleButton> _buttonController =
+      StreamController.broadcast();
+
+  Stream<ScaleButton> get buttonPresses => _buttonController.stream;
+
+  void setSkaleUsbPowered(bool value) {
+    _skaleUsbPowered = value;
+    final scale = _scale;
+    if (scale != null) _configureScale(scale);
+  }
+
+  void _configureScale(Scale scale) {
+    if (scale is UsbPowerConfigurableScale) {
+      (scale as UsbPowerConfigurableScale).setUsbPowered(_skaleUsbPowered);
+    }
+  }
+
+  void _subscribeToButtons(Scale scale) {
+    _scaleButtons?.cancel();
+    _scaleButtons = scale is ScaleButtonCapable
+        ? (scale as ScaleButtonCapable).buttonPresses.listen(
+            _buttonController.add,
+          )
+        : null;
   }
 
   void _onDisconnect() {
@@ -121,8 +158,10 @@ class ScaleController {
     _currentWeightSnapshot = null;
     _scaleSnapshot?.cancel();
     _scaleConnection?.cancel();
+    _scaleButtons?.cancel();
     _scale = null;
     _scaleConnection = null;
+    _scaleButtons = null;
     _resetDisplayEstimator();
     _kalmanEstimator = null;
     _lastSnapshotTime = null;

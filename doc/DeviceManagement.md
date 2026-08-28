@@ -177,6 +177,22 @@ Machine replacement/disconnect resets the push state so the new machine gets
 - **Construction:** Like the USB HDS path, the service constructs `HDSWifi` **directly**, bypassing the BLE-coupled `DeviceMatcher`.
 - **Platform config:** iOS/macOS `Info.plist` declare `NSBonjourServices` (`_decentscale._tcp`) + `NSLocalNetworkUsageDescription` (without these, Apple silently returns no results); macOS already grants the `com.apple.security.network.client` entitlement. Linux discovery requires the **Avahi daemon** running; otherwise use manual entry.
 
+### Skale connected-device information and buttons
+
+`Skale2Scale` exposes connected-session firmware, battery, and power-source
+metadata through the optional `DeviceInformationCapable` interface. Firmware
+comes from the standard Device Information Firmware Revision String
+characteristic. Battery is nullable, read on connect, and refreshed every 30
+minutes; a failed read is not converted to zero. The Devices UI and the nested
+REST/WebSocket `deviceInfo` object update from the same stream and omit the
+metadata after disconnect.
+
+Atomax exposes no reliable USB-power signal, so USB use is not autodiscovered.
+The default-off **Powered by USB** setting suppresses battery polling and reports
+USB as the power source. The circle button requests tare. The square button
+starts or stops espresso only when the separate default-off setting is enabled.
+These are application actions rather than new public button events.
+
 ### Device Matching
 
 Discovery services use name-based matching via `DeviceMatcher` to create appropriate device instances from BLE advertisement names:

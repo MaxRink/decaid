@@ -21,6 +21,34 @@ abstract class Device {
   Stream<ConnectionState> get connectionState;
 }
 
+enum DevicePowerSource { battery, usb }
+
+class DeviceInformation {
+  final String? firmwareVersion;
+  final int? batteryLevel;
+  final DevicePowerSource? powerSource;
+
+  const DeviceInformation({
+    this.firmwareVersion,
+    this.batteryLevel,
+    this.powerSource,
+  });
+
+  bool get isEmpty =>
+      firmwareVersion == null && batteryLevel == null && powerSource == null;
+
+  Map<String, dynamic> toJson() => {
+    if (firmwareVersion != null) 'firmwareVersion': firmwareVersion,
+    if (batteryLevel != null) 'batteryLevel': batteryLevel,
+    if (powerSource != null) 'powerSource': powerSource!.name,
+  };
+}
+
+abstract interface class DeviceInformationCapable {
+  DeviceInformation? get currentDeviceInformation;
+  Stream<DeviceInformation?> get deviceInformation;
+}
+
 enum ConnectionState {
   discovered,
   connecting,

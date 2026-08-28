@@ -29,6 +29,8 @@ class SettingsExportSection implements DataExportSection {
           'scalePowerMode': _controller.scalePowerMode.name,
           'blockOnNoScale': _controller.blockOnNoScale,
           'blockTareDuringShot': _controller.blockTareDuringShot,
+          'skaleUsbPowered': _controller.skaleUsbPowered,
+          'scaleButtonStartsEspresso': _controller.scaleButtonStartsEspresso,
           'stopHotWaterAtWeight': _controller.stopHotWaterAtWeight,
           'defaultSkinId': _controller.defaultSkinId,
           'automaticUpdateCheck': _controller.automaticUpdateCheck,
@@ -132,6 +134,20 @@ class SettingsExportSection implements DataExportSection {
         if (settings.containsKey('blockTareDuringShot')) {
           await _controller.setBlockTareDuringShot(
             settings['blockTareDuringShot'] as bool,
+          );
+          imported++;
+        }
+
+        if (settings.containsKey('skaleUsbPowered')) {
+          await _controller.setSkaleUsbPowered(
+            settings['skaleUsbPowered'] as bool,
+          );
+          imported++;
+        }
+
+        if (settings.containsKey('scaleButtonStartsEspresso')) {
+          await _controller.setScaleButtonStartsEspresso(
+            settings['scaleButtonStartsEspresso'] as bool,
           );
           imported++;
         }

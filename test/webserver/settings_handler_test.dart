@@ -92,6 +92,21 @@ void main() {
     });
   });
 
+  group('Skale settings', () {
+    test('default to disabled', () {
+      expect(controller.skaleUsbPowered, isFalse);
+      expect(controller.scaleButtonStartsEspresso, isFalse);
+    });
+
+    test('persist USB power and square-button behavior', () async {
+      await controller.setSkaleUsbPowered(true);
+      await controller.setScaleButtonStartsEspresso(true);
+
+      expect(await mockService.skaleUsbPowered(), isTrue);
+      expect(await mockService.scaleButtonStartsEspresso(), isTrue);
+    });
+  });
+
   group('keepAwake', () {
     test('defaults to true', () {
       expect(controller.keepAwake, isTrue);

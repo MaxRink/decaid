@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:logging/logging.dart' as logging;
@@ -13,7 +15,12 @@ import 'package:reaprime/src/models/device/device.dart';
 
 import '../../scale.dart';
 
-class Skale2Scale implements Scale {
+class Skale2Scale
+    implements
+        Scale,
+        ScaleButtonCapable,
+        DeviceInformationCapable,
+        UsbPowerConfigurableScale {
   static final BleServiceIdentifier serviceIdentifier =
       BleServiceIdentifier.short('ff08');
   static final BleServiceIdentifier weightCharacteristic =
@@ -27,6 +34,10 @@ class Skale2Scale implements Scale {
   );
   static final BleServiceIdentifier batteryCharacteristic =
       BleServiceIdentifier.short('2a19');
+  static final BleServiceIdentifier deviceInformationService =
+      BleServiceIdentifier.short('180a');
+  static final BleServiceIdentifier firmwareVersionCharacteristic =
+      BleServiceIdentifier.short('2a26');
 
   final String _deviceId;
 
@@ -35,7 +46,25 @@ class Skale2Scale implements Scale {
 
   final BLETransport _transport;
 
-  int _batteryLevel = 0;
+  int? _batteryLevel;
+
+  String? _firmwareVersion;
+
+  Timer? _batteryRefreshTimer;
+
+  bool _batteryReadInProgress = false;
+
+  bool _usbPowered = false;
+
+  bool _deviceInformationActive = false;
+
+  final Duration _batteryRefreshInterval;
+
+  final BehaviorSubject<DeviceInformation?> _deviceInformationController =
+      BehaviorSubject.seeded(null);
+
+  final StreamController<ScaleButton> _buttonController =
+      StreamController.broadcast();
 
   final _log = logging.Logger('Skale2Scale');
 
@@ -48,14 +77,27 @@ class Skale2Scale implements Scale {
   Skale2Scale({
     required BLETransport transport,
     Duration initStepDelay = _initStepDelay,
+    Duration batteryRefreshInterval = const Duration(minutes: 30),
   }) : _transport = transport,
        _deviceId = transport.id,
-       _initStepDelayOverride = initStepDelay;
+       _initStepDelayOverride = initStepDelay,
+       _batteryRefreshInterval = batteryRefreshInterval;
 
   final Duration _initStepDelayOverride;
 
   @override
   Stream<ScaleSnapshot> get currentSnapshot => _streamController.stream;
+
+  @override
+  Stream<ScaleButton> get buttonPresses => _buttonController.stream;
+
+  @override
+  DeviceInformation? get currentDeviceInformation =>
+      _deviceInformationController.value;
+
+  @override
+  Stream<DeviceInformation?> get deviceInformation =>
+      _deviceInformationController.stream;
 
   @override
   String get deviceId => _deviceId;
@@ -69,7 +111,7 @@ class Skale2Scale implements Scale {
   @override
   String get name => "Skale2";
 
-  final StreamController<ConnectionState> _connectionStateController =
+  final BehaviorSubject<ConnectionState> _connectionStateController =
       BehaviorSubject.seeded(ConnectionState.discovered);
 
   @override
@@ -94,6 +136,7 @@ class Skale2Scale implements Scale {
             _connectionStateController.add(ConnectionState.disconnected);
             _weightSubscribed = false;
             _buttonSubscribed = false;
+            _clearDeviceInformation();
             disconnectSub?.cancel();
           });
 
@@ -134,15 +177,13 @@ class Skale2Scale implements Scale {
     await Future.delayed(_initStepDelayOverride);
     await _subscribeButton();
 
-    try {
-      final batteryData = await _transport.read(
-        batteryService.long,
-        batteryCharacteristic.long,
-      );
-      if (batteryData.isNotEmpty) {
-        _batteryLevel = batteryData[0];
-      }
-    } catch (_) {}
+    _deviceInformationActive = true;
+    _publishDeviceInformation();
+    await _readFirmwareVersion();
+    if (!_usbPowered) {
+      await _refreshBatteryLevel();
+      _startBatteryRefresh();
+    }
 
     await Future.delayed(_initStepDelayOverride);
     await _sendDisplayOn();
@@ -185,6 +226,91 @@ class Skale2Scale implements Scale {
     }
   }
 
+  Future<void> _readFirmwareVersion() async {
+    try {
+      final data = await _transport.read(
+        deviceInformationService.long,
+        firmwareVersionCharacteristic.long,
+      );
+      final value = utf8
+          .decode(data, allowMalformed: true)
+          .replaceAll('\u0000', '')
+          .trim();
+      if (value.isNotEmpty) {
+        _firmwareVersion = value;
+        _publishDeviceInformation();
+      }
+    } catch (e) {
+      _log.fine('Firmware version unavailable: $e');
+    }
+  }
+
+  Future<void> _refreshBatteryLevel() async {
+    if (_usbPowered || _batteryReadInProgress) return;
+    _batteryReadInProgress = true;
+    try {
+      final data = await _transport.read(
+        batteryService.long,
+        batteryCharacteristic.long,
+      );
+      if (data.isNotEmpty && data[0] <= 100) {
+        _batteryLevel = data[0];
+        _publishDeviceInformation();
+      }
+    } catch (e) {
+      _log.fine('Battery level unavailable: $e');
+    } finally {
+      _batteryReadInProgress = false;
+    }
+  }
+
+  void _startBatteryRefresh() {
+    _batteryRefreshTimer?.cancel();
+    if (_usbPowered || _batteryRefreshInterval <= Duration.zero) return;
+    _batteryRefreshTimer = Timer.periodic(
+      _batteryRefreshInterval,
+      (_) => unawaited(_refreshBatteryLevel()),
+    );
+  }
+
+  void _publishDeviceInformation() {
+    if (!_deviceInformationActive) return;
+    final information = DeviceInformation(
+      firmwareVersion: _firmwareVersion,
+      batteryLevel: _batteryLevel,
+      powerSource: _usbPowered
+          ? DevicePowerSource.usb
+          : _batteryLevel == null
+          ? null
+          : DevicePowerSource.battery,
+    );
+    _deviceInformationController.add(information.isEmpty ? null : information);
+  }
+
+  void _clearDeviceInformation() {
+    _batteryRefreshTimer?.cancel();
+    _batteryRefreshTimer = null;
+    _batteryLevel = null;
+    _firmwareVersion = null;
+    _deviceInformationActive = false;
+    _deviceInformationController.add(null);
+  }
+
+  @override
+  void setUsbPowered(bool value) {
+    if (_usbPowered == value) return;
+    _usbPowered = value;
+    _batteryRefreshTimer?.cancel();
+    _batteryRefreshTimer = null;
+    if (value) {
+      _batteryLevel = null;
+    } else if (_connectionStateController.value == ConnectionState.connected) {
+      unawaited(_refreshBatteryLevel());
+      _startBatteryRefresh();
+    }
+    _publishDeviceInformation();
+  }
+
   Future<void> _sendDisplayOn() async {
     await _safeWrite(Uint8List.fromList([0xED]));
   }
@@ -225,14 +351,23 @@ class Skale2Scale implements Scale {
   void _parseWeightNotification(List<int> data) {
     if (data.length < 4) return;
 
-    final byteData = ByteData(4);
-    byteData.setUint8(0, data[0] & 0xFF);
-    byteData.setUint8(1, data[1] & 0xFF);
-    byteData.setUint8(2, data[2] & 0xFF);
-    byteData.setUint8(3, data[3] & 0xFF);
-    final rawValue = byteData.getInt32(0, Endian.little);
-
-    final weight = rawValue / 2560.0;
+    final double weight;
+    if (data.length >= 5) {
+      var mantissa =
+          (data[1] & 0xFF) | ((data[2] & 0xFF) << 8) | ((data[3] & 0xFF) << 16);
+      if ((mantissa & 0x800000) != 0) {
+        mantissa -= 0x1000000;
+      }
+      final exponent = (data[4] & 0x80) == 0 ? data[4] : data[4] - 0x100;
+      weight = (mantissa * math.pow(10, exponent)).toDouble();
+    } else {
+      final byteData = ByteData(4);
+      byteData.setUint8(0, data[0] & 0xFF);
+      byteData.setUint8(1, data[1] & 0xFF);
+      byteData.setUint8(2, data[2] & 0xFF);
+      byteData.setUint8(3, data[3] & 0xFF);
+      weight = byteData.getInt32(0, Endian.little) / 2560.0;
+    }
 
     _streamController.add(
       ScaleSnapshot(
@@ -243,7 +378,19 @@ class Skale2Scale implements Scale {
     );
   }
 
-  void _parseButtonNotification(List<int> data) {}
+  void _parseButtonNotification(List<int> data) {
+    if (data.isEmpty) return;
+    switch (data[0]) {
+      case 1:
+        _buttonController.add(ScaleButton.circle);
+        return;
+      case 2:
+        _buttonController.add(ScaleButton.square);
+        return;
+      default:
+        _log.fine('Ignoring unknown Skale button value ${data[0]}');
+    }
+  }
 
   @override
   Future<void> startTimer() async {

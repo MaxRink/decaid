@@ -18,6 +18,7 @@ import 'package:reaprime/src/models/data/workflow.dart';
 import 'package:reaprime/src/models/device/bengle_interface.dart';
 import 'package:reaprime/src/models/device/device.dart' as device;
 import 'package:reaprime/src/models/device/machine.dart';
+import 'package:reaprime/src/models/device/scale.dart';
 import 'package:reaprime/src/realtime_shot_feature/realtime_shot_feature.dart';
 import 'package:reaprime/src/realtime_steam_feature/realtime_steam_feature.dart';
 import 'package:reaprime/src/launcher/launcher_view.dart';
@@ -47,6 +48,7 @@ class De1StateManager with WidgetsBindingObserver {
   StreamSubscription<ShotState>? _shotStateSubscription;
   StreamSubscription<ShotSnapshot>? _shotSnapshotsSubscription;
   StreamSubscription<ShotDecision>? _shotDecisionSubscription;
+  StreamSubscription<ScaleButton>? _scaleButtonSubscription;
 
   String? _currentShotId;
   WorkflowMachine? _currentShotMachine;
@@ -112,10 +114,54 @@ class De1StateManager with WidgetsBindingObserver {
     _checkNavigationContext();
 
     _de1Subscription = _de1Controller.de1.listen(_handleDe1Change);
+    _settingsController.addListener(_applyScaleSettings);
+    _applyScaleSettings();
+    _scaleButtonSubscription = _scaleController.buttonPresses.listen(
+      _handleScaleButton,
+    );
 
     Future.delayed(const Duration(milliseconds: 500), () {
       _checkNavigationContext();
     });
+  }
+
+  void _applyScaleSettings() {
+    _scaleController.setSkaleUsbPowered(_settingsController.skaleUsbPowered);
+  }
+
+  void _handleScaleButton(ScaleButton button) {
+    switch (button) {
+      case ScaleButton.circle:
+        unawaited(_tareFromScaleButton());
+        return;
+      case ScaleButton.square:
+        if (_settingsController.scaleButtonStartsEspresso) {
+          unawaited(_toggleEspressoFromScaleButton());
+        }
+        return;
+    }
+  }
+
+  Future<void> _tareFromScaleButton() async {
+    try {
+      await _scaleController.tare();
+    } catch (e, st) {
+      _logger.warning('Skale circle-button tare failed', e, st);
+    }
+  }
+
+  Future<void> _toggleEspressoFromScaleButton() async {
+    try {
+      final machine = _de1Controller.connectedDe1();
+      if (_latestSnapshot?.state.state == MachineState.espresso) {
+        _de1Controller.recordStopIntent(ShotDecisionReason.appStop);
+        await machine.requestState(MachineState.idle);
+      } else {
+        await machine.requestState(MachineState.espresso);
+      }
+    } catch (e, st) {
+      _logger.warning('Skale square-button espresso toggle failed', e, st);
+    }
   }
 
   void _checkNavigationContext() {
@@ -723,5 +769,8 @@ class De1StateManager with WidgetsBindingObserver {
 
     _de1Subscription?.cancel();
     _de1Subscription = null;
+    _scaleButtonSubscription?.cancel();
+    _scaleButtonSubscription = null;
+    _settingsController.removeListener(_applyScaleSettings);
   }
 }

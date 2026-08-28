@@ -20,6 +20,11 @@ class _RecordableBleTransport extends BLETransport {
 
   final Map<String, void Function(Uint8List)> _notifyCallbacks = {};
 
+  Uint8List batteryValue = Uint8List.fromList([80]);
+  Uint8List firmwareValue = Uint8List.fromList('1.2.3'.codeUnits);
+  Object? batteryError;
+  int batteryReadCount = 0;
+
   _RecordableBleTransport();
 
   @override
@@ -71,7 +76,12 @@ class _RecordableBleTransport extends BLETransport {
     final shortUuid = characteristicUUID.substring(4, 8).toLowerCase();
     operations.add('read:$shortUuid');
     if (shortUuid == '2a19') {
-      return Uint8List.fromList([80]);
+      batteryReadCount++;
+      if (batteryError != null) throw batteryError!;
+      return batteryValue;
+    }
+    if (shortUuid == '2a26') {
+      return firmwareValue;
     }
     return Uint8List(0);
   }
@@ -124,6 +134,7 @@ void main() {
       transport = _RecordableBleTransport();
       scale = Skale2Scale(transport: transport, initStepDelay: Duration.zero);
       await transport.emitConnectionState(ConnectionState.discovered);
+      addTearDown(scale.disconnect);
     });
 
     test(
@@ -254,6 +265,19 @@ void main() {
       );
     });
 
+    test('USB-powered mode suppresses battery reads and reporting', () async {
+      scale.setUsbPowered(true);
+
+      await scale.onConnect();
+
+      expect(transport.batteryReadCount, 0);
+      expect(
+        scale.currentDeviceInformation?.powerSource,
+        DevicePowerSource.usb,
+      );
+      expect(scale.currentDeviceInformation?.batteryLevel, isNull);
+    });
+
     test(
       'button notifications are not best-effort — subscription is explicit',
       () async {
@@ -279,6 +303,7 @@ void main() {
       await transport.emitConnectionState(ConnectionState.discovered);
       await scale.onConnect();
       transport.operations.clear();
+      addTearDown(scale.disconnect);
     });
 
     test('wakeDisplay sends LCD ON (0xED) and display weight (0xEC)', () async {
@@ -355,6 +380,7 @@ void main() {
       await transport.emitConnectionState(ConnectionState.discovered);
       await scale.onConnect();
       transport.operations.clear();
+      addTearDown(scale.disconnect);
     });
 
     test('startTimer sends 0xDD', () async {
@@ -382,6 +408,7 @@ void main() {
       scale = Skale2Scale(transport: transport, initStepDelay: Duration.zero);
       await transport.emitConnectionState(ConnectionState.discovered);
       await scale.onConnect();
+      addTearDown(scale.disconnect);
     });
 
     test('parses weight notification correctly', () async {
@@ -400,6 +427,93 @@ void main() {
       expect(snapshot.weight, closeTo(100.0, 0.1));
 
       await sub.cancel();
+    });
+
+    test('parses canonical signed mantissa and exponent', () async {
+      final snapshots = <ScaleSnapshot>[];
+      final sub = scale.currentSnapshot.listen(snapshots.add);
+
+      transport.simulateWeightNotification([0, 0xE8, 0x03, 0, 0xFF]);
+      transport.simulateWeightNotification([0, 0x18, 0xFC, 0xFF, 0xFF]);
+      transport.simulateWeightNotification([0, 0x7B, 0, 0, 0xFE]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(snapshots.map((s) => s.weight), [100.0, -100.0, 1.23]);
+      await sub.cancel();
+    });
+
+    test('ignores malformed weight notifications', () async {
+      final snapshots = <ScaleSnapshot>[];
+      final sub = scale.currentSnapshot.listen(snapshots.add);
+
+      transport.simulateWeightNotification([0, 1, 2]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(snapshots, isEmpty);
+      await sub.cancel();
+    });
+  });
+
+  group('Skale2Scale buttons and device information', () {
+    late _RecordableBleTransport transport;
+    late Skale2Scale scale;
+
+    setUp(() async {
+      transport = _RecordableBleTransport();
+      scale = Skale2Scale(
+        transport: transport,
+        initStepDelay: Duration.zero,
+        batteryRefreshInterval: const Duration(milliseconds: 20),
+      );
+      await transport.emitConnectionState(ConnectionState.discovered);
+      addTearDown(scale.disconnect);
+    });
+
+    test('publishes firmware and device-reported battery', () async {
+      transport.firmwareValue = Uint8List.fromList(' 2.5.0\u0000'.codeUnits);
+      await scale.onConnect();
+
+      expect(scale.currentDeviceInformation?.firmwareVersion, '2.5.0');
+      expect(scale.currentDeviceInformation?.batteryLevel, 80);
+    });
+
+    test('keeps battery null when the read fails', () async {
+      transport.batteryError = StateError('unsupported');
+      await scale.onConnect();
+
+      expect(scale.currentDeviceInformation?.firmwareVersion, '1.2.3');
+      expect(scale.currentDeviceInformation?.batteryLevel, isNull);
+      expect(scale.currentDeviceInformation?.powerSource, isNull);
+    });
+
+    test('refreshes battery while connected', () async {
+      await scale.onConnect();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(transport.batteryReadCount, greaterThanOrEqualTo(2));
+    });
+
+    test('maps button values and ignores unknown values', () async {
+      await scale.onConnect();
+      final buttons = <ScaleButton>[];
+      final sub = scale.buttonPresses.listen(buttons.add);
+
+      transport.simulateButtonNotification([]);
+      transport.simulateButtonNotification([1]);
+      transport.simulateButtonNotification([2]);
+      transport.simulateButtonNotification([3]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(buttons, [ScaleButton.circle, ScaleButton.square]);
+      await sub.cancel();
+    });
+
+    test('clears live device information on disconnect', () async {
+      await scale.onConnect();
+      await scale.disconnect();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(scale.currentDeviceInformation, isNull);
     });
   });
 }

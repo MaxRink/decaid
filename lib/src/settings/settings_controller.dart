@@ -36,6 +36,10 @@ class SettingsController with ChangeNotifier {
 
   bool _blockTareDuringShot = false;
 
+  bool _skaleUsbPowered = false;
+
+  bool _scaleButtonStartsEspresso = false;
+
   bool _stopHotWaterAtWeight = true;
 
   String? _preferredMachineId;
@@ -84,6 +88,8 @@ class SettingsController with ChangeNotifier {
   ScalePowerMode get scalePowerMode => _scalePowerMode;
   bool get blockOnNoScale => _blockOnNoScale;
   bool get blockTareDuringShot => _blockTareDuringShot;
+  bool get skaleUsbPowered => _skaleUsbPowered;
+  bool get scaleButtonStartsEspresso => _scaleButtonStartsEspresso;
   bool get stopHotWaterAtWeight => _stopHotWaterAtWeight;
   String? get preferredMachineId => _preferredMachineId;
   String? get preferredScaleId => _preferredScaleId;
@@ -124,6 +130,9 @@ class SettingsController with ChangeNotifier {
     _scalePowerMode = await _settingsService.scalePowerMode();
     _blockOnNoScale = await _settingsService.blockOnNoScale();
     _blockTareDuringShot = await _settingsService.blockTareDuringShot();
+    _skaleUsbPowered = await _settingsService.skaleUsbPowered();
+    _scaleButtonStartsEspresso = await _settingsService
+        .scaleButtonStartsEspresso();
     _stopHotWaterAtWeight = await _settingsService.stopHotWaterAtWeight();
     _preferredMachineId = await _settingsService.preferredMachineId();
     _preferredScaleId = await _settingsService.preferredScaleId();
@@ -299,6 +308,20 @@ class SettingsController with ChangeNotifier {
     }
     _blockTareDuringShot = value;
     await _settingsService.setBlockTareDuringShot(value);
+    notifyListeners();
+  }
+
+  Future<void> setSkaleUsbPowered(bool value) async {
+    if (value == _skaleUsbPowered) return;
+    _skaleUsbPowered = value;
+    await _settingsService.setSkaleUsbPowered(value);
+    notifyListeners();
+  }
+
+  Future<void> setScaleButtonStartsEspresso(bool value) async {
+    if (value == _scaleButtonStartsEspresso) return;
+    _scaleButtonStartsEspresso = value;
+    await _settingsService.setScaleButtonStartsEspresso(value);
     notifyListeners();
   }
 

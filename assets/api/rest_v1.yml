@@ -45,6 +45,8 @@ paths:
                         Remembered devices are those the user has connected to;
                         they persist across restarts until forgotten via
                         /api/v1/devices/forget.
+                    deviceInfo:
+                      $ref: '#/components/schemas/DeviceInformation'
         "500":
           description: Internal Server Error
           content:
@@ -6338,6 +6340,12 @@ components:
         blockTareDuringShot:
           description: When true, PUT /api/v1/scale/tare is rejected (400) while an app-tracked espresso shot is actively brewing, to prevent a stray programmatic tare from ruining stop-at-weight mid-pour. Default false. Does not affect the shot sequencer's own arm-before-pour tare, nor a manual tare via the scale's physical button. Full gateway mode is an explicit policy exemption — the skin owns the shot there, so this is ignored regardless of any app-tracked shot state.
           type: boolean
+        skaleUsbPowered:
+          description: Manual default-off override for USB-powered Skale scales. Suppresses battery polling and reports USB as the power source because the scale does not expose a power-source signal.
+          type: boolean
+        scaleButtonStartsEspresso:
+          description: When true, the Skale square button starts or stops espresso. Default false. The circle button tares independently of this setting.
+          type: boolean
         stopHotWaterAtWeight:
           description: When true (default) and a scale is connected, hot water dispensing tares the scale and stops at the configured hot-water volume target treated as grams. The machine's own volume/time stop remains a backstop. Ignored in full gateway mode (a skin owns the machine). Set false to use only the machine's native volume/time stop.
           type: boolean
@@ -6436,6 +6444,12 @@ components:
         blockTareDuringShot:
           description: When true, PUT /api/v1/scale/tare is rejected (400) while an app-tracked espresso shot is actively brewing, to prevent a stray programmatic tare from ruining stop-at-weight mid-pour. Default false. Does not affect the shot sequencer's own arm-before-pour tare, nor a manual tare via the scale's physical button. Full gateway mode is an explicit policy exemption — the skin owns the shot there, so this is ignored regardless of any app-tracked shot state.
           type: boolean
+        skaleUsbPowered:
+          description: Manual default-off override for USB-powered Skale scales. Suppresses battery polling and reports USB as the power source.
+          type: boolean
+        scaleButtonStartsEspresso:
+          description: Whether the Skale square button starts or stops espresso. Default false.
+          type: boolean
         stopHotWaterAtWeight:
           description: When true (default) and a scale is connected, hot water dispensing tares the scale and stops at the configured hot-water volume target treated as grams. The machine's own volume/time stop remains a backstop. Ignored in full gateway mode (a skin owns the machine).
           type: boolean
@@ -6491,6 +6505,22 @@ components:
           enum: [system, light, dark]
         chargingState:
           $ref: '#/components/schemas/ChargingState'
+
+    DeviceInformation:
+      type: object
+      description: Connected-session device metadata. Omitted for unavailable or unsupported devices.
+      properties:
+        firmwareVersion:
+          type: string
+          description: Opaque firmware revision reported by the device.
+        batteryLevel:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Device-reported battery percentage. Omitted when unavailable or USB-powered mode is enabled.
+        powerSource:
+          type: string
+          enum: [battery, usb]
 
     ChargingState:
       type: object

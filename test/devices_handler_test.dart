@@ -551,6 +551,33 @@ void main() {
       expect(devices[0]['id'], 'scale-1');
     });
 
+    test('emits connected-session device information updates', () async {
+      await aggregator.stateStream.first;
+      final scale = _DeviceInformationTestScale(deviceId: 'scale-info');
+      mockDiscovery.addDevice(scale);
+      await aggregator.stateStream
+          .where((s) => (s['devices'] as List).isNotEmpty)
+          .first;
+
+      scale.emitDeviceInformation(
+        const DeviceInformation(
+          firmwareVersion: 'R029',
+          batteryLevel: 80,
+          powerSource: DevicePowerSource.battery,
+        ),
+      );
+
+      final state = await aggregator.stateStream
+          .where((s) => (s['devices'] as List).first['deviceInfo'] != null)
+          .first
+          .timeout(const Duration(seconds: 2));
+      expect((state['devices'] as List).first['deviceInfo'], {
+        'firmwareVersion': 'R029',
+        'batteryLevel': 80,
+        'powerSource': 'battery',
+      });
+    });
+
     test('emits update when device is removed', () async {
       mockDiscovery.addDevice(TestScale(deviceId: 'scale-1', name: 'Scale 1'));
 
@@ -771,4 +798,25 @@ class _BlockingTestScale extends TestScale {
 
   @override
   Future<void> onConnect() => blocker.future;
+}
+
+class _DeviceInformationTestScale extends TestScale
+    implements DeviceInformationCapable {
+  _DeviceInformationTestScale({required super.deviceId});
+
+  DeviceInformation? _information;
+  final _informationController =
+      StreamController<DeviceInformation?>.broadcast();
+
+  @override
+  DeviceInformation? get currentDeviceInformation => _information;
+
+  @override
+  Stream<DeviceInformation?> get deviceInformation =>
+      _informationController.stream;
+
+  void emitDeviceInformation(DeviceInformation information) {
+    _information = information;
+    _informationController.add(information);
+  }
 }

@@ -24,17 +24,21 @@ class DeviceManagementPage extends StatefulWidget {
 
 class _DeviceManagementPageState extends State<DeviceManagementPage> {
   late StreamSubscription<List<Device>> _deviceSubscription;
+  final Map<String, StreamSubscription<DeviceInformation?>>
+  _deviceInformationSubscriptions = {};
   List<Device> _devices = [];
 
   @override
   void initState() {
     super.initState();
     _devices = widget.deviceController.devices;
+    _syncDeviceInformationSubscriptions();
     _deviceSubscription = widget.deviceController.deviceStream.listen((
       devices,
     ) {
       if (mounted) {
         setState(() => _devices = devices);
+        _syncDeviceInformationSubscriptions();
       }
     });
   }
@@ -42,6 +46,9 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
   @override
   void dispose() {
     _deviceSubscription.cancel();
+    for (final subscription in _deviceInformationSubscriptions.values) {
+      subscription.cancel();
+    }
     super.dispose();
   }
 
@@ -89,6 +96,7 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
                       if (mounted) _showSavedSnackbar();
                     },
                   ),
+                  _buildSkaleSettings(),
                 ],
               ),
             ),
@@ -146,7 +154,7 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
             ...devices.map(
               (device) => _buildDeviceRadio(
                 name: device.name,
-                subtitle: _truncatedId(device.deviceId),
+                subtitle: _deviceSubtitle(device),
                 isSelected: selectedId == device.deviceId,
                 onTap: () => onSelected(device.deviceId),
               ),
@@ -154,6 +162,78 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
         ],
       ),
     );
+  }
+
+  Widget _buildSkaleSettings() {
+    return ShadCard(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        spacing: 12,
+        children: [
+          Text(
+            'Skale',
+            style: Theme.of(
+              context,
+            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+          ),
+          ShadSwitch(
+            value: widget.settingsController.skaleUsbPowered,
+            onChanged: widget.settingsController.setSkaleUsbPowered,
+            label: const Text('Powered by USB'),
+          ),
+          Text(
+            'Suppress battery polling and report USB as the power source.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          ShadSwitch(
+            value: widget.settingsController.scaleButtonStartsEspresso,
+            onChanged: widget.settingsController.setScaleButtonStartsEspresso,
+            label: const Text('Square button starts espresso'),
+          ),
+          Text(
+            'Allow the square button to start or stop espresso. The circle button always tares.',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _syncDeviceInformationSubscriptions() {
+    final capable = {
+      for (final device in _devices.whereType<DeviceInformationCapable>())
+        (device as Device).deviceId: device,
+    };
+    final stale = _deviceInformationSubscriptions.keys
+        .where((id) => !capable.containsKey(id))
+        .toList();
+    for (final id in stale) {
+      _deviceInformationSubscriptions.remove(id)?.cancel();
+    }
+    for (final entry in capable.entries) {
+      if (_deviceInformationSubscriptions.containsKey(entry.key)) continue;
+      _deviceInformationSubscriptions[entry.key] = entry.value.deviceInformation
+          .listen((_) {
+            if (mounted) setState(() {});
+          });
+    }
+  }
+
+  String _deviceSubtitle(Device device) {
+    final lines = <String>[_truncatedId(device.deviceId)];
+    if (device case DeviceInformationCapable capable) {
+      final information = capable.currentDeviceInformation;
+      if (information?.firmwareVersion != null) {
+        lines.add('Firmware: ${information!.firmwareVersion}');
+      }
+      if (information?.powerSource == DevicePowerSource.usb) {
+        lines.add('Power: USB');
+      } else if (information?.batteryLevel != null) {
+        lines.add('Battery: ${information!.batteryLevel}% (device-reported)');
+      }
+    }
+    return lines.join(' · ');
   }
 
   Widget _buildDeviceRadio({

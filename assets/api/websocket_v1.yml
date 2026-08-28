@@ -857,6 +857,24 @@ components:
             /api/v1/devices/forget endpoint. Availability does not imply command
             ownership; controller-owned devices may be inventory-only.
           example: true
+        deviceInfo:
+          $ref: '#/components/schemas/DeviceInformation'
+
+    DeviceInformation:
+      type: object
+      description: Connected-session device metadata. Omitted for unavailable or unsupported devices.
+      properties:
+        firmwareVersion:
+          type: string
+          description: Opaque firmware revision reported by the device.
+        batteryLevel:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Device-reported battery percentage. Omitted when unavailable or USB-powered mode is enabled.
+        powerSource:
+          type: string
+          enum: [battery, usb]
 
     DeviceConnectResult:
       type: object
@@ -959,4 +977,3 @@ components:
           minimum: 0
           maximum: 100
           description: Brightness value (required when command is setBrightness).
-

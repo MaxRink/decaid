@@ -18,10 +18,20 @@ abstract interface class TransportHandoffScale {
   Future<void> disconnectForHandoff();
 }
 
+enum ScaleButton { circle, square }
+
+abstract interface class ScaleButtonCapable {
+  Stream<ScaleButton> get buttonPresses;
+}
+
+abstract interface class UsbPowerConfigurableScale {
+  void setUsbPowered(bool value);
+}
+
 class ScaleSnapshot {
   final DateTime timestamp;
   final double weight;
-  final int batteryLevel;
+  final int? batteryLevel;
   final Duration? timerValue;
   final double? flow;
 

@@ -14,7 +14,11 @@ import 'package:reaprime/src/models/data/shot_state_event.dart';
 import 'package:reaprime/src/models/data/steam_record.dart';
 import 'package:reaprime/src/models/data/workflow.dart';
 import 'package:reaprime/src/models/device/de1_interface.dart';
+import 'package:reaprime/src/models/device/device.dart' as device;
+import 'package:reaprime/src/models/device/device_implementation.dart';
 import 'package:reaprime/src/models/device/machine.dart';
+import 'package:reaprime/src/models/device/scale.dart';
+import 'package:reaprime/src/models/device/transport/data_transport.dart';
 import 'package:reaprime/src/services/storage/storage_service.dart';
 import 'package:reaprime/src/settings/gateway_mode.dart';
 import 'package:reaprime/src/settings/settings_controller.dart';
@@ -125,6 +129,68 @@ class _CapturingStorageService implements StorageService {
   Future<SteamRecord?> getLatestSteamMeta() async => null;
 }
 
+class _ButtonScale implements Scale, ScaleButtonCapable {
+  final _connectionState = BehaviorSubject.seeded(
+    device.ConnectionState.discovered,
+  );
+  final _snapshots = StreamController<ScaleSnapshot>.broadcast();
+  final _buttons = StreamController<ScaleButton>.broadcast();
+  int tareCount = 0;
+
+  @override
+  String get deviceId => 'button-scale';
+  @override
+  String get name => 'Button scale';
+  @override
+  device.DeviceType get type => device.DeviceType.scale;
+  @override
+  DeviceImplementation get implementation => DeviceImplementation.skale2;
+  @override
+  TransportType get transportType => TransportType.ble;
+  @override
+  Stream<device.ConnectionState> get connectionState => _connectionState.stream;
+  @override
+  Stream<ScaleSnapshot> get currentSnapshot => _snapshots.stream;
+  @override
+  Stream<ScaleButton> get buttonPresses => _buttons.stream;
+
+  @override
+  Future<void> onConnect() async {
+    _connectionState.add(device.ConnectionState.connected);
+  }
+
+  @override
+  Future<void> disconnect() async {
+    if (!_connectionState.isClosed) {
+      _connectionState.add(device.ConnectionState.disconnected);
+    }
+  }
+
+  @override
+  Future<void> tare() async {
+    tareCount++;
+  }
+
+  void press(ScaleButton button) => _buttons.add(button);
+
+  @override
+  Future<void> sleepDisplay() async {}
+  @override
+  Future<void> wakeDisplay() async {}
+  @override
+  Future<void> startTimer() async {}
+  @override
+  Future<void> stopTimer() async {}
+  @override
+  Future<void> resetTimer() async {}
+
+  Future<void> dispose() async {
+    await _connectionState.close();
+    await _snapshots.close();
+    await _buttons.close();
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -133,6 +199,7 @@ void main() {
   late ScaleController scaleController;
   late _CapturingStorageService storage;
   late WorkflowController workflowController;
+  late SettingsController settingsController;
   late De1StateManager manager;
   late List<ShotStateEvent> events;
   late StreamSubscription<ShotStateEvent> eventsSub;
@@ -150,7 +217,7 @@ void main() {
 
     final settingsService = MockSettingsService();
     await settingsService.updateGatewayMode(GatewayMode.tracking);
-    final settingsController = SettingsController(settingsService);
+    settingsController = SettingsController(settingsService);
     await settingsController.loadSettings();
 
     final connectionManager = ConnectionManager(
@@ -200,6 +267,43 @@ void main() {
     );
     await pump();
   }
+
+  test('circle scale button requests tare', () async {
+    final scale = _ButtonScale();
+    addTearDown(scale.dispose);
+    await scaleController.connectToScale(scale);
+
+    scale.press(ScaleButton.circle);
+    await pump();
+
+    expect(scale.tareCount, 1);
+  });
+
+  test('square scale button toggles espresso only after opt-in', () async {
+    final scale = _ButtonScale();
+    addTearDown(scale.dispose);
+    await scaleController.connectToScale(scale);
+
+    scale.press(ScaleButton.square);
+    await pump();
+    expect(testDe1.requestedStates, isEmpty);
+
+    await settingsController.setScaleButtonStartsEspresso(true);
+    scale.press(ScaleButton.square);
+    await pump();
+
+    expect(testDe1.requestedStates, [MachineState.espresso]);
+
+    testDe1.emitStateAndSubstate(
+      MachineState.espresso,
+      MachineSubstate.pouring,
+    );
+    await pump();
+    scale.press(ScaleButton.square);
+    await pump();
+
+    expect(testDe1.requestedStates, [MachineState.espresso, MachineState.idle]);
+  });
 
   test('forwards a full shot lifecycle onto De1Controller.shotState and '
       'persists a matching record', () async {

@@ -17,6 +17,8 @@ class MockSettingsService extends SettingsService {
   ScalePowerMode _scalePowerMode = ScalePowerMode.disabled;
   bool _blockOnNoScale = false;
   bool _blockTareDuringShot = false;
+  bool _skaleUsbPowered = false;
+  bool _scaleButtonStartsEspresso = false;
   bool _stopHotWaterAtWeight = true;
   String? _preferredMachineId;
   String? _preferredScaleId;
@@ -94,6 +96,15 @@ class MockSettingsService extends SettingsService {
   @override
   Future<void> setBlockTareDuringShot(bool value) async =>
       _blockTareDuringShot = value;
+  @override
+  Future<bool> skaleUsbPowered() async => _skaleUsbPowered;
+  @override
+  Future<void> setSkaleUsbPowered(bool value) async => _skaleUsbPowered = value;
+  @override
+  Future<bool> scaleButtonStartsEspresso() async => _scaleButtonStartsEspresso;
+  @override
+  Future<void> setScaleButtonStartsEspresso(bool value) async =>
+      _scaleButtonStartsEspresso = value;
   @override
   Future<bool> stopHotWaterAtWeight() async => _stopHotWaterAtWeight;
   @override

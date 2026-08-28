@@ -358,6 +358,74 @@ stalled write resume later and overwrite a newer one. Bound the actual
 unbounded read instead; a real anti-wedge mechanism needs explicit
 cancellation or fencing.
 
+## Atomax Skale protocol evidence
+
+Decaid's Skale support is checked against every public Atomax SDK surface:
+
+- [iOS weight/button callback and battery/control interface](https://github.com/atomaxinc/SkaleKit/blob/624c07436a577706dcc26cb2d62ca76ad18f7da9/Distribution/SkaleKit.xcframework/ios-arm64/SkaleKit.framework/Headers/SKSkale.h#L26-L85)
+- [Android weight/button/battery callback documentation](https://github.com/atomaxinc/SkaleKitAndroid/blob/faae8a96879f45c935712c11f25674e4d5dc9e82/README.md#L41-L109)
+- [Flutter public weight/button/battery/display interface](https://github.com/atomaxinc/SkaleKit-flutter/blob/7df4a9d9bd975367c3ac27502323225ac61b116d/lib/src/skale_kit.dart#L128-L310)
+- [macOS operation and delegate surface](https://github.com/atomaxinc/SkaleKit-macOS/blob/0f20dc545a6ca5cd2b4821ac849b0443a3cb9798/README.md#L114-L164)
+
+Both old and current iOS binaries decode a weight notification as a signed
+24-bit little-endian mantissa followed by a signed base-10 exponent. The native
+decoder is distributed as a binary rather than public source; the format comes
+from inspecting the exact
+[current iOS framework artifact](https://github.com/atomaxinc/SkaleKit/blob/624c07436a577706dcc26cb2d62ca76ad18f7da9/Distribution/SkaleKit.xcframework/ios-arm64/SkaleKit.framework/SkaleKit).
+The four-byte `/ 2560` compatibility fallback is equivalent to the
+exponent-`-1` behavior inherited from
+[de1app's Skale decoder](https://github.com/decentespresso/de1app/blob/24851f5b1b0faf77b92fdd837b2932a8d8e26e15/de1plus/bluetooth.tcl#L2997-L3001).
+This explains why normal R029 readings and observed approximately 40 g shots are
+already correct: exponent `-1` is the one SDK case the old arithmetic matches
+by coincidence. Atomax documents button value `1` as circle and `2` as square
+in its
+[Android callback API](https://github.com/atomaxinc/SkaleKitAndroid/blob/faae8a96879f45c935712c11f25674e4d5dc9e82/README.md#L52-L62).
+Public SDK parity is
+weight, tare, buttons, battery, discovery/reconnect, and display control where
+the platform SDK exposes it.
+
+Firmware display uses the
+[Bluetooth SIG Device Information service](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/DIS_v1.2/out/en/index-en.html)
+(`0x180A`) and its
+[Firmware Revision String assigned number](https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Assigned_Numbers/out/en/index-en.html)
+(`0x2A26`).
+This is a device-provided opaque string. Atomax publishes SDK tags, but no
+public scale-firmware version catalog, compatibility matrix, firmware images,
+or firmware changelog. The
+[iOS SDK changelog](https://github.com/atomaxinc/SkaleKit/blob/624c07436a577706dcc26cb2d62ca76ad18f7da9/README.md#L157-L165)
+and
+[Flutter SDK changelog](https://github.com/atomaxinc/SkaleKit-flutter/blob/7df4a9d9bd975367c3ac27502323225ac61b116d/CHANGELOG.md#L8-L54)
+describe client-library changes only, and the iOS SDK's
+[GitHub releases page](https://github.com/atomaxinc/SkaleKit/releases) has no
+published releases.
+
+The official Android app 2.3.0 (version code 13, base APK SHA-256
+`b28c9e1f118a73a616007197a99127045316b501841028edb37d0d0ef59e7c2d`)
+confirms the update mechanism. Its internal plugin downloads `fw.plist` from an
+Atomax S3 bucket, reads `version_number`, parses the suffix of `R0xx` as
+hexadecimal, and reports an update only when the cloud integer is higher. It
+downloads `nrf51822.zip`, enters DFU, scans for `DfuTarg`, and delegates transfer
+to Nordic's Android DFU library. For example, `R029` parses as `0x29` (41). The
+app's “latest” result therefore means the current cloud manifest is not higher;
+it still does not provide release notes or a firmware changelog.
+
+The distributed private frameworks contain calibration/configuration, sleep,
+advertising, timer-mode, BLE transmit-power, firmware-disconnect, and DFU-entry
+symbols. They are useful evidence for capability discovery, but not a safe API
+contract. In particular, an entry command and `DfuTarg` name do not establish
+the image format, signing, transfer, compatibility, rollback, or recovery
+procedure. Keep these writes documentation-only unless Atomax publishes that
+contract.
+
+No reviewed Atomax SDK exposes USB/external-power or charging state; the
+commit-pinned public interfaces above are the reviewed scope. The
+[legacy de1app implementation](https://github.com/decentespresso/de1app/blob/24851f5b1b0faf77b92fdd837b2932a8d8e26e15/de1plus/bluetooth.tcl#L2645-L2652)
+also substitutes an assumption instead of reading a power signal. Decaid
+therefore uses a manual, default-off `skaleUsbPowered` setting; when enabled it
+suppresses battery reads and reports USB power. Otherwise battery is nullable
+and explicitly device-reported because the same de1app code documents an Atomax
+firmware behavior that can return 100% rather than a useful measurement.
+
 ## Keeping Notes Fresh
 
 Add lessons that would have saved debugging time: new footguns, thread-safety constraints, connection-lifecycle changes, non-obvious symptoms, and cross-transport dependencies. Prune stale claims. Prefer fewer, sharper notes over long background.

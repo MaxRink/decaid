@@ -28,6 +28,8 @@ class SettingsHandler {
       final scalePowerMode = _controller.scalePowerMode.name;
       final blockOnNoScale = _controller.blockOnNoScale;
       final blockTareDuringShot = _controller.blockTareDuringShot;
+      final skaleUsbPowered = _controller.skaleUsbPowered;
+      final scaleButtonStartsEspresso = _controller.scaleButtonStartsEspresso;
       final stopHotWaterAtWeight = _controller.stopHotWaterAtWeight;
       final preferredMachineId = _controller.preferredMachineId;
       final preferredScaleId = _controller.preferredScaleId;
@@ -43,6 +45,8 @@ class SettingsHandler {
         'scalePowerMode': scalePowerMode,
         'blockOnNoScale': blockOnNoScale,
         'blockTareDuringShot': blockTareDuringShot,
+        'skaleUsbPowered': skaleUsbPowered,
+        'scaleButtonStartsEspresso': scaleButtonStartsEspresso,
         'stopHotWaterAtWeight': stopHotWaterAtWeight,
         'preferredMachineId': preferredMachineId,
         'preferredScaleId': preferredScaleId,
@@ -146,6 +150,26 @@ class SettingsHandler {
         } else {
           return jsonBadRequest({
             'message': 'blockTareDuringShot must be a boolean',
+          });
+        }
+      }
+      if (json.containsKey('skaleUsbPowered')) {
+        final value = json['skaleUsbPowered'];
+        if (value is bool) {
+          await _controller.setSkaleUsbPowered(value);
+        } else {
+          return jsonBadRequest({
+            'message': 'skaleUsbPowered must be a boolean',
+          });
+        }
+      }
+      if (json.containsKey('scaleButtonStartsEspresso')) {
+        final value = json['scaleButtonStartsEspresso'];
+        if (value is bool) {
+          await _controller.setScaleButtonStartsEspresso(value);
+        } else {
+          return jsonBadRequest({
+            'message': 'scaleButtonStartsEspresso must be a boolean',
           });
         }
       }

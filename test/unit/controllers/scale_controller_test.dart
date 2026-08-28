@@ -86,7 +86,37 @@ class _FailingScale extends _TrackingScale {
   );
 }
 
+class _SkaleCapabilityScale extends _TrackingScale
+    implements ScaleButtonCapable, UsbPowerConfigurableScale {
+  _SkaleCapabilityScale(super.deviceId);
+
+  final _buttons = StreamController<ScaleButton>.broadcast();
+  bool? usbPowered;
+
+  @override
+  Stream<ScaleButton> get buttonPresses => _buttons.stream;
+
+  @override
+  void setUsbPowered(bool value) => usbPowered = value;
+
+  void press(ScaleButton button) => _buttons.add(button);
+}
+
 void main() {
+  test('applies USB power config and forwards scale buttons', () async {
+    final controller = ScaleController();
+    final scale = _SkaleCapabilityScale('Skale');
+    controller.setSkaleUsbPowered(true);
+    final button = controller.buttonPresses.first;
+
+    await controller.connectToScale(scale);
+    scale.press(ScaleButton.circle);
+
+    expect(scale.usbPowered, isTrue);
+    expect(await button, ScaleButton.circle);
+    controller.dispose();
+  });
+
   test(
     'device-provided flow feeds display while control stays estimator-derived',
     () async {
