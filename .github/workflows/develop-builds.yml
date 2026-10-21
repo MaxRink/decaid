@@ -433,7 +433,7 @@ jobs:
           pub-cache: true
 
       - name: Install nuget
-        uses: nuget/setup-nuget@v2
+        uses: nuget/setup-nuget@v4
         with:
           nuget-version: 'latest'
 
