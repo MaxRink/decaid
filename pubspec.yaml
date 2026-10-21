@@ -22,7 +22,7 @@ dependencies:
   logging_appenders: ^2.0.0
   # Injectable clock (fake_async-aware) for the stop-intent attribution window.
   clock: ^1.1.1
-  flutter_foreground_task: ^9.2.2
+  flutter_foreground_task: ^11.0.3
   permission_handler: ^12.0.0+1
   rxdart: ^0.28.0
   shelf: ^1.0.0
