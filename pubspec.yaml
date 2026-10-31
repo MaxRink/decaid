@@ -199,6 +199,7 @@ flutter:
     - assets/plugins/decent-profile.reaplugin/
     - assets/plugins/shot-upload.reaplugin/
     - assets/plugins/dcamp.reaplugin/
+    - assets/plugins/mahlkoenig-e64ws.reaplugin/
     - assets/defaultProfiles/
     - assets/simulations/
     - assets/bundled_skins/
