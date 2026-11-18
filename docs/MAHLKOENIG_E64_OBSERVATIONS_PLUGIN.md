@@ -75,8 +75,9 @@ endpoints. No E64 root or firmware change is involved; only the E64 M2M host
 field changes. `scripts/execute` is acknowledged but does not start a brew.
 
 The plugin maps Decaid `stateUpdate` events to the Xenia `mako` fields and
-provides fixed `machine` identity fields. See the plugin repository's
-`docs/XENIA_MODE.md` for setup and caveats.
+provides fixed `machine` identity fields. `MA_TYPE` and `MA_SN` are
+placeholders; confirm the E64 accepts them on the first live run. See the
+plugin repository's `docs/XENIA_MODE.md` for setup and caveats.
 
 ## Installation
 
