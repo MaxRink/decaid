@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import 'package:reaprime/src/services/github_credentials.dart';
 import 'package:reaprime/src/services/github_rate_limit.dart';
 import 'package:reaprime/src/services/github_request.dart';
 import 'package:reaprime/src/util/remote_error.dart';
@@ -41,6 +42,7 @@ Future<GitHubRelease> _fetchRelease(
   required GithubRateLimit rateLimit,
   required GitHubReleaseCache cache,
   bool includePrerelease = false,
+  GithubCredentialProvider? credentials,
 }) async {
   final cached = cache._entries[url];
   var response = await githubGet(
@@ -48,10 +50,15 @@ Future<GitHubRelease> _fetchRelease(
     rateLimit: rateLimit,
     headers: {if (cached != null) 'If-None-Match': cached.etag},
     allowNotModified: true,
+    credentials: credentials,
   );
   if (response.statusCode == 304) {
     if (cached != null) return cached.release;
-    response = await githubGet(url, rateLimit: rateLimit);
+    response = await githubGet(
+      url,
+      rateLimit: rateLimit,
+      credentials: credentials,
+    );
   }
   cache._entries.remove(url);
   final decoded = jsonDecode(response.body);
@@ -89,6 +96,7 @@ Future<GitHubRelease> fetchLatestGitHubRelease(
   bool includePrerelease = false,
   GithubRateLimit? rateLimit,
   GitHubReleaseCache? cache,
+  GithubCredentialProvider? credentials,
 }) async {
   validateGitHubRepo(repo);
   final url = includePrerelease
@@ -99,6 +107,7 @@ Future<GitHubRelease> fetchLatestGitHubRelease(
     rateLimit: rateLimit ?? GithubRateLimit(),
     cache: cache ?? GitHubReleaseCache(),
     includePrerelease: includePrerelease,
+    credentials: credentials,
   );
 }
 
@@ -107,28 +116,30 @@ Future<GitHubRelease> fetchGitHubReleaseByTag(
   String tag, {
   GithubRateLimit? rateLimit,
   GitHubReleaseCache? cache,
+  GithubCredentialProvider? credentials,
 }) async {
   validateGitHubRepo(repo);
   return _fetchRelease(
     'https://api.github.com/repos/$repo/releases/tags/$tag',
     rateLimit: rateLimit ?? GithubRateLimit(),
     cache: cache ?? GitHubReleaseCache(),
+    credentials: credentials,
   );
 }
 
 GitHubRelease _releaseFromJson(Object? release) {
-  if (release case {
-    'tag_name': final String tag,
-    'assets': final List assets,
-  } when tag.isNotEmpty) {
+  if (release case {'tag_name': final String tag, 'assets': final List assets}
+      when tag.isNotEmpty) {
     return GitHubRelease(
       tag: tag,
       assets: [
         for (final asset in assets)
-          if (asset case {
-            'name': final String name,
-            'browser_download_url': final String url,
-          } when name.isNotEmpty && url.isNotEmpty)
+          if (asset
+              case {
+                'name': final String name,
+                'browser_download_url': final String url,
+              }
+              when name.isNotEmpty && url.isNotEmpty)
             GitHubAsset(name: name, downloadUrl: url)
           else
             throw const UserFacingFormatException(
@@ -146,15 +157,16 @@ Future<String> fetchGitHubBranchCommit(
   String repo,
   String branch, {
   GithubRateLimit? rateLimit,
+  GithubCredentialProvider? credentials,
 }) async {
   validateGitHubRepo(repo);
   final response = await githubGet(
     'https://api.github.com/repos/$repo/commits/$branch',
     rateLimit: rateLimit ?? GithubRateLimit(),
+    credentials: credentials,
   );
-  if (jsonDecode(response.body) case {
-    'sha': final String commit,
-  } when commit.isNotEmpty) {
+  if (jsonDecode(response.body) case {'sha': final String commit}
+      when commit.isNotEmpty) {
     return commit;
   }
   throw const UserFacingFormatException(

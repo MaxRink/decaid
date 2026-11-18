@@ -20,6 +20,7 @@ import 'package:reaprime/src/import/widgets/import_progress_view.dart';
 import 'package:reaprime/src/import/widgets/import_result_view.dart';
 import 'package:reaprime/src/import/widgets/import_summary_view.dart';
 import 'package:reaprime/src/services/account/decent_account_service.dart';
+import 'package:reaprime/src/services/github_credentials.dart';
 import 'package:reaprime/src/services/storage/bean_storage_service.dart';
 import 'package:reaprime/src/services/storage/grinder_storage_service.dart';
 import 'package:reaprime/src/services/storage/profile_storage_service.dart';
@@ -43,6 +44,7 @@ class DataManagementPage extends StatefulWidget {
     required this.persistenceController,
     required this.de1Controller,
     required this.decentAccountService,
+    this.githubCredentials,
     this.profileStorageService,
     this.beanStorageService,
     this.grinderStorageService,
@@ -57,6 +59,7 @@ class DataManagementPage extends StatefulWidget {
   final PersistenceController persistenceController;
   final De1Controller de1Controller;
   final DecentAccountService? decentAccountService;
+  final GithubCredentialProvider? githubCredentials;
   final ProfileStorageService? profileStorageService;
   final BeanStorageService? beanStorageService;
   final GrinderStorageService? grinderStorageService;
@@ -116,9 +119,8 @@ class _DataManagementPageState extends State<DataManagementPage> {
               const SizedBox(width: 8),
               Text(
                 'Export & Backup',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                style: Theme.of(context).textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.bold),
               ),
             ],
           ),
@@ -126,9 +128,8 @@ class _DataManagementPageState extends State<DataManagementPage> {
           Text(
             'Create backups of your data or export specific items',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(
-                context,
-              ).colorScheme.onSurface.withValues(alpha: 0.7),
+              color: Theme.of(context).colorScheme.onSurface
+                  .withValues(alpha: 0.7),
             ),
           ),
           const SizedBox(height: 16),
@@ -170,9 +171,8 @@ class _DataManagementPageState extends State<DataManagementPage> {
               const SizedBox(width: 8),
               Text(
                 'Import & Restore',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                style: Theme.of(context).textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.bold),
               ),
             ],
           ),
@@ -180,9 +180,8 @@ class _DataManagementPageState extends State<DataManagementPage> {
           Text(
             'Restore data from a previous backup',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(
-                context,
-              ).colorScheme.onSurface.withValues(alpha: 0.7),
+              color: Theme.of(context).colorScheme.onSurface
+                  .withValues(alpha: 0.7),
             ),
           ),
           const SizedBox(height: 16),
@@ -209,9 +208,8 @@ class _DataManagementPageState extends State<DataManagementPage> {
           Text(
             'Use "Import Shots (JSON)" for legacy shot exports — single JSON files or arrays of shot records.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(
-                context,
-              ).colorScheme.onSurface.withValues(alpha: 0.5),
+              color: Theme.of(context).colorScheme.onSurface
+                  .withValues(alpha: 0.5),
             ),
           ),
         ],
@@ -231,9 +229,8 @@ class _DataManagementPageState extends State<DataManagementPage> {
               const SizedBox(width: 8),
               Text(
                 'Privacy & Feedback',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                style: Theme.of(context).textTheme.titleMedium
+                    ?.copyWith(fontWeight: FontWeight.bold),
               ),
             ],
           ),
@@ -241,9 +238,8 @@ class _DataManagementPageState extends State<DataManagementPage> {
           Text(
             'Control data sharing and send feedback',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Theme.of(
-                context,
-              ).colorScheme.onSurface.withValues(alpha: 0.7),
+              color: Theme.of(context).colorScheme.onSurface
+                  .withValues(alpha: 0.7),
             ),
           ),
           const SizedBox(height: 16),
@@ -271,6 +267,7 @@ class _DataManagementPageState extends State<DataManagementPage> {
               serialNumbers: () => widget.de1Controller.seenSerials,
               accountService: widget.decentAccountService,
               installedComponents: widget.installedComponents,
+              credentials: widget.githubCredentials,
             ),
           ),
         ],
@@ -367,9 +364,8 @@ class _DataManagementPageState extends State<DataManagementPage> {
       _log.severe("Failed to export logs", e);
       _dismissProgressDialog();
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to export logs: $e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Failed to export logs: $e')));
       }
       return;
     }
@@ -396,9 +392,8 @@ class _DataManagementPageState extends State<DataManagementPage> {
     } catch (e) {
       _log.severe("Failed to export logs", e);
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Failed to export logs: $e')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Failed to export logs: $e')));
       }
     }
   }
@@ -539,9 +534,8 @@ class _DataManagementPageState extends State<DataManagementPage> {
       _log.severe("Failed to import backup", e);
       if (mounted) {
         Navigator.of(context).pop();
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(backupImportErrorSnackBar(e));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(backupImportErrorSnackBar(e));
       }
     } catch (e) {
       _log.severe("Failed to import backup", e);
@@ -712,9 +706,8 @@ class _DataManagementPageState extends State<DataManagementPage> {
         _log.severe('De1app scan failed', e);
         if (mounted) {
           Navigator.of(context).pop();
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Scan failed: $e')));
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('Scan failed: $e')));
         }
         return;
       }
@@ -803,9 +796,8 @@ class _DataManagementPageState extends State<DataManagementPage> {
         _log.severe('De1app import failed', e);
         if (mounted) {
           Navigator.of(context).pop();
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Import failed: $e')));
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('Import failed: $e')));
         }
         return;
       }
@@ -884,9 +876,8 @@ class _DataManagementPageState extends State<DataManagementPage> {
           sections.add(
             Text(
               '  Error: $error',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Theme.of(context).colorScheme.error,
-              ),
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: Theme.of(context).colorScheme.error),
             ),
           );
         }
