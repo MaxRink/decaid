@@ -12,7 +12,11 @@ publishes the generic Grinder state (`idle`, `grinding`, `error`, or
 `RequestNachineInfo`, and `RequestLogMessages` are available through the
 diagnostics surface. There are no motor, grind-setting, RPM, calibration, or
 GBS writes. Configure `InstancesJson` and secure `TokensJson` in the plugin
-settings. `pollMs` defaults to 1000 and may be set to 0 to disable polling.
+settings. For automatic token minting, also set `MintTokens` to `true` and put
+the current Owner password in the secure `PasswordsJson`; `TokensJson` entries
+may then be empty. The gated `AllowNoPasswordWorkaround` setting uses the
+documented FW-01 SELECT-only login construction when no Owner password is set.
+`pollMs` defaults to 1000 and may be set to 0 to disable polling.
 
 The setting comes only from a `RequestDriverStateResult` containing a
 nonnegative safe-integer `ddValueDum` and an explicit `ddSensorFailed: false`.
@@ -28,10 +32,12 @@ reads do not refresh it.
 Native `grindState` takes precedence over legacy `state`/`status`/`mode` aliases;
 unrecognized state values remain `unknown`, and `grindFailure: true` reports
 `error`. No grinder RPM observation is declared: cooling-fan tachometer values
-are not grinder motor RPM. The field mapping is based on static protocol evidence,
-not a physical capture. Comparing the raw setting with the actual firmware and
-display, establishing its calibration/units, and any future grinder-RPM mapping
-remain hardware-validation work tracked in issue #9. No private research source,
+are not grinder motor RPM. The field mapping is based on static protocol
+evidence and a 2026-11-18 physical read pass. The live state returned
+`ddValueDum=854`, then `817` after the dial moved; the config was unchanged.
+Comparing the raw setting with the display, establishing its calibration/units,
+and any future grinder-RPM mapping remain hardware-validation work tracked in
+issue #9. No private research source,
 firmware code, device capture or credentials are included in this package.
 
 `ws` is intended for a trusted network or simulator. `wss` uses the platform
@@ -40,9 +46,29 @@ The test suite includes a fake host transport and a real loopback WebSocket
 fixture. No hardware validation is claimed. Multiple instances have independent sockets and protocol state,
 but Decaid currently selects one connected Grinder for workflows.
 
+## Token acquisition
+
+The E64 WSS listener needs a five-minute bearer token:
+
+1. **Static token.** Put a token in `TokensJson`; the live token is
+   single-connection, so supply a fresh one for every reconnect.
+2. **Owner password (recommended).** Set `MintTokens` to `"true"` and put the
+   current Owner password in secure `PasswordsJson`. The plugin calls
+   `POST https://<host>/rest_api/login` on each connect and uses the returned
+   token. The password is never logged.
+3. **No-password workaround (gated).** With `MintTokens` and
+   `AllowNoPasswordWorkaround` both `"true"`, the plugin uses the documented
+   FW-01 SELECT-only login construction when no Owner password is set. This is
+   an authentication bypass; enable it only on an owner-controlled device.
+   The database is not written.
+
+The plugin uses the platform trust store. The E64 serves a self-signed
+certificate, so trust `webui.crt` in the host OS or use a static token. The
+plugin deliberately does not bypass TLS.
+
 ## Installation
 
-Version 0.2.0 requires a Decaid build containing the read-only Grinder observation
+Version 0.3.0 requires a Decaid build containing the read-only Grinder observation
 contract from #973, such as revision `bafa9b3f2b90e65334e990b0b9601a9965cf979b`,
 in addition to runtime-v2 and validated device surfaces. The stable `0.8.8` release has not been
 validated with this plugin and should not be treated as compatible.
