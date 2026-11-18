@@ -66,9 +66,21 @@ The plugin uses the platform trust store. The E64 serves a self-signed
 certificate, so trust `webui.crt` in the host OS or use a static token. The
 plugin deliberately does not bypass TLS.
 
+## Xenia mode
+
+The plugin can present the Decaid host as a local **Xenia** to the E64's stock
+M2M client. The E64 calls `http://<host>/api/v2/*` on port 80, so the plugin
+repository's `tools/xenia_bridge.py` forwards those routes to the plugin
+endpoints. No E64 root or firmware change is involved; only the E64 M2M host
+field changes. `scripts/execute` is acknowledged but does not start a brew.
+
+The plugin maps Decaid `stateUpdate` events to the Xenia `mako` fields and
+provides fixed `machine` identity fields. See the plugin repository's
+`docs/XENIA_MODE.md` for setup and caveats.
+
 ## Installation
 
-Version 0.3.0 requires a Decaid build containing the read-only Grinder observation
+Version 0.4.0 requires a Decaid build containing the read-only Grinder observation
 contract from #973, such as revision `bafa9b3f2b90e65334e990b0b9601a9965cf979b`,
 in addition to runtime-v2 and validated device surfaces. The stable `0.8.8` release has not been
 validated with this plugin and should not be treated as compatible.
