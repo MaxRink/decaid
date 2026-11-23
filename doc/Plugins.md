@@ -740,6 +740,29 @@ const upload = await fetch("https://api.example.com/upload", {
 });
 ```
 
+### Binary responses
+
+`fetch` returns the body as text by default (decoded as UTF-8, with invalid
+sequences replaced). To receive raw bytes, ask for base64:
+
+```javascript
+const response = await fetch("https://192.168.1.40/api/backup", {
+  responseType: "base64",
+  tlsPinSha256: pin // optional, combines with any other option
+});
+const bytes = await response.base64(); // standard base64 of the exact body
+```
+
+- `responseType` is `"base64"` or omitted (`"text"` is accepted as the
+  default); any other value rejects the call before a request is sent.
+- A base64 response has `base64()`, which resolves to the exact body bytes as
+  a standard base64 string, including `0x00` and bytes that are not valid
+  UTF-8. Its `text()` and `json()` reject with a `TypeError` telling you to use
+  `base64()`. A default response has no `base64()`.
+- The response size limit (`maxFetchResponseBytes`, 10 MiB by default) applies
+  to the raw body in both modes; a larger body rejects the call.
+- `status`, `ok` and `headers` are the same in both modes.
+
 ### Certificate pinning
 
 A device on the local network often serves HTTPS or WSS with a self-signed
@@ -784,7 +807,8 @@ const { handle } = await host.transport.open({
 
 **Note**: The JavaScript environment has limited APIs. Currently available:
 
-- `fetch()` for HTTP requests
+- `fetch()` for HTTP requests (text by default, `responseType: "base64"` for
+  binary bodies)
 - `btoa()` for base64 encoding (polyfilled)
 - Standard JavaScript language features
 
