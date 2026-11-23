@@ -347,6 +347,11 @@ class PluginManifest {
   final List<PluginDeviceSurface> surfaces;
   final List<PluginMdnsDeclaration> mdnsDiscovery;
 
+  Set<String> get secureSettingKeys => {
+    for (final entry in settings.entries)
+      if (entry.value is Map && entry.value['secure'] == true) entry.key,
+  };
+
   PluginManifest({
     required this.id,
     required this.name,

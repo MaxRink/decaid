@@ -857,10 +857,8 @@ class PluginLoaderService {
     });
   }
 
-  Set<String> _secureSettingKeys(PluginManifest manifest) => {
-    for (final entry in manifest.settings.entries)
-      if (entry.value is Map && entry.value['secure'] == true) entry.key,
-  };
+  Set<String> _secureSettingKeys(PluginManifest manifest) =>
+      manifest.secureSettingKeys;
 
   bool _isSecureState(dynamic value) =>
       value is Map && value.length == 1 && value['isSet'] is bool;

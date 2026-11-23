@@ -66,7 +66,9 @@ void main() {
 
     expect(
       records.any(
-        (record) => record.message.contains('[JS:$pluginId] allowed'),
+        (record) =>
+            record.level == Level.INFO &&
+            record.message == '[JS:$pluginId] allowed',
       ),
       isTrue,
     );
@@ -74,6 +76,55 @@ void main() {
     await expectLater(
       load(const {}, 'host.log("denied");'),
       permissionError('log'),
+    );
+  });
+
+  test('host.log redacts secure setting values and is rate limited', () async {
+    final records = <LogRecord>[];
+    final subscription = Logger.root.onRecord
+        .where((record) => record.message.startsWith('[JS:$pluginId]'))
+        .listen(records.add);
+    addTearDown(subscription.cancel);
+
+    await manager.loadPlugin(
+      id: pluginId,
+      manifest: testManifest(
+        pluginId,
+        permissions: {PluginPermissions.log},
+        settings: {
+          'UploadKey': {'type': 'string', 'secure': true},
+          'ServerUrl': {'type': 'string'},
+        },
+      ),
+      settings: {'UploadKey': 'k3y-value', 'ServerUrl': 'https://example.test'},
+      jsCode:
+          '''
+        function createPlugin(host) {
+          return {
+            id: "$pluginId",
+            onLoad(settings) {
+              host.log("using " + settings.UploadKey + " at " + settings.ServerUrl);
+              for (let i = 0; i < 70; i++) host.log("line " + i);
+            },
+            onEvent() {}
+          };
+        }
+      ''',
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(
+      records.first.message,
+      '[JS:$pluginId] using *** at https://example.test',
+    );
+    expect(records.every((record) => record.level == Level.INFO), isTrue);
+    expect(records, hasLength(60));
+    expect(records.map((r) => r.message).join(), isNot(contains('k3y-value')));
+
+    await manager.unloadPlugin(pluginId);
+    expect(
+      records.last.message,
+      '[JS:$pluginId] suppressed 11 plugin log lines',
     );
   });
 

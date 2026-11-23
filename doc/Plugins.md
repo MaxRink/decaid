@@ -230,6 +230,27 @@ The `host` object provides these methods:
 ### `host.log(message)`
 Log messages to the Flutter app's logger. Requires `log`.
 
+Lines are written at INFO as `[JS:<plugin id>] <message>`, so they land in the
+app log at the default log level, which any client on the network can read
+with `GET /api/v1/logs` and which feedback reports include. Never log secrets:
+passwords, tokens, API keys or request bodies and headers that carry them.
+
+As a safety net the host rewrites each line before writing it:
+
+- every current value (4 characters or longer) of the plugin's `secure`
+  settings becomes `***`;
+- `Authorization: Basic <x>` and `Authorization: Bearer <x>` values (also as
+  JSON or object pairs), `vzu_...` tokens and `"password": "..."` JSON pairs
+  are masked;
+- line breaks are written as `\n`, so one call is one log line.
+
+This catches only those shapes; it is not a reason to log credentials.
+
+Each plugin may write 60 lines per minute. Further lines in that minute are
+dropped, and when the next line arrives after the minute (or the plugin
+unloads) the host writes one `[JS:<plugin id>] suppressed N plugin log lines`
+line. Log file rotation bounds the disk space.
+
 ### `host.emit(eventName, payload)`
 Emit events to the Flutter app. Requires `emit`.
 
