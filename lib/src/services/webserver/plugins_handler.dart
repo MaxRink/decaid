@@ -30,6 +30,9 @@ final class PluginsHandler {
         json['machineControl'] = pluginService.machineControlGranted(
           manifest.id,
         );
+        if (manifest.surfaces.isNotEmpty) {
+          json['surfaces'] = pluginSurfaceLinks(manifest);
+        }
         list.add(json);
       }
       return jsonOk(list);

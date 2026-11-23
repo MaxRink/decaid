@@ -9176,6 +9176,30 @@ components:
             permissions the installed version does not hold, or because the
             background update check found it for a plugin that has stored
             secure settings (then addedPermissions is empty).
+        surfaces:
+          type: array
+          maxItems: 8
+          description: >
+            Plugin-level pages declared in the manifest's top-level `surfaces`
+            (not tied to a device). Absent when none are declared. At most one
+            `setup` and one `settings` surface. Each href is a same-origin
+            relative URL to one of the plugin's own HTTP endpoints, built by
+            the host; plugins cannot supply URLs.
+          items:
+            type: object
+            required: [id, role, href]
+            properties:
+              id:
+                type: string
+              role:
+                type: string
+                enum: [setup, settings, diagnostics]
+              label:
+                type: string
+                description: Optional display text from the manifest.
+              href:
+                type: string
+                example: /api/v1/plugins/mahlkoenig-e64.reaplugin/setup?ui=1&surface=setup
 
     PluginSettingSchema:
       type: object

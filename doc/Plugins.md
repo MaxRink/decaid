@@ -163,6 +163,7 @@ A Decaid plugin consists of two required files:
     See
     [`host.localApi`](#hostlocalapipath-options).
 - **drivers**: Device classes the plugin may register. Each declaration has a plugin-local `id` and a `type`: `sensor`, `scale`, or `grinder`. A manifest may declare at most 8 drivers. Driver declarations authorize registration; they do not grant transport access. For example, a WebSocket-backed device also needs `network.websocket`. A driver may declare up to 8 `surfaces`, each with a unique safe `id`, `role` (`settings` or `diagnostics`), and a safe non-reserved `endpoint` naming a declared same-plugin HTTP endpoint. At most one surface has role `settings`. Surfaces require the `api` permission; optional `label` is display text. Plugins cannot supply URLs, authority, credentials, or routes through surfaces. Surface endpoints must not contain unpaired UTF-16 surrogates, which cannot round-trip through URI encoding; valid surrogate pairs remain supported.
+- **surfaces** (optional): Plugin-level pages with role `setup`, `settings` or `diagnostics`, not tied to a device. See [Plugin surfaces](#plugin-surfaces).
 - **settings**: User-configurable options with `type` (`string`, `number`, `boolean`, `enum`), an optional `label` giving the setting a human-friendly name, an optional `description` explaining what the setting does, an optional `default`, and an optional `secure` flag for credentials such as passwords. Enum `values` are a JSON array of strings. Secure values use platform credential storage, are supplied in memory to `onLoad(settings)`, and are never returned by the REST API.
 
   `GET /api/v1/plugins` returns this schema verbatim under `settings`, so a skin can render a settings form — labels, help text and defaults included — without reading the plugin's repository. `GET /api/v1/plugins/:id/settings` returns the stored values only.
@@ -1581,6 +1582,38 @@ HTML unescaped, and fall back to the page's normal empty state when the value
 names nothing. Most parameters are then used as a lookup key against the REST
 API. **`return` is the exception, and it needs its own rule**, because it is a
 navigation target rather than a lookup key.
+
+### Plugin surfaces
+
+A plugin can declare plugin-level pages in a top-level `surfaces` array. They
+are not tied to a device, so a setup page works before any device exists:
+
+```json
+"surfaces": [
+  { "id": "setup", "role": "setup", "endpoint": "setup", "label": "Set up E64" },
+  { "id": "diagnostics", "role": "diagnostics", "endpoint": "diagnostics" }
+]
+```
+
+- `role` is `setup`, `settings` or `diagnostics`; at most one `setup` and one
+  `settings` surface, at most 8 surfaces, unique `id`s.
+- Each entry has exactly the keys `id`, `role`, `endpoint` and optional
+  `label`, validated like driver surfaces: a safe `id`, a safe non-reserved
+  `endpoint` naming a declared HTTP endpoint of the same plugin, and the `api`
+  permission. An invalid declaration makes the manifest invalid.
+- The host builds the URL: `/api/v1/plugins/<id>/<endpoint>?ui=1&surface=<id>`.
+  Plugins cannot supply URLs, hosts or routes.
+- `GET /api/v1/plugins` lists them per plugin as `surfaces: [{id, role,
+  label?, href}]`. The native Plugins screen shows **Set up**, **Settings** and
+  **Diagnostics** buttons on a loaded plugin's card and opens them in the
+  [native surface sheet](#native-surface-sheet). The generated settings form
+  stays in the card's menu.
+- Driver surfaces keep the roles `settings` and `diagnostics` only. Do not put
+  `setup` in a driver surface: hosts reject the whole manifest.
+
+Hosts without this contract ignore the unknown top-level key, so the plugin
+still loads there; such a plugin should keep its pages reachable another way
+(for example a `ui` endpoint).
 
 ### Native surface sheet
 

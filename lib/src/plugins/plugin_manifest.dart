@@ -86,6 +86,27 @@ List<PluginDriverDeclaration> parsePluginDrivers(dynamic json) {
   return List.unmodifiable(drivers);
 }
 
+List<PluginDeviceSurface> parsePluginSurfaces(dynamic json) {
+  if (json == null) return const [];
+  if (json is! List || json.length > 8) {
+    throw const FormatException('Invalid plugin surfaces');
+  }
+  final surfaces = json
+      .map(
+        (surface) => PluginDeviceSurface.fromJson(
+          surface,
+          roles: PluginDeviceSurface.pluginRoles,
+        ),
+      )
+      .toList();
+  if (surfaces.map((surface) => surface.id).toSet().length != surfaces.length ||
+      surfaces.where((surface) => surface.role == 'setup').length > 1 ||
+      surfaces.where((surface) => surface.role == 'settings').length > 1) {
+    throw const FormatException('Invalid plugin surfaces');
+  }
+  return List.unmodifiable(surfaces);
+}
+
 class PluginDeviceSurface {
   final String id;
   final String role;
@@ -99,7 +120,13 @@ class PluginDeviceSurface {
     this.label,
   });
 
-  factory PluginDeviceSurface.fromJson(dynamic json) {
+  static const deviceRoles = {'settings', 'diagnostics'};
+  static const pluginRoles = {'setup', 'settings', 'diagnostics'};
+
+  factory PluginDeviceSurface.fromJson(
+    dynamic json, {
+    Set<String> roles = deviceRoles,
+  }) {
     if (json is! Map ||
         json.keys.any(
           (key) => !const {'id', 'role', 'endpoint', 'label'}.contains(key),
@@ -107,7 +134,7 @@ class PluginDeviceSurface {
         json['id'] is! String ||
         !isSafePathComponent(json['id'] as String) ||
         json['role'] is! String ||
-        !const {'settings', 'diagnostics'}.contains(json['role']) ||
+        !roles.contains(json['role']) ||
         json['endpoint'] is! String ||
         !isSafePathComponent(json['endpoint'] as String) ||
         (json['endpoint'] as String).runes.any(
@@ -316,6 +343,7 @@ class PluginManifest {
   final List<PluginDriverDeclaration> drivers;
   final Map<String, dynamic> settings;
   final PluginApi? api;
+  final List<PluginDeviceSurface> surfaces;
 
   PluginManifest({
     required this.id,
@@ -328,6 +356,7 @@ class PluginManifest {
     this.drivers = const [],
     required this.settings,
     required this.api,
+    this.surfaces = const [],
   });
 
   factory PluginManifest.fromJson(Map<String, dynamic> json) {
@@ -338,7 +367,11 @@ class PluginManifest {
     final permissions = PluginPermissionsFromJson.fromJson(json['permissions']);
     final api = PluginApi.fromJsonList(json['api']);
     final drivers = parsePluginDrivers(json['drivers']);
-    for (final surface in drivers.expand((driver) => driver.surfaces)) {
+    final surfaces = parsePluginSurfaces(json['surfaces']);
+    for (final surface in [
+      ...drivers.expand((driver) => driver.surfaces),
+      ...surfaces,
+    ]) {
       if (_reservedSurfaceRoutes.contains((json['id'], surface.endpoint))) {
         throw const FormatException('Invalid plugin device surface');
       }
@@ -364,6 +397,7 @@ class PluginManifest {
       drivers: drivers,
       settings: settings,
       api: api,
+      surfaces: surfaces,
     );
   }
 
@@ -379,6 +413,8 @@ class PluginManifest {
       'drivers': drivers.map((driver) => driver.toJson()).toList(),
       'settings': settings,
       'api': api?.toJson(),
+      if (surfaces.isNotEmpty)
+        'surfaces': surfaces.map((surface) => surface.toJson()).toList(),
     };
   }
 }

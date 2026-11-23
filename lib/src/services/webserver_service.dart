@@ -29,6 +29,7 @@ import 'package:reaprime/src/models/device/scale_preference.dart';
 import 'package:reaprime/src/models/errors.dart';
 import 'package:reaprime/src/models/device/sensor.dart';
 import 'package:reaprime/src/plugins/plugin_device_contract.dart';
+import 'package:reaprime/src/plugins/plugin_device_surface_authority.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
 import 'package:reaprime/src/plugins/plugin_source.dart';
