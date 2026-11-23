@@ -1782,9 +1782,14 @@ it in Decaid UI.
   (`/api/v1/store/<namespace>/<key>`) refuse a namespace equal to an installed
   plugin's id (compared case-insensitively) with 403 unless the request
   carries an `extensions:manage` credential, so other clients cannot read or
-  overwrite it over REST; the plugin itself uses `host.storage`. It is still
-  not secret: backup export, import and sync include it, and a token holder
-  can read it. A plugin holding `manage.extensions` must not take instructions,
+  overwrite it over REST; the plugin itself uses `host.storage`. A backup made
+  from the app's own Data Management screen, or by a client with an
+  `extensions:manage` token, includes every installed plugin's storage in
+  `store.json`, and restoring such a backup the same way writes it back and
+  reloads each affected running plugin. A tokenless export leaves plugin
+  storage out, a tokenless import skips it with a warning in the `store`
+  section result, and sync never transfers it. It is still not secret: a token
+  holder can read it. A plugin holding `manage.extensions` must not take instructions,
   server addresses or credentials from `host.storage`; keep them in plugin
   settings, whose POST route is gated and whose secure values are never returned
 - No filesystem access beyond the plugin's own directory

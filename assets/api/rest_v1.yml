@@ -6010,6 +6010,9 @@ paths:
         files for each data type. Includes profiles, shots, workflow, settings,
         and KV store data. The archive also contains a metadata.json with export
         information (format version, app version, commit SHA, timestamp, platform).
+        Key-value namespaces that belong to an installed plugin are included
+        only when the request carries an `extensions:manage` bearer (the app's
+        own Data Management screen sends one); otherwise they are left out.
 
         ZIP contents:
         - metadata.json — export metadata (formatVersion, appVersion, commitSha, branch, exportTimestamp, platform)
@@ -6060,6 +6063,10 @@ paths:
         not constitute an importable backup. Metadata is optional for legacy
         archives without metadata.json, but is validated when present. Use the
         onConflict parameter to control how duplicate records are handled.
+        store.json namespaces that belong to an installed plugin are written
+        only when the request carries an `extensions:manage` bearer, after
+        which each affected running plugin is reloaded; otherwise they are
+        skipped with a warning in the store section result.
 
         A 200 response means every processed section completed without errors.
         A 207 response means recognized sections were processed but at least
