@@ -145,6 +145,45 @@ void main() {
     );
   });
 
+  test('display hints resolve with raw-value fallback', () {
+    final schema = {
+      'hidden': true,
+      'advanced': 'yes',
+      'valueLabels': {'off': ' Off ', 'on': ''},
+      'valueDescriptions': {'on': 'Turns it on', 'off': 42},
+    };
+    expect(pluginSettingHint(schema, 'hidden'), isTrue);
+    expect(pluginSettingHint(schema, 'advanced'), isFalse);
+    expect(pluginSettingHint('not a map', 'hidden'), isFalse);
+    expect(pluginSettingValueLabel(schema, 'off'), 'Off');
+    expect(pluginSettingValueLabel(schema, 'on'), 'on');
+    expect(pluginSettingValueLabel({'valueLabels': []}, 'x'), 'x');
+    expect(pluginSettingValueDescription(schema, 'on'), 'Turns it on');
+    expect(pluginSettingValueDescription(schema, 'off'), isNull);
+  });
+
+  test('only JSON-looking text is validated as JSON', () {
+    expect(isInvalidJsonLikeText('plain text'), isFalse);
+    expect(isInvalidJsonLikeText(''), isFalse);
+    expect(isInvalidJsonLikeText(' [{"a": 1}] '), isFalse);
+    expect(isInvalidJsonLikeText('{"a": '), isTrue);
+    expect(isInvalidJsonLikeText('[1,]'), isTrue);
+  });
+
+  test('display hints are documented in the setting schema', () {
+    final documented = (_pluginSettingSchema()['properties'] as YamlMap).keys;
+    expect(
+      documented,
+      containsAll([
+        'hidden',
+        'advanced',
+        'multiline',
+        'valueLabels',
+        'valueDescriptions',
+      ]),
+    );
+  });
+
   test('every bundled setting declares a label', () {
     final missing = <String>[];
     for (final entry in _bundledPluginDirs()) {
