@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:logging/logging.dart';
 import 'package:reaprime/src/controllers/workflow_controller.dart';
 import 'package:reaprime/src/plugins/plugin_manager.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
@@ -69,6 +70,59 @@ void _advance(WorkflowController controller) {
 }
 
 void main() {
+  test(
+    'host broadcasts skip a plugin without the permission silently',
+    () async {
+      final manager = PluginManager(kvStore: FakeKeyValueStoreService());
+      final controller = WorkflowController();
+      addTearDown(manager.dispose);
+      addTearDown(controller.dispose);
+      final denials = <String>[];
+      final previousLevel = Logger.root.level;
+      Logger.root.level = Level.ALL;
+      final subscription = Logger.root.onRecord
+          .where((record) => record.message.contains('denied permission'))
+          .listen((record) => denials.add(record.message));
+      addTearDown(() {
+        Logger.root.level = previousLevel;
+        return subscription.cancel();
+      });
+
+      manager.attachWorkflowController(controller);
+      await _loadPlugin(manager, 'quiet.plugin', permitted: false);
+      _advance(controller);
+      await _loadPlugin(manager, 'other.plugin');
+
+      expect(_events(manager, 'quiet.plugin'), isEmpty);
+      expect(denials, isEmpty);
+    },
+  );
+
+  test('a plugin-reported denial is still logged', () async {
+    final manager = PluginManager(kvStore: FakeKeyValueStoreService());
+    addTearDown(manager.dispose);
+    final denials = <String>[];
+    final previousLevel = Logger.root.level;
+    Logger.root.level = Level.ALL;
+    final subscription = Logger.root.onRecord
+        .where((record) => record.message.contains('denied permission'))
+        .listen((record) => denials.add(record.message));
+    addTearDown(() {
+      Logger.root.level = previousLevel;
+      return subscription.cancel();
+    });
+
+    await _loadPlugin(
+      manager,
+      'asking.plugin',
+      permitted: false,
+      onLoad: 'host.transport.open({ kind: "tcp", host: "127.0.0.1", port: 9 }).catch(() => {});',
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(denials, [contains('asking.plugin denied permission network.tcp')]);
+  });
+
   test('permission gates snapshots and workflow change events', () async {
     final manager = PluginManager(kvStore: FakeKeyValueStoreService());
     final controller = WorkflowController();

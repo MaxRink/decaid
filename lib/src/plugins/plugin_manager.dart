@@ -348,11 +348,15 @@ class PluginManager {
     }
   }
 
-  bool _hasPermission(String pluginId, PluginPermissions permission) {
+  bool _holdsPermission(String pluginId, PluginPermissions permission) {
     final permissions =
         _plugins[pluginId]?.manifest.permissions ??
         _closingPluginPermissions[pluginId];
-    final allowed = permissions?.contains(permission) ?? false;
+    return permissions?.contains(permission) ?? false;
+  }
+
+  bool _hasPermission(String pluginId, PluginPermissions permission) {
+    final allowed = _holdsPermission(pluginId, permission);
     if (!allowed) {
       final denial = '$pluginId:${permission.wireName}';
       if (_loggedPermissionDenials.add(denial)) {
@@ -2712,7 +2716,7 @@ class PluginManager {
       'notificationResult' => PluginPermissions.notifications,
       _ => null,
     };
-    if (permission != null && !_hasPermission(pluginId, permission)) return;
+    if (permission != null && !_holdsPermission(pluginId, permission)) return;
 
     final requestIdValue = payload is Map<String, dynamic>
         ? payload['requestId']
