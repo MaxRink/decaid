@@ -141,7 +141,8 @@ A Decaid plugin consists of two required files:
   - `proxy.decent_api.write`: Send allowlisted write requests through `host.decentProxy`
   - `network.websocket`: Open outbound WebSocket connections (`ws://` and `wss://`) through `host.transport`
   - `network.tcp`: Open outbound raw TCP connections through `host.transport`
-  - `network.tls`: Open outbound TLS connections (platform trust store) through `host.transport`
+  - `network.tls`: Open outbound TLS connections (platform trust store, or an
+    explicit per-connection [certificate pin](#certificate-pinning)) through `host.transport`
   - `manage.extensions`: Call `host.localApi`, which reaches the plugin and skin
     management routes. A plugin holding it can install, replace, configure,
     enable, disable and remove any plugin or skin, change the default skin, start
@@ -705,6 +706,48 @@ const upload = await fetch("https://api.example.com/upload", {
 });
 ```
 
+### Certificate pinning
+
+A device on the local network often serves HTTPS or WSS with a self-signed
+certificate that no platform trust store accepts, and Dart on Android ignores
+user-installed CAs. Installing such a certificate as a root would trust it for
+every host, so instead a plugin can pin the exact certificate it expects for
+one request or connection:
+
+```javascript
+const pin = "3f1c...e9a0"; // SHA-256 of the leaf certificate DER, 64 hex digits
+const response = await fetch("https://192.168.1.40/api/login", {
+  method: "POST",
+  body: JSON.stringify({ user, password }),
+  tlsPinSha256: pin
+});
+
+const { handle } = await host.transport.open({
+  kind: "websocket", // or kind: "tls" with host and port
+  url: "wss://192.168.1.40/ws",
+  tlsPinSha256: pin
+});
+```
+
+- `tlsPinSha256` is the SHA-256 digest of the server's leaf certificate in DER
+  form, as 64 hex digits. Case is ignored and `:` separators are stripped, so
+  the `openssl x509 -noout -fingerprint -sha256` output works as is.
+- Normal platform validation runs first. The pin is consulted only when that
+  validation fails, and then only the presented leaf certificate whose digest
+  equals the pin is accepted; any other certificate, including a different one
+  for the same host, still fails with a `HandshakeException`.
+- The pin applies to that one `fetch` call or that one connection. It uses a
+  dedicated HTTP client or TLS context that is never shared, so it never
+  affects other requests from the same plugin, other plugins, or the host.
+- A malformed pin rejects the request or `open()` before any connection is
+  made. A pin is only valid for `https://` (`fetch`), `wss://` (`websocket`) and
+  `kind: "tls"`; on `http://`, `ws://` or `kind: "tcp"` it is rejected rather
+  than silently ignored.
+- Pinning needs no extra permission and grants none: `fetch` still requires
+  `api`, and each transport still requires its `network.*` permission.
+- A pinned certificate that is rotated by the server stops working until the
+  plugin is given the new pin.
+
 **Note**: The JavaScript environment has limited APIs. Currently available:
 
 - `fetch()` for HTTP requests
@@ -967,7 +1010,7 @@ Each transport requires its own manifest permission:
 |--------|------------|-------|
 | `websocket` | `network.websocket` | `ws://` and `wss://`; `wss://` uses normal platform certificate validation and does **not** require `network.tls` |
 | `tcp` | `network.tcp` | raw byte stream |
-| `tls` | `network.tls` | raw byte stream over TLS using the platform trust store only |
+| `tls` | `network.tls` | raw byte stream over TLS using the platform trust store, or a per-connection [certificate pin](#certificate-pinning) |
 
 Permission failure rejects the `open()` call with a `PluginPermissionError`
 before any DNS lookup or connection attempt. No unrestricted global `WebSocket`
@@ -1007,7 +1050,10 @@ headers are not supported.
 
 TCP/TLS options: `kind: "tcp"`/`"tls"`, `host` (required hostname/IP),
 `port` (required integer 1..65535). Custom CA material and client
-certificates are out of scope; TLS uses the platform trust store only.
+certificates are out of scope; TLS uses the platform trust store, except that
+`kind: "tls"` and `wss://` WebSocket connections accept an optional
+`tlsPinSha256` (see [Certificate pinning](#certificate-pinning)). A pin on
+`kind: "tcp"` or a `ws://` url rejects the `open()`.
 
 Connection failures before establishment reject the `open()` Promise.
 
@@ -1659,8 +1705,11 @@ it in Decaid UI.
   permission, enforces per-plugin connection and byte limits, and closes all
   connections on plugin unload or app shutdown. There is no unrestricted
   global `WebSocket` or socket API in the plugin runtime.
-- TLS uses the platform trust store only; custom CA material and client
-  certificates are not supported
+- TLS uses the platform trust store; custom CA material and client
+  certificates are not supported. The one exception is an explicit
+  per-request or per-connection `tlsPinSha256`
+  ([Certificate pinning](#certificate-pinning)), which accepts exactly one
+  leaf certificate for that request or connection and nothing else
 - Storage is kept per plugin, but it is not private: the key-value store routes
   (`/api/v1/store/<namespace>/<key>`), which need no token, read and write the
   same data when the namespace is the plugin id, and backup import and sync
