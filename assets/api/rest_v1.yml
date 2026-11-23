@@ -3529,6 +3529,15 @@ paths:
             type: string
             enum: ["1"]
       responses:
+        "403":
+          description: >
+            The namespace equals an installed plugin's id (case-insensitive)
+            and the request carries no `extensions:manage` bearer; that
+            namespace is reserved for the plugin's own `host.storage`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "200":
           description: >
             Array of keys, or — when `?full=1` is set — an object mapping each
@@ -3567,6 +3576,15 @@ paths:
           schema:
             type: string
       responses:
+        "403":
+          description: >
+            The namespace equals an installed plugin's id (case-insensitive)
+            and the request carries no `extensions:manage` bearer; that
+            namespace is reserved for the plugin's own `host.storage`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "200":
           description: JSON value stored under the key
           content:
@@ -3596,6 +3614,15 @@ paths:
           application/json:
             schema: {}
       responses:
+        "403":
+          description: >
+            The namespace equals an installed plugin's id (case-insensitive)
+            and the request carries no `extensions:manage` bearer; that
+            namespace is reserved for the plugin's own `host.storage`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "204":
           description: Successfully stored
 
@@ -3615,6 +3642,15 @@ paths:
           schema:
             type: string
       responses:
+        "403":
+          description: >
+            The namespace equals an installed plugin's id (case-insensitive)
+            and the request carries no `extensions:manage` bearer; that
+            namespace is reserved for the plugin's own `host.storage`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "200":
           description: Key deleted
           content:
