@@ -3489,9 +3489,12 @@ paths:
       responses:
         "403":
           description: >
-            The namespace equals an installed plugin's id (case-insensitive)
-            and the request carries no `extensions:manage` bearer; that
-            namespace is reserved for the plugin's own `host.storage`.
+            The namespace equals an installed plugin's id (case-insensitive),
+            the request comes from another machine (its socket peer is not
+            loopback or one of this device's own addresses) and it carries no
+            `extensions:manage` bearer. That namespace holds the plugin's
+            `host.storage`; pages and plugins running on the device itself,
+            such as a plugin's own UI in the app WebView, may use it.
           content:
             application/json:
               schema:
@@ -3536,9 +3539,12 @@ paths:
       responses:
         "403":
           description: >
-            The namespace equals an installed plugin's id (case-insensitive)
-            and the request carries no `extensions:manage` bearer; that
-            namespace is reserved for the plugin's own `host.storage`.
+            The namespace equals an installed plugin's id (case-insensitive),
+            the request comes from another machine (its socket peer is not
+            loopback or one of this device's own addresses) and it carries no
+            `extensions:manage` bearer. That namespace holds the plugin's
+            `host.storage`; pages and plugins running on the device itself,
+            such as a plugin's own UI in the app WebView, may use it.
           content:
             application/json:
               schema:
@@ -3574,9 +3580,12 @@ paths:
       responses:
         "403":
           description: >
-            The namespace equals an installed plugin's id (case-insensitive)
-            and the request carries no `extensions:manage` bearer; that
-            namespace is reserved for the plugin's own `host.storage`.
+            The namespace equals an installed plugin's id (case-insensitive),
+            the request comes from another machine (its socket peer is not
+            loopback or one of this device's own addresses) and it carries no
+            `extensions:manage` bearer. That namespace holds the plugin's
+            `host.storage`; pages and plugins running on the device itself,
+            such as a plugin's own UI in the app WebView, may use it.
           content:
             application/json:
               schema:
@@ -3602,9 +3611,12 @@ paths:
       responses:
         "403":
           description: >
-            The namespace equals an installed plugin's id (case-insensitive)
-            and the request carries no `extensions:manage` bearer; that
-            namespace is reserved for the plugin's own `host.storage`.
+            The namespace equals an installed plugin's id (case-insensitive),
+            the request comes from another machine (its socket peer is not
+            loopback or one of this device's own addresses) and it carries no
+            `extensions:manage` bearer. That namespace holds the plugin's
+            `host.storage`; pages and plugins running on the device itself,
+            such as a plugin's own UI in the app WebView, may use it.
           content:
             application/json:
               schema:

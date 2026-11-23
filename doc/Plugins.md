@@ -2000,9 +2000,14 @@ it in Decaid UI.
   leaf certificate for that request or connection and nothing else
 - Storage is kept per plugin. The key-value store routes
   (`/api/v1/store/<namespace>/<key>`) refuse a namespace equal to an installed
-  plugin's id (compared case-insensitively) with 403 unless the request
-  carries an `extensions:manage` credential, so other clients cannot read or
-  overwrite it over REST; the plugin itself uses `host.storage`. A backup made
+  plugin's id (compared case-insensitively) with 403 to requests from other
+  machines unless they carry an `extensions:manage` credential, so LAN clients
+  cannot read or overwrite it over REST. Requests whose socket peer is the
+  device itself (loopback or one of its own addresses) may use the namespace:
+  the plugin's own page in the app WebView reads and writes its data there,
+  the plugin's `fetch` to `localhost:8080` reaches the same data as
+  `host.storage`, and so can skins, other plugins and other apps on the same
+  device. A backup made
   from the app's own Data Management screen, or by a client with an
   `extensions:manage` token, includes every installed plugin's storage in
   `store.json`, and restoring such a backup the same way writes it back and
