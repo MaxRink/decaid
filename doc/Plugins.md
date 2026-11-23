@@ -1582,6 +1582,33 @@ names nothing. Most parameters are then used as a lookup key against the REST
 API. **`return` is the exception, and it needs its own rule**, because it is a
 navigation target rather than a lookup key.
 
+### Native surface sheet
+
+Native Decaid opens plugin surfaces in a themed bottom sheet
+that hosts a WebView instead of a full-screen browser tab. The sheet draws its
+own title, a close button and an **Open in browser** button, and adds these
+query parameters to the surface URL:
+
+| Parameter | Value |
+|---|---|
+| `embed` | `1`: the page is embedded; do not draw an own header or back button. |
+| `theme` | `light` or `dark`, from the app's current theme. |
+| `lang` | The app locale as a BCP 47 tag, for example `en-US`. |
+
+Pages ignore parameters they do not know, so a page written for stock hosts
+keeps working. A page can close the sheet itself, for example after a
+successful save:
+
+```javascript
+window.flutter_inappwebview?.callHandler("pluginSurface", { type: "close" });
+```
+
+Only `{type: "close"}` is understood. Main-frame navigation to another origin
+is not loaded in the sheet; `http` and `https` targets open in the external
+browser. On Linux, where the WebView is a no-op, and for **Open in browser**,
+the page opens in the platform browser with `theme` and `lang` but without
+`embed`.
+
 ### The `return` parameter
 
 `return` cannot be assigned to `location` as it arrives, for two reasons.

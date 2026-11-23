@@ -7,9 +7,7 @@ import 'package:reaprime/src/models/device/scale_preference.dart';
 import 'package:reaprime/src/plugins/plugin_device_contract.dart';
 import 'package:reaprime/src/settings/settings_controller.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
-import 'package:url_launcher/url_launcher.dart';
-
-const _appOrigin = 'http://localhost:8080';
+import 'package:reaprime/src/settings/plugin_surface_sheet.dart';
 
 typedef DeviceSettingsLauncher = Future<bool> Function(Uri uri);
 
@@ -368,10 +366,10 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
         _showSettingsError();
         return;
       }
-      final uri = Uri.parse(_appOrigin).resolve(href);
+      final uri = Uri.parse(pluginSurfaceOrigin).resolve(href);
       launched =
           await (widget.settingsLauncher?.call(uri) ??
-              launchUrl(uri, mode: LaunchMode.inAppBrowserView));
+              showPluginSurface(context, uri, title: device.name));
     } catch (_) {
       launched = false;
     }
