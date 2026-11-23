@@ -313,7 +313,11 @@ validation limits](plans/archive/1103-firmware-write-replay/README.md).
 ### Release Failed to Build
 - Check GitHub Actions logs for errors
 - Ensure all tests pass locally
-- Verify secrets are configured (ANDROID_KEYSTORE_B64)
+- Verify secrets are configured (ANDROID_KEYSTORE_B64, ANDROID_KEYSTORE_PASSWORD,
+  ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD). With `CI=true`, an Android release
+  build fails instead of signing with the debug defaults (`android` /
+  `androiddebugkey`) when any of the three password/alias variables is unset;
+  local release builds without `CI` keep the debug-keystore fallback
 
 ### APK Not Attached to Release
 - Check the workflow completed successfully

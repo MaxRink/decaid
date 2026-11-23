@@ -87,6 +87,9 @@ jobs:
         run: ./flutter_with_commit.sh build apk --release
         env:
           FEEDBACK_TOKEN: ${{ secrets.FEEDBACK_TOKEN }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
 
       - name: Package Android APK
         run: cp build/app/outputs/flutter-apk/app-release.apk decaid-android-develop-${{ steps.build-id.outputs.short_sha }}.apk
