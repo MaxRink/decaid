@@ -870,6 +870,7 @@ class PluginManager {
           if (msg.error) {
             const error = new __NativeError(msg.error);
             if (msg.code) error.code = msg.code;
+            if (msg.peerSha256) error.peerSha256 = msg.peerSha256;
             pending.reject(error);
             return;
           }
@@ -1154,7 +1155,10 @@ class PluginManager {
           _pendingFetches.delete(msg.id);
 
           if (msg.error) {
-            pending.reject(new Error(msg.error));
+            const error = new Error(msg.error);
+            if (msg.code) error.code = msg.code;
+            if (msg.peerSha256) error.peerSha256 = msg.peerSha256;
+            pending.reject(error);
             return;
           }
 
@@ -2167,6 +2171,14 @@ class PluginManager {
       }
     } on PluginTransportException catch (e) {
       _replyTransport(requestId, bridgeToken, error: e.message, code: e.code);
+    } on TlsPinMismatchException catch (e) {
+      _replyTransport(
+        requestId,
+        bridgeToken,
+        error: e.toString(),
+        code: TlsPinMismatchException.code,
+        peerSha256: e.peerSha256,
+      );
     } catch (e) {
       _replyTransport(requestId, bridgeToken, error: e.toString());
     }
@@ -2178,11 +2190,12 @@ class PluginManager {
     Map<String, dynamic>? result,
     String? error,
     String? code,
+    String? peerSha256,
   }) {
     try {
       js.evaluate(
         'globalThis.__handleTransportReply('
-        '${jsonEncode({'requestId': requestId, 'bridgeToken': ?bridgeToken, 'result': result, 'error': error, 'code': code})});',
+        '${jsonEncode({'requestId': requestId, 'bridgeToken': ?bridgeToken, 'result': result, 'error': error, 'code': code, 'peerSha256': ?peerSha256})});',
       );
       while (js.executePendingJob() > 0) {}
     } catch (e, st) {
@@ -3249,6 +3262,7 @@ class PluginManager {
     Map<String, dynamic>? result,
     String? error,
     String? errorCode,
+    String? peerSha256,
   }) {
     op.timeout?.cancel();
     if (_pendingOps.remove(op.key) == null) return;
@@ -3263,7 +3277,12 @@ class PluginManager {
           } catch (_) {}
         }
         final fetchPayload = error != null
-            ? {'id': int.parse(op.requestId), 'error': error}
+            ? {
+                'id': int.parse(op.requestId),
+                'error': error,
+                'code': ?errorCode,
+                'peerSha256': ?peerSha256,
+              }
             : result;
         js.evaluate(
           'globalThis.__handleFetchResponse(${jsonEncode(fetchPayload)});',
@@ -3752,6 +3771,13 @@ class PluginManager {
     try {
       final response = await _performFetch(op, msg);
       _completeOp(op, result: response);
+    } on TlsPinMismatchException catch (e) {
+      _completeOp(
+        op,
+        error: e.toString(),
+        errorCode: TlsPinMismatchException.code,
+        peerSha256: e.peerSha256,
+      );
     } catch (e) {
       _completeOp(op, error: e.toString());
     }
@@ -3779,12 +3805,15 @@ class PluginManager {
     }
     final pin = parseTlsPinSha256(msg[tlsPinOption]);
     requireTlsScheme(pin, uri.scheme == 'https', 'an https:// url');
-    final client = pin == null
+    final check = pin == null ? null : TlsPinCheck(pin);
+    final client = check == null
         ? _getHttpClient()
-        : (pinnedHttpClient(pin)
+        : (pinnedHttpClient(check)
             ..connectionTimeout = const Duration(seconds: 10));
+    Future<Map<String, dynamic>> send() =>
+        _sendFetch(op, client, method, uri, headers, body, binary);
     try {
-      return await _sendFetch(op, client, method, uri, headers, body, binary);
+      return await (check == null ? send() : check.guard(send));
     } finally {
       if (pin != null) client.close(force: true);
     }
