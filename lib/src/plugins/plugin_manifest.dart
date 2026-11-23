@@ -5,6 +5,7 @@ import 'package:reaprime/src/models/device/grinder_device.dart';
 import 'package:reaprime/src/util/safe_path.dart';
 
 import 'plugin_ble_matcher.dart';
+import 'plugin_discovery.dart';
 
 List<String> parsePluginEnumValues(String key, dynamic schema) {
   if (schema is! Map || schema['type'] != 'enum') return const [];
@@ -344,6 +345,7 @@ class PluginManifest {
   final Map<String, dynamic> settings;
   final PluginApi? api;
   final List<PluginDeviceSurface> surfaces;
+  final List<PluginMdnsDeclaration> mdnsDiscovery;
 
   PluginManifest({
     required this.id,
@@ -357,6 +359,7 @@ class PluginManifest {
     required this.settings,
     required this.api,
     this.surfaces = const [],
+    this.mdnsDiscovery = const [],
   });
 
   factory PluginManifest.fromJson(Map<String, dynamic> json) {
@@ -398,6 +401,7 @@ class PluginManifest {
       settings: settings,
       api: api,
       surfaces: surfaces,
+      mdnsDiscovery: parsePluginDiscovery(json['discovery']),
     );
   }
 
