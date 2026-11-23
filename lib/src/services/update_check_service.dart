@@ -407,7 +407,7 @@ class UpdateCheckService {
     if (pluginSourceService == null) return;
     try {
       _log.info('Updating plugins...');
-      await pluginSourceService.updateAllPlugins();
+      await pluginSourceService.updateAllPlugins(automatic: true);
       _log.info('Plugin update complete');
     } catch (e, st) {
       _log.warning('Error updating plugins', e, st);

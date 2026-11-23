@@ -25,7 +25,7 @@ class _RecordingPluginSourceService extends PluginSourceService {
   int updateCalls = 0;
 
   @override
-  Future<void> updateAllPlugins() async {
+  Future<void> updateAllPlugins({bool automatic = false}) async {
     updateCalls++;
   }
 }
