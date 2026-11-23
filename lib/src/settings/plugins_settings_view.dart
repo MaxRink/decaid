@@ -548,8 +548,11 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
         children: [
           Expanded(
             child: Text(
-              'Update to ${pending.version} needs approval: adds '
-              '${pending.addedPermissions.join(', ')}',
+              pending.addedPermissions.isEmpty
+                  ? 'Update to ${pending.version} needs approval: the plugin '
+                        'holds stored secrets'
+                  : 'Update to ${pending.version} needs approval: adds '
+                        '${pending.addedPermissions.join(', ')}',
               style: Theme.of(context).textTheme.labelMedium,
             ),
           ),
@@ -576,7 +579,12 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('This update requests new permissions:'),
+            Text(
+              pending.addedPermissions.isEmpty
+                  ? 'This plugin has stored passwords or tokens, so automatic '
+                        'updates wait for you to review the new version.'
+                  : 'This update requests new permissions:',
+            ),
             const SizedBox(height: 8),
             ...pending.addedPermissions.map((p) => Text('• $p')),
             if (pending.addedPermissions.contains(

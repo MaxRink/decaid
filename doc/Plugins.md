@@ -1885,6 +1885,17 @@ curl -X POST http://tablet:8080/api/v1/plugins/my.reaplugin/update/approve \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+The background update check (the scheduled one that runs while automatic
+update checks are on) is stricter than a manual check from the Plugins screen
+or `POST /api/v1/plugins/update`:
+
+- it records a `pendingUpdate` instead of installing whenever the plugin has
+  stored secure settings (passwords, tokens), even if no permission is added,
+  so new code never receives those secrets without review. Such a pending
+  update has an empty `addedPermissions`;
+- it skips plugins installed from a GitHub branch entirely. A branch has no
+  release to review, so branch installs only move on a manual check.
+
 A pending update can be approved by:
 
 - the user, in the Plugins settings screen;

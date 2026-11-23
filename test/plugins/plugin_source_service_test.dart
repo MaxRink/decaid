@@ -803,6 +803,106 @@ function createPlugin() {
       expect(await loader.shouldAutoLoad(id), isFalse);
     });
 
+    group('automatic background updates', () {
+      List<int> secretArchive({String version = '1.0.0'}) => makeArchive({
+        'manifest.json': jsonEncode({
+          ...manifestJson(id, version: version),
+          'settings': {
+            'Token': {'type': 'string', 'secure': true},
+          },
+        }),
+        'plugin.js': pluginJs(id, marker: version),
+      });
+
+      Future<void> installWithSecret() async {
+        await http.runWithClient(
+          () => service.installFromGitHubRelease('acme/plugin'),
+          () => gitHubClient(releaseArchive: secretArchive()),
+        );
+        await loader.savePluginSettings(id, {'Token': 'abc'});
+      }
+
+      test('a plugin holding secrets waits for approval', () async {
+        await installWithSecret();
+
+        await http.runWithClient(
+          () => service.updateAllPlugins(automatic: true),
+          () => gitHubClient(
+            tag: 'v1.1.0',
+            releaseArchive: secretArchive(version: '1.1.0'),
+          ),
+        );
+
+        expect(loader.getPluginManifest(id)?.version, '1.0.0');
+        final pending = service.sourceFor(id)!.pendingUpdate!;
+        expect(pending.version, '1.1.0');
+        expect(pending.addedPermissions, isEmpty);
+
+        await http.runWithClient(
+          () => service.approvePendingUpdate(id),
+          () => gitHubClient(
+            tag: 'v1.1.0',
+            releaseArchive: secretArchive(version: '1.1.0'),
+          ),
+        );
+        expect(loader.getPluginManifest(id)?.version, '1.1.0');
+        expect(
+          await loader.pluginSettings(id),
+          containsPair('Token', {'isSet': true}),
+        );
+      });
+
+      test('a manual check still installs a plugin holding secrets', () async {
+        await installWithSecret();
+
+        await http.runWithClient(
+          () => service.updateAllPlugins(),
+          () => gitHubClient(
+            tag: 'v1.1.0',
+            releaseArchive: secretArchive(version: '1.1.0'),
+          ),
+        );
+
+        expect(loader.getPluginManifest(id)?.version, '1.1.0');
+      });
+
+      test('a plugin without secrets still updates automatically', () async {
+        await http.runWithClient(
+          () => service.installFromGitHubRelease('acme/plugin'),
+          () => gitHubClient(),
+        );
+
+        await http.runWithClient(
+          () => service.updateAllPlugins(automatic: true),
+          () => gitHubClient(
+            tag: 'v1.1.0',
+            releaseArchive: pluginArchive(version: '1.1.0'),
+          ),
+        );
+
+        expect(loader.getPluginManifest(id)?.version, '1.1.0');
+      });
+
+      test('branch-tracking installs are left to manual checks', () async {
+        await http.runWithClient(
+          () => service.installFromGitHubBranch('acme/plugin'),
+          () => gitHubClient(commit: 'first'),
+        );
+
+        final report = await http.runWithClient(
+          () => service.checkForPluginUpdates(automatic: true),
+          () => gitHubClient(
+            commit: 'second',
+            branchArchive: pluginArchive(version: '1.1.0'),
+          ),
+        );
+
+        expect(report.results, isEmpty);
+        expect(service.sourceFor(id)!.commit, 'first');
+        expect(loader.getPluginManifest(id)?.version, '1.0.0');
+      });
+    });
+
     test('settings survive an update', () async {
       await http.runWithClient(
         () => service.installFromGitHubRelease('acme/plugin'),

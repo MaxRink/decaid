@@ -9104,7 +9104,9 @@ components:
           nullable: true
           description: >
             An update that was found but not installed because it requests
-            permissions the installed version does not hold.
+            permissions the installed version does not hold, or because the
+            background update check found it for a plugin that has stored
+            secure settings (then addedPermissions is empty).
 
     PluginSettingSchema:
       type: object

@@ -109,8 +109,10 @@ class _FakeSourceService extends PluginSourceService {
   PluginSource? sourceFor(String pluginId) => source;
 
   @override
-  Future<void> updateAllPlugins() => updateCheck.value ??= _updateAllPlugins()
-      .whenComplete(() => updateCheck.value = null);
+  Future<void> updateAllPlugins({bool automatic = false}) =>
+      updateCheck.value ??= _updateAllPlugins().whenComplete(
+        () => updateCheck.value = null,
+      );
 
   Future<void> _updateAllPlugins() async {
     updateCalls++;

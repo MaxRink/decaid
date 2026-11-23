@@ -689,6 +689,12 @@ class PluginLoaderService {
         };
       });
 
+  Future<bool> hasStoredSecureSettings(String pluginId) =>
+      _withPluginSettingsLock(
+        pluginId,
+        () async => (await _readSecureSettings(pluginId)).isNotEmpty,
+      );
+
   Future<void> savePluginSettings(
     String pluginId,
     Map<String, dynamic> settings,
