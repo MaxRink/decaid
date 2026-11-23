@@ -926,6 +926,11 @@ void main(List<String> args) async {
 
   if (Platform.isAndroid) {
     ForegroundTaskService.init();
+    void applyKeepServiceRunning() => ForegroundTaskService.setKeepRunning(
+      settingsController.keepServiceRunning,
+    );
+    applyKeepServiceRunning();
+    settingsController.addListener(applyKeepServiceRunning);
   }
 
   BootTiming.mark('runapp');

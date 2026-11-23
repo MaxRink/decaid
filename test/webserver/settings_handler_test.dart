@@ -104,6 +104,30 @@ void main() {
     });
   });
 
+  group('keepServiceRunning', () {
+    test('defaults to false', () {
+      expect(controller.keepServiceRunning, isFalse);
+    });
+
+    test('can be toggled on and off and persists', () async {
+      await controller.setKeepServiceRunning(true);
+      expect(controller.keepServiceRunning, isTrue);
+      expect(await mockService.keepServiceRunning(), isTrue);
+
+      await controller.setKeepServiceRunning(false);
+      expect(controller.keepServiceRunning, isFalse);
+      expect(await mockService.keepServiceRunning(), isFalse);
+    });
+
+    test('is reloaded from storage', () async {
+      await mockService.setKeepServiceRunning(true);
+      final reloaded = SettingsController(mockService);
+      addTearDown(reloaded.dispose);
+      await reloaded.loadSettings();
+      expect(reloaded.keepServiceRunning, isTrue);
+    });
+  });
+
   group('hotWaterFlowMultiplier', () {
     test('defaults to 0.3, separate from weightFlowMultiplier (1.0)', () {
       expect(controller.hotWaterFlowMultiplier, 0.3);

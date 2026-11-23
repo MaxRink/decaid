@@ -72,6 +72,7 @@ class SettingsController with ChangeNotifier {
   String _wakeSchedules = '[]';
   bool _lowBatteryBrightnessLimit = true;
   bool _keepAwake = true;
+  bool _keepServiceRunning = false;
   bool _onboardingCompleted = false;
   bool _accountStepSeen = false;
   bool _shotUploadStepSeen = false;
@@ -117,6 +118,7 @@ class SettingsController with ChangeNotifier {
   String get wakeSchedules => _wakeSchedules;
   bool get lowBatteryBrightnessLimit => _lowBatteryBrightnessLimit;
   bool get keepAwake => _keepAwake;
+  bool get keepServiceRunning => _keepServiceRunning;
   bool get onboardingCompleted => _onboardingCompleted;
   bool get shotUploadStepSeen => _shotUploadStepSeen;
   bool get shotUploadOptIn => _shotUploadOptIn;
@@ -170,6 +172,7 @@ class SettingsController with ChangeNotifier {
     _lowBatteryBrightnessLimit = await _settingsService
         .lowBatteryBrightnessLimit();
     _keepAwake = await _settingsService.keepAwake();
+    _keepServiceRunning = await _settingsService.keepServiceRunning();
     _onboardingCompleted = await _settingsService.onboardingCompleted();
     _accountStepSeen = await _settingsService.accountStepSeen();
     _shotUploadStepSeen = await _settingsService.shotUploadStepSeen();
@@ -515,6 +518,13 @@ class SettingsController with ChangeNotifier {
     if (value == _keepAwake) return;
     _keepAwake = value;
     await _settingsService.setKeepAwake(value);
+    notifyListeners();
+  }
+
+  Future<void> setKeepServiceRunning(bool value) async {
+    if (value == _keepServiceRunning) return;
+    _keepServiceRunning = value;
+    await _settingsService.setKeepServiceRunning(value);
     notifyListeners();
   }
 
