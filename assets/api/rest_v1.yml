@@ -490,11 +490,19 @@ paths:
       tags: [Machine]
       responses:
         "200":
-          description: Information about the currently connected machine or an error if not connected
+          description: Information about the currently connected machine
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MachineInfo"
+        "503":
+          description: >
+            No machine is connected (for example during startup before the
+            DE1 connects). The body is `{"error": "No machine connected"}`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/machine/state:
     get:
