@@ -120,6 +120,7 @@ class PluginManager {
   final Duration fetchTimeout;
   final int maxFetchResponseBytes;
   final Duration pluginHttpTimeout;
+  final int hostApiPort;
   final Duration decentProxyTimeout;
   final Duration localApiTimeout;
   final Duration transportCloseTimeout;
@@ -183,6 +184,7 @@ class PluginManager {
     SocketConnector? connectSocket,
     SecureSocketConnector? connectSecureSocket,
     this.transportCloseTimeout = const Duration(seconds: 5),
+    this.hostApiPort = 8080,
     this.deviceInvocationTimeout = const Duration(seconds: 10),
     PluginDeviceService? deviceService,
     PluginBleRegistry? bleRegistry,
@@ -1128,6 +1130,10 @@ class PluginManager {
           _pendingFetches.clear();
         };
 
+        const hostGlobalNames = Object.getOwnPropertyNames(globalThis).filter(
+          (name) => name.startsWith("__") || name === "host" ||
+            name === "fetch" || name === "sendMessage"
+        );
         Object.defineProperty(globalThis, "__lockPluginHostBridge", {
           value: function () {
             if (globalThis.__reaprimePluginHostBridge) return;
@@ -1149,6 +1155,27 @@ class PluginManager {
               configurable: false,
               enumerable: false
             });
+            const intrinsicNames = [
+              "Object", "Function", "Array", "JSON", "Promise", "Map", "Set",
+              "WeakMap", "WeakSet", "String", "Number", "Boolean", "Symbol",
+              "Reflect", "Math", "Date", "RegExp", "Error", "TypeError"
+            ];
+            for (const name of intrinsicNames) {
+              const intrinsic = globalThis[name];
+              if (intrinsic === undefined) continue;
+              Object.freeze(intrinsic);
+              if (name !== "Error" && name !== "TypeError" &&
+                  intrinsic.prototype) {
+                Object.freeze(intrinsic.prototype);
+              }
+            }
+            for (const name of [...hostGlobalNames, ...intrinsicNames]) {
+              const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+              if (!descriptor || !descriptor.configurable) continue;
+              Object.defineProperty(globalThis, name, "value" in descriptor
+                ? { writable: false, configurable: false }
+                : { configurable: false });
+            }
           },
           writable: false,
           configurable: false,
@@ -1981,6 +2008,16 @@ class PluginManager {
               requestId,
               bridgeToken,
               error: _permissionError(pluginId, permission),
+            );
+            return;
+          }
+          if (await _isHostMachineTransport(payload)) {
+            _replyTransport(
+              requestId,
+              bridgeToken,
+              error:
+                  'Plugins cannot open machine control connections to the '
+                  'host API',
             );
             return;
           }
@@ -3004,6 +3041,67 @@ class PluginManager {
     return counts;
   }
 
+  bool _isMachineControlWrite(String method, Uri uri) {
+    if (method == 'GET' || method == 'HEAD') return false;
+    final path = _decodedPath(uri);
+    return path == '/api/v1/machine' || path.startsWith('/api/v1/machine/');
+  }
+
+  String _decodedPath(Uri uri) {
+    final path = uri.normalizePath().path;
+    try {
+      return Uri.decodeFull(path).toLowerCase();
+    } on ArgumentError {
+      return path.toLowerCase();
+    }
+  }
+
+  Future<bool> _isHostMachineTransport(Map payload) async {
+    switch (payload['kind']) {
+      case 'websocket':
+        final url = Uri.tryParse('${payload['url']}');
+        return url != null &&
+            _decodedPath(url).startsWith('/ws/v1/machine/raw') &&
+            await _isHostApi(url.host, url.port);
+      case 'tcp' || 'tls':
+        final host = payload['host'];
+        final port = payload['port'];
+        return host is String && port is int && await _isHostApi(host, port);
+    }
+    return false;
+  }
+
+  Future<bool> _isHostApi(String host, int port) async {
+    if (port != hostApiPort) return false;
+    final literal = InternetAddress.tryParse(host);
+    final List<InternetAddress> targets;
+    try {
+      targets = literal != null
+          ? [literal]
+          : await InternetAddress.lookup(host);
+    } catch (_) {
+      return false;
+    }
+    var local = const <String>{};
+    try {
+      local = {
+        for (final interface in await NetworkInterface.list(
+          includeLoopback: true,
+          includeLinkLocal: true,
+        ))
+          for (final address in interface.addresses) address.address,
+      };
+    } catch (error) {
+      _log.fine('Could not list network interfaces: $error');
+    }
+    return targets.any(
+      (target) =>
+          target.isLoopback ||
+          target.rawAddress.every((byte) => byte == 0) ||
+          local.contains(target.address),
+    );
+  }
+
   HttpClient _getHttpClient() {
     return _httpClient ??= HttpClient()
       ..connectionTimeout = const Duration(seconds: 10);
@@ -3547,6 +3645,12 @@ class PluginManager {
     final method = ((msg['method'] as String?) ?? 'GET').toUpperCase();
     final headers = msg['headers'] as Map? ?? {};
     final body = msg['body'];
+    if (_isMachineControlWrite(method, uri) &&
+        await _isHostApi(uri.host, uri.port)) {
+      throw StateError(
+        'Plugins cannot call machine control routes on the host API with fetch',
+      );
+    }
     final pin = parseTlsPinSha256(msg[tlsPinOption]);
     requireTlsScheme(pin, uri.scheme == 'https', 'an https:// url');
     final client = pin == null
