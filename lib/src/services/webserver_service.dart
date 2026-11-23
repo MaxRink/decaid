@@ -326,7 +326,18 @@ Future<ApiListener> startWebServer(
       ),
       WorkflowExportSection(controller: workflowController),
       SettingsExportSection(controller: settingsController),
-      KvStoreExportSection(store: kvStoreHandler.store),
+      KvStoreExportSection(
+        store: kvStoreHandler.store,
+        pluginStore: pluginService.pluginManager.kvStore,
+        pluginIds: () => pluginService.availablePlugins.map((m) => m.id),
+        onPluginStorageImported: (pluginIds) async {
+          for (final id in pluginIds) {
+            if (pluginService.isPluginLoaded(id)) {
+              await pluginService.reloadPlugin(id);
+            }
+          }
+        },
+      ),
       if (beanStorage != null)
         BeanExportSection(
           storage: beanStorage,

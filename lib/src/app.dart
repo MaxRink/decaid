@@ -152,6 +152,7 @@ class MyApp extends StatefulWidget {
     this.appLogUploadService,
     this.batteryController,
     this.accountConsentStore,
+    this.nativeApiToken,
     required this.credentials,
     this.listenerRecoveryCoordinator,
     required this.startupCoordinator,
@@ -183,6 +184,7 @@ class MyApp extends StatefulWidget {
   final AppLogUploadService? appLogUploadService;
   final BatteryController? batteryController;
   final AccountConsentStore? accountConsentStore;
+  final String? nativeApiToken;
   final GithubCredentialProvider credentials;
   final ListenerRecoveryCoordinator? listenerRecoveryCoordinator;
   final AppStartupCoordinator startupCoordinator;
@@ -264,6 +266,7 @@ class _MyAppState extends State<MyApp> {
               settingsController: widget.settingsController,
               persistenceController: widget.persistenceController,
               workflowController: widget.workflowController,
+              nativeApiToken: widget.nativeApiToken,
             ).builder,
           ),
         createScanStep(
@@ -575,6 +578,7 @@ class _MyAppState extends State<MyApp> {
                         de1Controller: widget.de1Controller,
                         decentAccountService: widget.decentAccountService,
                         githubCredentials: widget.credentials,
+                        nativeApiToken: widget.nativeApiToken,
                         profileStorageService: widget.profileStorageService,
                         beanStorageService: widget.beanStorage,
                         grinderStorageService: widget.grinderStorage,

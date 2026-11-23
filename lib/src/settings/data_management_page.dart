@@ -45,6 +45,7 @@ class DataManagementPage extends StatefulWidget {
     required this.de1Controller,
     required this.decentAccountService,
     this.githubCredentials,
+    this.nativeApiToken,
     this.profileStorageService,
     this.beanStorageService,
     this.grinderStorageService,
@@ -60,6 +61,7 @@ class DataManagementPage extends StatefulWidget {
   final De1Controller de1Controller;
   final DecentAccountService? decentAccountService;
   final GithubCredentialProvider? githubCredentials;
+  final String? nativeApiToken;
   final ProfileStorageService? profileStorageService;
   final BeanStorageService? beanStorageService;
   final GrinderStorageService? grinderStorageService;
@@ -297,7 +299,9 @@ class _DataManagementPageState extends State<DataManagementPage> {
         dialogTitle: 'Choose where to save backup',
         writeArchive: (dest) async {
           _showProgressDialog(context, 'Preparing full backup...');
-          final transfer = BackupTransferService();
+          final transfer = BackupTransferService(
+            bearerToken: widget.nativeApiToken,
+          );
           try {
             await transfer.downloadExportZipTo(
               'http://localhost:8080/api/v1/data/export',
@@ -494,7 +498,7 @@ class _DataManagementPageState extends State<DataManagementPage> {
 
     _showProgressDialog(context, 'Importing backup...');
 
-    final transfer = BackupTransferService();
+    final transfer = BackupTransferService(bearerToken: widget.nativeApiToken);
     try {
       final file = result.files.first;
       final filePath = file.path;

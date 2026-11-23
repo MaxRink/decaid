@@ -21,13 +21,19 @@ class ProxyTokenService {
   final Map<String, ProxyCaller> _tokens = {};
   late String _skinToken;
 
-  ProxyTokenService({String? skinToken}) {
+  ProxyTokenService({String? skinToken}) : nativeToken = generateToken() {
     _skinToken = skinToken ?? generateToken();
     _tokens[_skinToken] = const ProxyCaller(
       id: 'skin',
       scopes: {scopeAccountProxy},
     );
+    _tokens[nativeToken] = const ProxyCaller(
+      id: 'native',
+      scopes: {scopeExtensionsManage},
+    );
   }
+
+  final String nativeToken;
 
   String get skinToken => _skinToken;
 
@@ -56,7 +62,7 @@ class ProxyTokenService {
   }
 
   void revokeToken(String token) {
-    if (token == _skinToken) return;
+    if (token == _skinToken || token == nativeToken) return;
     _tokens.remove(token);
   }
 

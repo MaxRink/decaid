@@ -1180,6 +1180,19 @@ Sync responses use semantic results rather than transport status alone. Each dir
 
 In `two_way` mode, push runs only after every expected pull section completes by default. Set `continueOnPullFailure: true` to explicitly continue after a partial or failed pull; the option is limited to `two_way` and is never inferred from overwrite handling. A complete operation returns `200`, an incomplete single-direction operation returns `502`, and an incomplete two-way operation with meaningful progress returns `207`; a two-way operation with no complete or partial phase returns `502` (its body may still report `partial` only when meaningful progress exists). Legacy flat and structured remote import responses are supported, but malformed, contradictory, hybrid, missing-section, and HTTP `200` responses with embedded errors are not treated as success.
 
+`store.json` holds the key-value store namespaces. Namespaces that belong to
+an installed plugin (its `host.storage`, see
+[Plugins](Plugins.md#security-considerations)) are exported and imported only
+when the request carries an `extensions:manage` bearer; the app's own Data
+Management screen and onboarding import send one. Without it, export leaves
+them out and import skips them, adding a warning such as `Plugin storage for
+skale.reaplugin was not imported: ...` to the `store` section result. When
+plugin storage is imported, every affected plugin that is running is reloaded
+so it reads the restored values. `POST /api/v1/data/sync` never transfers
+plugin storage. Before this change an export only contained a plugin namespace
+if a client had opened it through `/api/v1/store/` since the app started, and
+any import wrote plugin namespaces without a credential.
+
 Backups are ZIP archives with one JSON file per registered section:
 `profiles.json`, `shots.json`, `workflow.json`, `settings.json`, `store.json`,
 `steams.json`, `beans.json`, and `grinders.json`. Import matches files by their

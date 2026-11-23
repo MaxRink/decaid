@@ -1083,6 +1083,7 @@ Future<void> startDecaidNormalServices({
   runApp(
     WithForegroundTask(
       child: AppRoot(
+        nativeApiToken: proxyTokenService.nativeToken,
         directConnect: cliArgs.direct,
         settingsController: settingsController,
         deviceController: deviceController,
@@ -1254,6 +1255,7 @@ class AppRoot extends StatefulWidget {
   final DisplayController displayController;
   final AccountConsentStore? accountConsentStore;
   final GithubCredentialProvider credentials;
+  final String? nativeApiToken;
   final ListenerRecoveryCoordinator? listenerRecoveryCoordinator;
 
   const AppRoot({
@@ -1285,6 +1287,7 @@ class AppRoot extends StatefulWidget {
     required this.displayController,
     this.accountConsentStore,
     required this.credentials,
+    this.nativeApiToken,
     this.listenerRecoveryCoordinator,
   });
 
@@ -1389,6 +1392,7 @@ class _AppRootState extends State<AppRoot> {
         batteryController: widget.batteryController,
         displayController: widget.displayController,
         accountConsentStore: widget.accountConsentStore,
+        nativeApiToken: widget.nativeApiToken,
         credentials: widget.credentials,
         listenerRecoveryCoordinator: widget.listenerRecoveryCoordinator,
         startupCoordinator: _startupCoordinator,

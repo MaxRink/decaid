@@ -31,6 +31,7 @@ OnboardingStep createImportStep({
   required PersistenceController persistenceController,
   WorkflowController? workflowController,
   Future<BackupImportResponse> Function(String filePath)? importBackup,
+  String? nativeApiToken,
 }) {
   return OnboardingStep(
     id: 'import',
@@ -44,6 +45,7 @@ OnboardingStep createImportStep({
       persistenceController: persistenceController,
       workflowController: workflowController,
       importBackup: importBackup,
+      nativeApiToken: nativeApiToken,
     ),
   );
 }
@@ -57,6 +59,7 @@ class _ImportStepView extends StatefulWidget {
   final PersistenceController persistenceController;
   final WorkflowController? workflowController;
   final Future<BackupImportResponse> Function(String filePath)? importBackup;
+  final String? nativeApiToken;
 
   const _ImportStepView({
     required this.controller,
@@ -67,6 +70,7 @@ class _ImportStepView extends StatefulWidget {
     required this.persistenceController,
     this.workflowController,
     this.importBackup,
+    this.nativeApiToken,
   });
 
   @override
@@ -212,7 +216,7 @@ class _ImportStepViewState extends State<_ImportStepView> {
   }
 
   Future<BackupImportResponse> _uploadZip(String filePath) async {
-    final transfer = BackupTransferService();
+    final transfer = BackupTransferService(bearerToken: widget.nativeApiToken);
     try {
       return await transfer.uploadZip(
         'http://localhost:8080/api/v1/data/import',
