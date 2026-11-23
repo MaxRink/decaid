@@ -65,8 +65,12 @@ class ScaleController {
     _scaleSnapshot = snapshotSubscription;
     try {
       await scale.onConnect();
-    } catch (e) {
-      log.warning('Scale failed to connect (onConnect threw)', e);
+    } catch (e, st) {
+      log.warning(
+        'Scale ${scale.deviceId} failed to connect (onConnect threw): $e',
+        e,
+      );
+      log.fine('onConnect failure stack for ${scale.deviceId}', e, st);
       await _releaseSnapshotSubscription(snapshotSubscription);
       if (generation == _connectionGeneration) {
         _connectionController.add(ConnectionState.disconnected);

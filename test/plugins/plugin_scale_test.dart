@@ -1,9 +1,11 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:logging/logging.dart';
 import 'package:reaprime/src/controllers/scale_controller.dart';
 import 'package:reaprime/src/models/device/scale.dart';
 import 'package:reaprime/src/models/device/device.dart';
+import 'package:reaprime/src/plugins/plugin_ble_session.dart';
 import 'package:reaprime/src/plugins/plugin_device_service.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
 import 'package:reaprime/src/plugins/plugin_scale.dart';
@@ -519,4 +521,35 @@ void main() {
       await scale.dispose();
     },
   );
+
+  test('a refused plugin connect is logged with its reason', () async {
+    final records = <LogRecord>[];
+    final logs = Logger.root.onRecord
+        .where((record) => record.loggerName == 'PluginProtocolDevice')
+        .listen(records.add);
+    addTearDown(logs.cancel);
+    final scale = PluginScale(
+      deviceId: 'plugin:skale.reaplugin:skale:f3',
+      name: 'Skale',
+      capabilities: const {},
+      invoke: (operation, payload) async => {},
+      prepareConnection: (_) async => throw const PluginBleException(
+        'stale_session',
+        'BLE ownership changed',
+      ),
+    );
+    addTearDown(scale.dispose);
+
+    await expectLater(scale.onConnect(), throwsA(isA<PluginBleException>()));
+
+    expect(
+      records.map((record) => record.message),
+      contains(
+        allOf(
+          contains('plugin:skale.reaplugin:skale:f3'),
+          contains('stale_session: BLE ownership changed'),
+        ),
+      ),
+    );
+  });
 }

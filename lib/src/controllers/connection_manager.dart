@@ -2530,9 +2530,16 @@ class ConnectionManager {
         await settingsController.setPreferredGrinderDeviceId(grinder.deviceId);
         return const ConnectionResult.succeeded();
       } on TimeoutException catch (error) {
+        _log.warning('Grinder ${grinder.deviceId} failed to connect: $error');
         await grinderController.cancelConnection(grinder);
         return ConnectionResult.timedOut(error.toString());
-      } catch (error) {
+      } catch (error, stackTrace) {
+        _log.warning('Grinder ${grinder.deviceId} failed to connect: $error');
+        _log.fine(
+          'Grinder connect failure stack for ${grinder.deviceId}',
+          error,
+          stackTrace,
+        );
         return ConnectionResult.failed(error.toString());
       }
     });
