@@ -289,6 +289,15 @@ void main() {
       'plugin:test.plugin:sensor:sensor',
       'plugin:test.plugin:grinder:grinder',
     });
+    expect(find.byTooltip('Device diagnostics'), findsOneWidget);
+    await tester.ensureVisible(find.byTooltip('Device diagnostics'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Device diagnostics'));
+    await tester.pump();
+    expect(
+      launched.removeLast().queryParameters['deviceId'],
+      'plugin:test.plugin:sensor:diagnostics',
+    );
     expect(find.text('Auto-connect Grinder'), findsOneWidget);
     await tester.ensureVisible(find.text('grinder name'));
     await tester.tap(find.text('grinder name'));
@@ -330,6 +339,80 @@ void main() {
     controller.dispose();
     service.dispose();
     nativeDiscovery.dispose();
+  });
+
+  testWidgets('scale offers settings and diagnostics surfaces side by side', (
+    tester,
+  ) async {
+    final discovery = MockDeviceDiscoveryService();
+    final controller = DeviceController([discovery]);
+    await controller.initialize();
+    final settings = SettingsController(MockSettingsService());
+    await settings.loadSettings();
+    final device = PluginScale(
+      deviceId: 'plugin:skale:skale:one',
+      name: 'Skale',
+      pluginId: 'skale',
+      capabilities: const {},
+      surfaces: const [
+        PluginDeviceSurface(
+          id: 'diag',
+          role: 'diagnostics',
+          endpoint: 'device-diagnostics',
+        ),
+        PluginDeviceSurface(
+          id: 'settings',
+          role: 'settings',
+          endpoint: 'device-settings',
+        ),
+      ],
+      invoke: (_, _) async => const {},
+    );
+    discovery.addDevice(device);
+    var runtimeActive = true;
+    final launched = <Uri>[];
+    await tester.pumpWidget(
+      ShadApp(
+        home: DeviceManagementPage(
+          settingsController: settings,
+          deviceController: controller,
+          isPluginRuntimeActive: (_) => runtimeActive,
+          settingsLauncher: (uri) async {
+            launched.add(uri);
+            return true;
+          },
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('Device settings'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Device diagnostics'));
+    await tester.pump();
+    expect(launched.map((uri) => uri.path), [
+      '/api/v1/plugins/skale/device-settings',
+      '/api/v1/plugins/skale/device-diagnostics',
+    ]);
+
+    runtimeActive = false;
+    await tester.pumpWidget(
+      ShadApp(
+        home: DeviceManagementPage(
+          settingsController: settings,
+          deviceController: controller,
+          isPluginRuntimeActive: (_) => runtimeActive,
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byTooltip('Device settings'), findsNothing);
+    expect(find.byTooltip('Device diagnostics'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    controller.dispose();
+    discovery.dispose();
+    await device.dispose();
   });
 
   testWidgets('retired and unloaded device callbacks refuse launch', (

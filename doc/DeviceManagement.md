@@ -1696,8 +1696,11 @@ connection/session availability filtering, so settings can open before connectin
 The owning plugin runtime must be active: settings eligibility is revoked when
 the owning generation starts retiring, before asynchronous disconnect finishes.
 Button visibility and launch refusal use the same runtime-liveness gate.
+A declared `role: "diagnostics"` surface adds a **Device diagnostics** action
+beside it under the same rules. Device management is the only native screen
+that configures scales and grinders, so these actions live only there.
 Machine, Scale, and Grinder auto-connect preferences remain independent; other
-devices with settings surfaces appear in a neutral listing.
+devices with settings or diagnostics surfaces appear in a neutral listing.
 
 The action resolves the authority-built relative `href` against
 `http://localhost:8080` and opens it in the platform in-app browser. Its query is

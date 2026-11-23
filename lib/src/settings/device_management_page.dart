@@ -78,7 +78,7 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
             d.type != DeviceType.machine &&
             d.type != DeviceType.scale &&
             d.type != DeviceType.grinder &&
-            _settingsHref(d) != null,
+            _surfaceHrefs(d).isNotEmpty,
       )
       .toList();
 
@@ -230,7 +230,7 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
                         ? () => onSelected(device.deviceId)
                         : null,
                     showSelection: selectable,
-                    trailing: _settingsButton(device),
+                    trailing: _surfaceButtons(device),
                   ),
                 ),
         ],
@@ -317,35 +317,44 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
     );
   }
 
-  String? _settingsHref(Device device) {
-    if (device is! PluginDeviceAdapter) return null;
+  /// First declared href per supported surface role, gated on the owning
+  /// plugin runtime being active.
+  Map<String, String> _surfaceHrefs(Device device) {
+    if (device is! PluginDeviceAdapter) return const {};
     final authority = device.surfaceAuthority;
     if (authority == null ||
         !widget.isPluginRuntimeActive(authority.pluginId)) {
-      return null;
+      return const {};
     }
-    final surfaces = authority.resolve(
+    final hrefs = <String, String>{};
+    for (final surface in authority.resolve(
       device.deviceId,
       deviceName: device.name,
-    );
-    for (final surface in surfaces) {
-      if (surface['role'] == 'settings') return surface['href'];
+    )) {
+      hrefs.putIfAbsent(surface['role']!, () => surface['href']!);
     }
-    return null;
+    return hrefs;
   }
 
-  Widget? _settingsButton(Device device) {
-    if (_settingsHref(device) == null) {
-      return null;
-    }
-    return IconButton(
-      tooltip: 'Device settings',
-      icon: const Icon(Icons.settings_outlined),
-      onPressed: () => _openDeviceSettings(device),
-    );
+  Widget? _surfaceButtons(Device device) {
+    final hrefs = _surfaceHrefs(device);
+    final buttons = [
+      for (final (role, tooltip, icon) in const [
+        ('settings', 'Device settings', Icons.settings_outlined),
+        ('diagnostics', 'Device diagnostics', Icons.monitor_heart_outlined),
+      ])
+        if (hrefs.containsKey(role))
+          IconButton(
+            tooltip: tooltip,
+            icon: Icon(icon),
+            onPressed: () => _openDeviceSurface(device, role),
+          ),
+    ];
+    if (buttons.isEmpty) return null;
+    return Row(mainAxisSize: MainAxisSize.min, children: buttons);
   }
 
-  Future<void> _openDeviceSettings(Device device) async {
+  Future<void> _openDeviceSurface(Device device, String role) async {
     if (!widget.deviceController.devices.any(
       (current) => identical(current, device),
     )) {
@@ -354,7 +363,7 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
     }
     bool launched = false;
     try {
-      final href = _settingsHref(device);
+      final href = _surfaceHrefs(device)[role];
       if (href == null) {
         _showSettingsError();
         return;
