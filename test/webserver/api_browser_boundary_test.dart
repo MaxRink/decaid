@@ -96,6 +96,12 @@ void main() {
           },
         );
       })
+      ..get('/dashboard', (Request r) {
+        return Response.ok(
+          '<html></html>',
+          headers: {'content-type': 'text/html'},
+        );
+      })
       ..delete('/api/v1/machine/settings/reset', (Request r) {
         reached.add('DELETE reset');
         return Response.ok('{}');
@@ -381,23 +387,100 @@ void main() {
   });
 
   group('framing', () {
-    test('host-served HTML may only be framed by its own origin', () async {
-      final page = await send('GET', '/api/v1/plugins/x.reaplugin/ui');
-      expect(page.headers['x-frame-options'], 'SAMEORIGIN');
-      expect(page.headers['content-security-policy'], "frame-ancestors 'self'");
-    });
+    List<String> frameAncestors(Response response) {
+      final policy = response.headers['content-security-policy'] ?? '';
+      final directive = policy
+          .split(';')
+          .map((part) => part.trim())
+          .firstWhere((part) => part.startsWith('frame-ancestors'));
+      return directive.split(RegExp(r'\s+')).skip(1).toList();
+    }
+
+    test(
+      'a plugin page may be framed by the device skin origin only',
+      () async {
+        final viaLoopback = await send('GET', '/api/v1/plugins/x.reaplugin/ui');
+        expect(viaLoopback.headers['x-frame-options'], isNull);
+        expect(
+          frameAncestors(viaLoopback),
+          unorderedEquals([
+            "'self'",
+            'http://localhost:$_skinPort',
+            'http://127.0.0.1:$_skinPort',
+            'http://[::1]:$_skinPort',
+          ]),
+        );
+
+        final viaLan = await send(
+          'GET',
+          '/api/v1/plugins/x.reaplugin/ui',
+          host: '$_deviceAddress:8080',
+          peer: '192.168.12.20',
+        );
+        final allowed = frameAncestors(viaLan);
+        expect(allowed, contains('http://$_deviceAddress:$_skinPort'));
+        expect(allowed, isNot(contains('https://evil.example')));
+        expect(allowed.where((source) => source.contains('*')), isEmpty);
+        expect(
+          allowed.every(
+            (source) =>
+                source == "'self'" ||
+                source.endsWith(':$_skinPort') &&
+                    (source.contains(_deviceAddress) ||
+                        source.contains('localhost') ||
+                        source.contains('127.0.0.1') ||
+                        source.contains('[::1]')),
+          ),
+          isTrue,
+          reason: '$allowed',
+        );
+      },
+    );
 
     test('a plugin CSP keeps its rules and gains frame-ancestors', () async {
       final page = await send('GET', '/api/v1/plugins/csp.reaplugin/ui');
-      expect(
-        page.headers['content-security-policy'],
-        "default-src 'self'; frame-ancestors 'self'",
-      );
+      final policy = page.headers['content-security-policy']!;
+      expect(policy, startsWith("default-src 'self'; frame-ancestors 'self'"));
+      expect(policy, contains('http://localhost:$_skinPort'));
+    });
+
+    test('host pages stay same-origin only', () async {
+      for (final path in [
+        '/dashboard',
+        '/api/v1/plugins/settings.reaplugin/ui',
+      ]) {
+        final page = await send('GET', path);
+        expect(page.headers['x-frame-options'], 'SAMEORIGIN', reason: path);
+        expect(
+          page.headers['content-security-policy'],
+          "frame-ancestors 'self'",
+          reason: path,
+        );
+      }
     });
 
     test('JSON responses are left alone', () async {
       final json = await send('GET', '/api/v1/machine/state');
       expect(json.headers['content-security-policy'], isNull);
+    });
+
+    test('the API server sends no default X-Frame-Options', () async {
+      final server = await serveApiHandler(
+        (request) => Response.ok(
+          '<html></html>',
+          headers: {'content-type': 'text/html'},
+        ),
+        '127.0.0.1',
+        0,
+      );
+      addTearDown(() => server.close(force: true));
+      final client = HttpClient();
+      addTearDown(client.close);
+      final response = await (await client.getUrl(
+        Uri.parse('http://127.0.0.1:${server.port}/'),
+      )).close();
+      await response.drain<void>();
+      expect(response.headers.value('x-frame-options'), isNull);
     });
   });
 
