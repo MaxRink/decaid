@@ -2016,6 +2016,10 @@ function createResearchSharing() {
   };
   const flag = (out, key, value) => { if (typeof value === "boolean") out[key] = value; };
   const validId = value => typeof value === "string" && /^[a-f0-9]{32}$/.test(value);
+  // Collector-issued installation token: binds this client's observations so
+  // another client cannot overwrite them. Kept per collector, never in records.
+  const validToken = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+  const MAX_TOKENS = 8;
   function randomId() {
     if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
       const bytes = new Uint8Array(16); crypto.getRandomValues(bytes);
@@ -2167,7 +2171,7 @@ function createResearchSharing() {
     if (!adapters || typeof adapters.load !== "function" || typeof adapters.save !== "function")
       throw new Error("Acknowledged local load/save adapters required");
     const fresh = () => ({ schemaVersion: VERSION, policyVersion: POLICY, localEnabled: true, sharing: false, endpoint: null,
-      nextRevision: 0, records: [], queue: [], fingerprints: [] });
+      nextRevision: 0, records: [], queue: [], fingerprints: [], collectorTokens: [] });
     const localKey = key => {
       if (typeof key !== "string" || !key.length || key.length > 256) throw new Error("Invalid local research key");
       return key;
@@ -2194,8 +2198,13 @@ function createResearchSharing() {
         if (!validId(item.observationId) || !Number.isSafeInteger(item.revision) || item.revision < 1) throw new Error("Invalid observation ledger");
         return { key: localKey(item.key), fingerprint: item.fingerprint, observationId: item.observationId, revision: item.revision };
       });
+      // Optional: storage written before collector enrolment has no tokens.
+      const tokens = value.collectorTokens == null ? [] : value.collectorTokens;
+      if (!Array.isArray(tokens) || tokens.length > MAX_TOKENS || tokens.some(item => !object(item) || !validToken(item.token)))
+        throw new Error("Invalid research collector tokens");
+      const collectorTokens = tokens.map(item => ({ endpoint: endpoint(item.endpoint), token: item.token }));
       return { schemaVersion: VERSION, policyVersion: POLICY, localEnabled: value.localEnabled, sharing: value.sharing,
-        endpoint: value.endpoint == null ? null : endpoint(value.endpoint), nextRevision: value.nextRevision, records, queue, fingerprints };
+        endpoint: value.endpoint == null ? null : endpoint(value.endpoint), nextRevision: value.nextRevision, records, queue, fingerprints, collectorTokens };
     };
     const updatePermission = () => { permitted = state.sharing && pendingConsent === null && !storageError; };
     const install = value => { state = decode(value) || fresh(); updatePermission(); };
@@ -2270,12 +2279,40 @@ function createResearchSharing() {
         return { record: clone(record), ...status() };
       });
     }
+    const tokenFor = target => state.collectorTokens.find(item => item.endpoint === target)?.token;
+    const POST_OPTIONS = { method: "POST", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", cache: "no-store" };
+    // Ask the collector for an installation token before the first upload.
+    async function enrol() {
+      // Already enrolled: skip the lock entirely (the upload re-checks under it).
+      if (state.endpoint && tokenFor(state.endpoint)) return;
+      const request = await serial(() => {
+        if (!permitted || !state.sharing || storageError || !state.queue.length || !state.endpoint || tokenFor(state.endpoint)) return null;
+        if (typeof adapters.send !== "function") throw new Error("Research transport unavailable");
+        const response = adapters.send(state.endpoint, { ...POST_OPTIONS, headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ schemaVersion: VERSION, policyVersion: POLICY, enrol: true }) });
+        return { generation, endpoint: state.endpoint, response: Promise.resolve(response).then(value => ({ value }), error => ({ error })) };
+      });
+      if (!request) return;
+      const result = await request.response;
+      if (result.error) throw result.error;
+      if (!result.value || !result.value.ok || result.value.redirected) throw new Error("Research collector enrolment failed");
+      const receipt = await result.value.json();
+      if (!receipt || !validToken(receipt.token)) throw new Error("Invalid research collector enrolment");
+      await serial(async () => {
+        if (request.generation !== generation || state.endpoint !== request.endpoint || tokenFor(request.endpoint)) return;
+        await save({ ...state, collectorTokens: state.collectorTokens.filter(item => item.endpoint !== request.endpoint)
+          .concat([{ endpoint: request.endpoint, token: receipt.token }]).slice(-MAX_TOKENS) });
+      });
+    }
     async function flush() {
       if (inflight) return inflight;
       const operation = async () => {
+        await enrol();
         const batch = await serial(() => {
           if (!permitted || !state.sharing || storageError || !state.queue.length || !state.endpoint) return null;
           if (typeof adapters.send !== "function") throw new Error("Research transport unavailable");
+          const token = tokenFor(state.endpoint);
+          if (!token) return null;
           const entries = [];
           for (const item of state.queue.slice(0, MAX_BATCH)) {
             if (JSON.stringify(entries.concat([item]).map(entry => entry.record)).length > 60000) break;
@@ -2285,8 +2322,8 @@ function createResearchSharing() {
           abort = () => controller?.abort();
           // Start the request before releasing the storage lock. Awaiting it must
           // not block another tab's deletion, opt-out, or new observation.
-          const response = adapters.send(state.endpoint, { method: "POST", credentials: "omit", redirect: "error", referrerPolicy: "no-referrer", cache: "no-store",
-            headers: { "Content-Type": "application/json" }, signal: controller?.signal,
+          const response = adapters.send(state.endpoint, { ...POST_OPTIONS,
+            headers: { "Content-Type": "application/json", "X-Research-Token": token }, signal: controller?.signal,
             body: JSON.stringify({ schemaVersion: VERSION, policyVersion: POLICY, records: entries.map(item => item.record) }) });
           return { generation, endpoint: state.endpoint, entries: clone(entries), response: Promise.resolve(response).then(value => ({ value }), error => ({ error })) };
         });
@@ -2563,6 +2600,9 @@ function createPlugin(host, services) {
   let storageWriteBroken = false;
   let grinderProfiles = Object.create(null);
   let selectedGrinderProfileId = null;
+  let hostGrinderProfileId = null;
+  // {profileId, hostSetting}: a page choice and the host setting it overrode.
+  let pageSelection = null;
   let grinderStorageReady = false;
   let grinderStorageReadStarted = false;
   let grinderStorageUnavailable = false;
@@ -2643,7 +2683,8 @@ function createPlugin(host, services) {
       send: (url, init) => {
         if (!active || epoch !== sessionEpoch) throw new Error("plugin unloaded");
         factory().validateEndpoint(url);
-        return apiRequest(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: init.body });
+        const token = init.headers && init.headers["X-Research-Token"];
+        return apiRequest(url, { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { "X-Research-Token": token } : {}) }, body: init.body });
       },
     });
     return researchClient;
@@ -3096,22 +3137,39 @@ function createPlugin(host, services) {
       manualStopConfirmed: input.manualStopConfirmed === true,
     };
   }
+  // Feedback is keyed by host shot ID (UUIDs, "de1app-<clock>" imports).
+  const SHOT_ID = /^[A-Za-z0-9][A-Za-z0-9._:@+~-]{0,255}$/;
+  // Recommendations scan at most 250 recent shots, so 500 entries is ample.
+  const MAX_FEEDBACK = 500;
+  // Evict the least recently updated entries beyond the cap (never `keep`).
+  // Returns the evicted [id, entry] pairs so a failed write can restore them.
+  function trimFeedback(map, keep) {
+    const ids = Object.keys(map);
+    if (ids.length <= MAX_FEEDBACK) return [];
+    const updated = (id) => Date.parse(map[id].updatedAt) || 0;
+    return ids.filter((id) => id !== keep).sort((a, b) => updated(a) - updated(b))
+      .slice(0, ids.length - MAX_FEEDBACK)
+      .map((id) => { const entry = map[id]; delete map[id]; return [id, entry]; });
+  }
   function feedbackFromStorage(value) {
     if (value == null) return Object.create(null);
     if (typeof value !== "object" || Array.isArray(value)) return null;
     const result = Object.create(null);
+    let skipped = 0;
     for (const key of Object.keys(value)) {
-      if (
-        !key ||
-        key.length > 256 ||
-        !value[key] ||
-        typeof value[key] !== "object" ||
-        Array.isArray(value[key]) ||
-        typeof value[key].good !== "boolean"
-      )
-        return null;
       const entry = value[key];
-      if (entry.taste != null && !TASTES.includes(entry.taste)) return null;
+      // One damaged entry must not make every saved mark unavailable.
+      if (
+        !SHOT_ID.test(key) ||
+        !entry ||
+        typeof entry !== "object" ||
+        Array.isArray(entry) ||
+        typeof entry.good !== "boolean" ||
+        (entry.taste != null && !TASTES.includes(entry.taste))
+      ) {
+        skipped++;
+        continue;
+      }
       let confirmedContext, flavour, measuredBeanDose, timing;
       try {
         timing = timingFeedback(entry);
@@ -3122,7 +3180,8 @@ function createPlugin(host, services) {
           measuredBeanDose = validateMeasuredBeanDose(storedMeasurement);
         }
       } catch (_) {
-        return null;
+        skipped++;
+        continue;
       }
       result[key] = {
         good: entry.good,
@@ -3135,6 +3194,9 @@ function createPlugin(host, services) {
         measuredBeanDose,
       };
     }
+    if (skipped) log(`skipped ${skipped} invalid stored feedback entries; they are dropped on the next save`);
+    const evicted = trimFeedback(result, null).length;
+    if (evicted) log(`kept the ${MAX_FEEDBACK} most recently updated feedback entries; ${evicted} older entries are dropped on the next save`);
     return result;
   }
 
@@ -3249,11 +3311,8 @@ function createPlugin(host, services) {
       ),
       machineId: textOrNull(workflow.machine?.serialNumber || workflow.machine?.id || context.machineId),
       machineFlowCalibration: textOrNull(workflow.machine?.flowCalibration || context.flowCalibration),
-      grinderRpm: numberOrNull(
-        useSettings
-          ? value(context.grinderRpm, value(extras.grinderRpm, numberOrNull(settings.GrinderRPM)))
-          : value(context.grinderRpm, extras.grinderRpm),
-      ),
+      // No GrinderRPM setting exists; RPM comes only from the saved workflow.
+      grinderRpm: numberOrNull(value(context.grinderRpm, extras.grinderRpm)),
       burrIdentity: textOrNull(
         useSettings
           ? value(
@@ -3518,7 +3577,7 @@ function createPlugin(host, services) {
       try {
         // The host acknowledges with the written data only, so tag it to keep
         // grinder acks apart from concurrent feedback writes.
-        host.storage({ type: "write", key: GRINDER_STORAGE_KEY, data: { key: GRINDER_STORAGE_KEY, schemaVersion: 1, profiles: grinderProfiles, selectedProfileId: selectedGrinderProfileId } });
+        host.storage({ type: "write", key: GRINDER_STORAGE_KEY, data: { key: GRINDER_STORAGE_KEY, schemaVersion: 1, profiles: grinderProfiles, selectedProfileId: selectedGrinderProfileId, pageSelection } });
       } catch (_) {
         clearTimeout(timeout);
         grinderWriteWaiters = grinderWriteWaiters.filter((entry) => entry !== waiter);
@@ -3541,10 +3600,11 @@ function createPlugin(host, services) {
     if (operation === "delete") {
       if (!grinderProfiles[id]) throw new Error("grinder profile not found");
       const previous = grinderProfiles[id];
-      const previousSelection = selectedGrinderProfileId;
+      const previousSelection = selectedGrinderProfileId, previousPage = pageSelection;
       delete grinderProfiles[id];
       if (selectedGrinderProfileId === id) selectedGrinderProfileId = null;
-      try { await persistGrinderProfiles(); } catch (error) { grinderProfiles[id] = previous; selectedGrinderProfileId = previousSelection; throw error; }
+      if (pageSelection?.profileId === id) pageSelection = null;
+      try { await persistGrinderProfiles(); } catch (error) { grinderProfiles[id] = previous; selectedGrinderProfileId = previousSelection; pageSelection = previousPage; throw error; }
       return { deleted: true, id };
     }
     if (operation !== "upsert") throw new Error("unsupported grinder profile operation");
@@ -4705,13 +4765,27 @@ if(researchPanel){
 
   return {
     id: ID,
-    version: "0.6.1",
+    version: "0.6.2",
     onLoad(nextSettings) {
       sessionEpoch += 1;
       cacheGeneration += 1;
       active = true;
       settings = nextSettings || {};
-      if (textOrNull(settings.GrinderProfileId)) selectedGrinderProfileId = textOrNull(settings.GrinderProfileId);
+      hostGrinderProfileId = textOrNull(settings.GrinderProfileId);
+      selectedGrinderProfileId = hostGrinderProfileId;
+      pageSelection = null;
+      // Start every load from a clean storage state; onUnload marks it unavailable.
+      feedback = Object.create(null);
+      feedbackQueue = Promise.resolve();
+      storageReady = false;
+      storageUnavailable = false;
+      storageWriteBroken = false;
+      storageWaiters = [];
+      storageWriteWaiters = [];
+      grinderProfiles = Object.create(null);
+      grinderStorageReady = false;
+      grinderStorageWaiters = [];
+      grinderWriteWaiters = [];
       grinderStorageUnavailable = false;
       grinderWriteBroken = false;
       grinderStorageReadStarted = false;
@@ -4780,10 +4854,19 @@ if(researchPanel){
           grinderStorageWaiters.splice(0).forEach((waiter) => waiter.reject(new Error("grinder profile storage unavailable")));
         } else {
           grinderProfiles = restored;
-          const persistedSelection = textOrNull(event.payload.value?.selectedProfileId);
-          selectedGrinderProfileId = persistedSelection && grinderProfiles[persistedSelection] ? persistedSelection : null;
-          if (!textOrNull(settings.GrinderProfileId) && selectedGrinderProfileId)
-            settings = { ...settings, GrinderProfileId: selectedGrinderProfileId };
+          const stored = event.payload.value || {};
+          const page = stored.pageSelection;
+          pageSelection = page && typeof page === "object" && textOrNull(page.profileId) && grinderProfiles[page.profileId] &&
+            (page.hostSetting === null || typeof page.hostSetting === "string")
+            ? { profileId: page.profileId, hostSetting: page.hostSetting } : null;
+          const persistedSelection = textOrNull(stored.selectedProfileId);
+          // A choice made on the plugin page wins until the host's own
+          // GrinderProfileId setting changes; otherwise the host setting wins.
+          let chosen = hostGrinderProfileId;
+          if (pageSelection && pageSelection.hostSetting === hostGrinderProfileId) chosen = pageSelection.profileId;
+          else if (!hostGrinderProfileId && persistedSelection && grinderProfiles[persistedSelection]) chosen = persistedSelection;
+          selectedGrinderProfileId = chosen;
+          if (chosen) settings = { ...settings, GrinderProfileId: chosen };
           grinderStorageReady = true;
           grinderStorageWaiters.splice(0).forEach((waiter) => waiter.resolve());
         }
@@ -4815,6 +4898,12 @@ if(researchPanel){
         if (endpoint === "ui" && request.method === "GET")
           return html(200, page);
         if (endpoint === "sharing" && ["GET", "POST", "DELETE"].includes(request.method)) {
+          // Consent to upload, the collector address and archive deletion are
+          // owner decisions made on the plugin page. A browser always sends
+          // Origin with these requests; a tokenless LAN client sends none.
+          const ownerDecision = request.method === "DELETE" || (request.method === "POST" && bodyOf(request)?.sharing === true);
+          if (ownerDecision && (requestHeader(request, "origin") === undefined || crossSite(request)))
+            return json(403, { error: "Enable research sharing, choose a collector or delete research data from the plugin page.", code: "plugin_page_required", hostCapabilities: RESEARCH_HOST_LIMITS });
           try { return json(200, await researchEndpoint(request)); }
           catch (error) { return json(400, { error: error.message, hostCapabilities: RESEARCH_HOST_LIMITS }); }
         }
@@ -4832,13 +4921,15 @@ if(researchPanel){
           if (!profileId || profileId.length > 128) return json(400, { error: "GrinderProfileId is required" });
           await loadGrinderProfiles();
           if (!grinderProfiles[profileId]) return json(409, { error: "selected grinder profile is unavailable" });
-          const previousSelection = selectedGrinderProfileId;
+          const previousSelection = selectedGrinderProfileId, previousPage = pageSelection;
           const previousSetting = settings.GrinderProfileId;
           selectedGrinderProfileId = profileId;
+          pageSelection = { profileId, hostSetting: hostGrinderProfileId };
           settings = { ...settings, GrinderProfileId: profileId };
           try { await persistGrinderProfiles(); }
           catch (error) {
             selectedGrinderProfileId = previousSelection;
+            pageSelection = previousPage;
             settings = { ...settings };
             if (previousSetting) settings.GrinderProfileId = previousSetting;
             else delete settings.GrinderProfileId;
@@ -4898,8 +4989,8 @@ if(researchPanel){
           if (!input || typeof input !== "object" || Array.isArray(input))
             return json(400, { error: "feedback must be an object" });
           const shotId = textOrNull(input.shotId);
-          if (!shotId || shotId.length > 256 || typeof input.good !== "boolean")
-            return json(400, { error: "shotId and boolean good are required" });
+          if (!shotId || !SHOT_ID.test(shotId) || typeof input.good !== "boolean")
+            return json(400, { error: "a valid shotId and boolean good are required" });
           if (
             input.taste != null &&
             input.taste !== "" &&
@@ -4961,11 +5052,13 @@ if(researchPanel){
                 confirmedContext,
                 measuredBeanDose,
               };
+              const evicted = trimFeedback(feedback, shotId);
               try {
                 await persist();
               } catch (error) {
                 if (previous) feedback[shotId] = previous;
                 else delete feedback[shotId];
+                evicted.forEach(([id, entry]) => { feedback[id] = entry; });
                 throw error;
               }
             });
