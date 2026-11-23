@@ -1,0 +1,709 @@
+function createPlugin(host) {
+  const service = "0000ff08-0000-1000-8000-00805f9b34fb";
+  const weightCharacteristic = "0000ef81-0000-1000-8000-00805f9b34fb";
+  const commandCharacteristic = "0000ef80-0000-1000-8000-00805f9b34fb";
+  const buttonCharacteristic = "0000ef82-0000-1000-8000-00805f9b34fb";
+  const batteryService = "0000180f-0000-1000-8000-00805f9b34fb";
+  const batteryCharacteristic = "00002a19-0000-1000-8000-00805f9b34fb";
+  const deviceInformationService = "0000180a-0000-1000-8000-00805f9b34fb";
+  const firmwareCharacteristic = "00002a26-0000-1000-8000-00805f9b34fb";
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const initStepDelay = 1000;
+  const batteryRefreshInterval = 30 * 60 * 1000;
+  const deviceSettings = new Map();
+  const settingsOperations = new Map();
+  const instanceControls = new Map();
+  const pendingStorageReads = new Map();
+  const pendingStorageWrites = [];
+  const failedStorageReads = new Set();
+  // Host storage is asynchronous (Hive/open-box and put); keep the deadline
+  // bounded without treating a normal slow disk as an unrecoverable fault.
+  const storageAckTimeout = 5000;
+  const hostApi = "http://localhost:8080/api/v1";
+  const squareDebounce = 1000;
+  const machineControlHint =
+    "Allow machine control for the Skale plugin in Decaid Settings > Plugins";
+  let squareInFlight = false;
+  let lastSquarePress = -Infinity;
+  let machineControlMessage = null;
+  let storageWriteQueue = Promise.resolve();
+  let storageWriteFailure = null;
+  let unloaded = false;
+
+  function settingKey(deviceId) {
+    return "skale.reaplugin.device." + deviceId;
+  }
+
+  function jsonResponse(status, body) {
+    return {
+      status,
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    };
+  }
+
+  function htmlResponse(status, body) {
+    return {
+      status,
+      headers: {"Content-Type": "text/html; charset=utf-8"},
+      body,
+    };
+  }
+
+  const settingsPage = `<!doctype html>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta charset="utf-8">
+<title>Skale settings</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 1rem; max-width: 32rem; }
+  label { display: block; margin: .9rem 0; }
+  input, button { font: inherit; min-height: 2.5rem; }
+  output { display: block; min-height: 1.5rem; margin-top: .75rem; }
+</style>
+<form id="settings">
+  <input id="deviceId" type="hidden">
+  <p>Device: <span id="deviceLabel"></span></p>
+  <label><input id="usbPower" type="checkbox"> USB powered (suppress battery reads)</label>
+  <label><input id="squareButtonShot" type="checkbox"> Square button starts/stops a shot</label>
+  <p>Starts espresso only when this is the primary scale, the machine is idle and no
+  group head controller is present; stops a running shot. Never wakes the machine.</p>
+  <p id="machineControl" hidden></p>
+  <button id="save" disabled>Save</button>
+  <output id="status" role="status"></output>
+</form>
+<script>
+const form = document.getElementById("settings");
+const deviceId = document.getElementById("deviceId");
+const deviceLabel = document.getElementById("deviceLabel");
+const usbPower = document.getElementById("usbPower");
+const squareButtonShot = document.getElementById("squareButtonShot");
+const save = document.getElementById("save");
+const status = document.getElementById("status");
+const inputs = [save, usbPower, squareButtonShot];
+let loadGeneration = 0;
+let loaded = false;
+deviceId.value = new URLSearchParams(location.search).get("deviceId") || "";
+const deviceName = new URLSearchParams(location.search).get("deviceName");
+deviceLabel.textContent = deviceName || deviceId.value || "Unavailable";
+async function load() {
+  const id = deviceId.value;
+  const generation = ++loadGeneration;
+  loaded = false;
+  for (const input of inputs) input.disabled = true;
+  if (!id) {
+    status.textContent = "Device unavailable";
+    return;
+  }
+  status.textContent = "Loading...";
+  try {
+    const response = await fetch("device-settings?deviceId=" + encodeURIComponent(id));
+    if (!response.ok) throw new Error("Settings could not be loaded");
+    const value = await response.json();
+    if (generation !== loadGeneration) return;
+    usbPower.checked = value.usbPower === true;
+    squareButtonShot.checked = value.squareButtonShot === true;
+    loaded = true;
+    for (const input of inputs) input.disabled = false;
+    status.textContent = value.machineControlMessage || "";
+  } catch (error) {
+    if (generation === loadGeneration) status.textContent = error.message;
+  }
+}
+
+form.addEventListener("submit", async event => {
+  event.preventDefault();
+  if (!loaded) return;
+  status.textContent = "";
+  for (const input of inputs) input.disabled = true;
+  try {
+    const response = await fetch("device-settings?deviceId=" + encodeURIComponent(deviceId.value), {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({usbPower: usbPower.checked, squareButtonShot: squareButtonShot.checked}),
+    });
+    if (!response.ok) throw new Error("Settings could not be saved");
+    status.textContent = "Saved";
+  } catch (error) {
+    status.textContent = error.message;
+  } finally {
+    for (const input of inputs) input.disabled = !loaded;
+  }
+});
+async function showMachineControl() {
+  const indicator = document.getElementById("machineControl");
+  try {
+    const response = await fetch("/api/v1/plugins");
+    const plugin = response.ok ? (await response.json()).find(entry => entry.id === "skale.reaplugin") : null;
+    if (!plugin || typeof plugin.machineControl !== "boolean") return;
+    indicator.textContent = plugin.machineControl
+      ? "Decaid allows the Skale plugin to control the machine."
+      : "${machineControlHint}.";
+    indicator.hidden = false;
+  } catch (_) {}
+}
+deviceId.addEventListener("change", load);
+load();
+showMachineControl();
+</script>`;
+
+  function requestDeviceId(request) {
+    const deviceId = request.query && request.query.deviceId;
+    return typeof deviceId === "string" && deviceId.length > 0 && deviceId.length <= 256
+      ? deviceId
+      : null;
+  }
+
+  function queueSettings(deviceId, operation) {
+    const previous = settingsOperations.get(deviceId) || Promise.resolve();
+    const next = previous.catch(() => {}).then(operation);
+    settingsOperations.set(deviceId, next);
+    return next.finally(() => {
+      if (settingsOperations.get(deviceId) === next) {
+        settingsOperations.delete(deviceId);
+      }
+    });
+  }
+
+  function storageError(message) {
+    return new Error("Skale storage unavailable: " + message);
+  }
+
+  function failCachedSettings() {
+    for (const deviceId of deviceSettings.keys()) {
+      failedStorageReads.add(settingKey(deviceId));
+    }
+    deviceSettings.clear();
+  }
+
+  async function loadSettings(deviceId) {
+    return queueSettings(deviceId, async () => {
+      if (unloaded) return {value: null, known: false};
+      const key = settingKey(deviceId);
+      if (failedStorageReads.has(key)) {
+        return {value: null, known: false};
+      }
+      if (deviceSettings.has(deviceId)) {
+        return {value: deviceSettings.get(deviceId), known: true};
+      }
+      try {
+        const stored = await new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            pendingStorageReads.delete(key);
+            failedStorageReads.add(key);
+            reject(storageError("read acknowledgement timed out"));
+          }, storageAckTimeout);
+          pendingStorageReads.set(key, {resolve, reject, timer});
+          try { host.storage({type: "read", key}); } catch (error) {
+            clearTimeout(timer);
+            pendingStorageReads.delete(key);
+            failedStorageReads.add(key);
+            reject(error);
+          }
+        });
+        if (stored == null) {
+          const value = {usbPower: false, squareButtonShot: false};
+          deviceSettings.set(deviceId, value);
+          return {value, known: true};
+        }
+        const squareButtonShot = stored.squareButtonShot === undefined
+          ? false
+          : stored.squareButtonShot;
+        if (typeof stored.usbPower !== "boolean" || typeof squareButtonShot !== "boolean") {
+          return {value: null, known: false};
+        }
+        const value = {
+          usbPower: stored.usbPower,
+          squareButtonShot,
+        };
+        deviceSettings.set(deviceId, value);
+        return {value, known: true};
+      } catch (_) {
+        return {value: null, known: false};
+      }
+    });
+  }
+
+  async function saveSettings(deviceId, value) {
+    return queueSettings(deviceId, async () => {
+      if (unloaded) throw storageError("plugin unloaded; create a new instance to retry");
+      if (storageWriteFailure) throw storageWriteFailure;
+      const write = storageWriteQueue.catch(() => {}).then(() => {
+        if (storageWriteFailure) throw storageWriteFailure;
+        return new Promise((resolve, reject) => {
+        const key = settingKey(deviceId);
+        const pending = {deviceId, resolve, reject, timer: null};
+        pending.timer = setTimeout(() => {
+          const index = pendingStorageWrites.indexOf(pending);
+          if (index >= 0) pendingStorageWrites.splice(index, 1);
+          const error = storageError("write acknowledgement timed out");
+          storageWriteFailure = error;
+          failCachedSettings();
+          failedStorageReads.add(settingKey(deviceId));
+          while (pendingStorageWrites.length > 0) {
+            const abandoned = pendingStorageWrites.shift();
+            failedStorageReads.add(settingKey(abandoned.deviceId));
+            clearTimeout(abandoned.timer);
+            abandoned.reject(error);
+          }
+          reject(error);
+        }, storageAckTimeout);
+        pendingStorageWrites.push(pending);
+        try { host.storage({type: "write", key, data: value}); } catch (error) {
+          clearTimeout(pending.timer);
+          const index = pendingStorageWrites.indexOf(pending);
+          if (index >= 0) pendingStorageWrites.splice(index, 1);
+          storageWriteFailure = error;
+          failCachedSettings();
+          failedStorageReads.add(key);
+          reject(error);
+        }
+        });
+      });
+      storageWriteQueue = write.catch(() => {});
+      await write;
+      deviceSettings.set(deviceId, value);
+    });
+  }
+
+  function decodeBase64(data) {
+    if (typeof data !== "string" || data.length % 4 !== 0) return null;
+    const bytes = [];
+    for (let i = 0; i < data.length; i += 4) {
+      const a = alphabet.indexOf(data[i]);
+      const b = alphabet.indexOf(data[i + 1]);
+      const c = data[i + 2] === "=" ? 0 : alphabet.indexOf(data[i + 2]);
+      const d = data[i + 3] === "=" ? 0 : alphabet.indexOf(data[i + 3]);
+      if (a < 0 || b < 0 || c < 0 || d < 0) return null;
+      bytes.push((a << 2) | (b >> 4));
+      if (data[i + 2] !== "=") bytes.push(((b & 15) << 4) | (c >> 2));
+      if (data[i + 3] !== "=") bytes.push(((c & 3) << 6) | d);
+    }
+    return bytes;
+  }
+
+  function encode(bytes) {
+    return btoa(String.fromCharCode(...bytes));
+  }
+
+  function decodeWeight(data) {
+    const bytes = decodeBase64(data);
+    if (!bytes) return null;
+    if (bytes.length === 4) {
+      const raw = (bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24));
+      return raw / 2560;
+    }
+    if (bytes.length !== 5 && bytes.length !== 9) return null;
+    let mantissa = bytes[1] | (bytes[2] << 8) | (bytes[3] << 16);
+    if ((mantissa & 0x800000) !== 0) mantissa -= 0x1000000;
+    const exponent = bytes[4] >= 0x80 ? bytes[4] - 0x100 : bytes[4];
+    const weight = mantissa * Math.pow(10, exponent);
+    return Number.isFinite(weight) ? weight : null;
+  }
+
+  function decodeBattery(data) {
+    const bytes = decodeBase64(data);
+    return bytes && bytes.length === 1 && bytes[0] <= 100 ? bytes[0] : null;
+  }
+
+  function decodeFirmware(data) {
+    const bytes = decodeBase64(data);
+    if (!bytes || bytes.length === 0) return null;
+    let encoded = "";
+    for (const byte of bytes) encoded += "%" + byte.toString(16).padStart(2, "0");
+    let value;
+    try {
+      value = decodeURIComponent(encoded).replace(/\0+$/, "").trim();
+    } catch (_) {
+      return null;
+    }
+    if (value.length === 0) return null;
+    for (let i = 0; i < value.length; i++) {
+      const code = value.charCodeAt(i);
+      if (code < 0x20 || code === 0x7f) return null;
+    }
+    return value;
+  }
+
+  async function getJson(path) {
+    const response = await fetch(hostApi + path);
+    return response.ok ? response.json() : null;
+  }
+
+  async function requestMachineState(next) {
+    const response = await fetch(hostApi + "/machine/state/" + next, {method: "PUT"});
+    if (response.ok) {
+      machineControlMessage = null;
+    } else if (response.status === 403) {
+      const body = await response.json().catch(() => null);
+      if (body && body.code === "machine_control_not_granted") {
+        machineControlMessage = machineControlHint;
+      }
+    }
+  }
+
+  async function squarePressed(deviceId, isCurrent) {
+    const now = Date.now();
+    const settings = deviceSettings.get(deviceId);
+    if (!settings || settings.squareButtonShot !== true) return;
+    if (squareInFlight || now - lastSquarePress < squareDebounce) return;
+    lastSquarePress = now;
+    squareInFlight = true;
+    try {
+      const devices = await getJson("/devices");
+      const primary = Array.isArray(devices) && devices.some(entry =>
+        entry && entry.id === deviceId && entry.connectionRole === "primary");
+      if (!primary || !isCurrent()) return;
+      const snapshot = await getJson("/machine/state");
+      const machineState = snapshot && snapshot.state && snapshot.state.state;
+      if (!isCurrent()) return;
+      if (machineState === "espresso") {
+        await requestMachineState("idle");
+      } else if (machineState === "idle") {
+        const info = await getJson("/machine/info");
+        if (info && info.GHC === false && isCurrent()) await requestMachineState("espresso");
+      }
+    } catch (_) {
+      // Machine reads are best effort; a failed press does nothing.
+    } finally {
+      squareInFlight = false;
+    }
+  }
+
+  function delay() {
+    return new Promise(resolve => setTimeout(resolve, initStepDelay));
+  }
+
+  return {
+    id: "skale.reaplugin",
+    onEvent(event) {
+      if (unloaded) return;
+      if (event.name === "storageRead") {
+        const pending = pendingStorageReads.get(event.payload.key);
+        if (pending) {
+          pendingStorageReads.delete(event.payload.key);
+          clearTimeout(pending.timer);
+          pending.resolve(event.payload.value);
+        }
+      } else if (event.name === "storageWrite") {
+        if (storageWriteFailure) return;
+        const pending = pendingStorageWrites.shift();
+        if (pending) {
+          clearTimeout(pending.timer);
+          pending.resolve();
+        }
+      }
+    },
+    onLoad() {
+      unloaded = false;
+      return host.devices.bindDriver("skale", {
+        create(device) {
+          const deviceId = device && typeof device.id === "string" ? device.id : "";
+          let active = null;
+
+          async function applySettings(nextSettings) {
+            const state = active;
+            if (!isActive(state)) return;
+            const enabled = nextSettings.usbPower === true;
+            const pendingBatteryRead = state.batteryReadPromise;
+            if (state.usbPowerKnown && state.usbPower === enabled) return;
+            state.settingsEpoch++;
+            state.usbPowerKnown = true;
+            state.usbPower = enabled;
+            clearTimeout(state.batteryTimer);
+            state.batteryTimer = null;
+            state.battery = null;
+            state.session.publishInfo({batteryLevel: null}).catch(() => {});
+            if (pendingBatteryRead) await pendingBatteryRead.catch(() => {});
+            if (!enabled && state.services.includes(batteryService)) {
+              while (state.batteryReadInFlight) {
+                await state.batteryReadPromise;
+              }
+              await readBattery(state);
+              if (isActive(state)) scheduleBatteryRefresh(state);
+            }
+          }
+
+          function isActive(state) {
+            return state != null && active === state && !state.stopped;
+          }
+
+          function stop(state) {
+            if (!state || state.stopped) return;
+            state.stopped = true;
+            state.settingsEpoch++;
+            clearTimeout(state.batteryTimer);
+            if (instanceControls.get(deviceId) === applySettings) {
+              instanceControls.delete(deviceId);
+            }
+            if (!state.settled) {
+              state.settled = true;
+              state.reject(new Error("Skale session stopped"));
+            }
+          }
+
+          function fail(state, error) {
+            if (!state.settled) {
+              state.settled = true;
+              state.reject(error);
+            }
+          }
+
+          async function readBattery(state) {
+            if (!isActive(state) || !state.usbPowerKnown || state.usbPower) return;
+            if (state.batteryReadInFlight) return state.batteryReadPromise;
+            state.batteryReadInFlight = true;
+            const readEpoch = state.settingsEpoch;
+            state.batteryReadPromise = (async () => {
+              let value = null;
+              try {
+                value = decodeBattery(await state.session.gatt.read(
+                  batteryService,
+                  batteryCharacteristic,
+                ));
+              } catch (_) {
+                value = null;
+              }
+              if (!isActive(state) || readEpoch !== state.settingsEpoch || state.usbPower) return;
+              state.battery = value;
+              state.session.publishInfo({batteryLevel: value}).catch(() => {});
+            })();
+            try {
+              await state.batteryReadPromise;
+            } finally {
+              state.batteryReadInFlight = false;
+              state.batteryReadPromise = null;
+            }
+          }
+
+          async function publishInfo(state, services) {
+            if (!isActive(state) || !services.includes(deviceInformationService)) return;
+            const firmwareRead = state.session.gatt.read(
+              deviceInformationService,
+              firmwareCharacteristic,
+            ).then(decodeFirmware).catch(() => null);
+            const batteryRead = services.includes(batteryService)
+              ? readBattery(state)
+              : Promise.resolve();
+            const firmwareVersion = await firmwareRead;
+            await batteryRead;
+            state.firmwareVersion = firmwareVersion;
+            if (isActive(state)) {
+              await state.session.publishInfo({
+                firmwareVersion,
+                batteryLevel: state.battery,
+              });
+            }
+          }
+
+          function scheduleBatteryRefresh(state) {
+            clearTimeout(state.batteryTimer);
+            if (!state.usbPowerKnown || state.usbPower) return;
+            state.batteryTimer = setTimeout(async () => {
+              if (!isActive(state) || !state.usbPowerKnown || state.usbPower) return;
+              await readBattery(state);
+              if (isActive(state)) scheduleBatteryRefresh(state);
+            }, batteryRefreshInterval);
+          }
+
+          function command(bytes) {
+            const state = active;
+            if (!isActive(state)) {
+              return Promise.reject(new Error("Skale session is not connected"));
+            }
+            return state.session.gatt.writeWithoutResponse(
+              service,
+              commandCharacteristic,
+              encode(bytes),
+            );
+          }
+
+          return {
+            async connect(session) {
+              const state = {
+                session,
+                deviceId,
+                services: [],
+                stopped: false,
+                settled: false,
+                batteryTimer: null,
+                batteryReadInFlight: false,
+                batteryReadPromise: null,
+                battery: null,
+                firmwareVersion: null,
+                usbPower: false,
+                usbPowerKnown: false,
+                settingsEpoch: 0,
+                readyForWeight: false,
+                resolve: null,
+                reject: null,
+              };
+              active = state;
+              instanceControls.set(deviceId, applySettings);
+              const firstWeight = new Promise((resolve, reject) => {
+                state.resolve = resolve;
+                state.reject = reject;
+              });
+              firstWeight.catch(() => {});
+              try {
+                const services = await session.gatt.discoverServices();
+                state.services = services;
+                if (!services.includes(service)) {
+                  throw new Error("Skale service unavailable");
+                }
+                const usbSetting = await loadSettings(deviceId);
+                if (!usbSetting.known) {
+                  throw new Error("Skale settings unavailable");
+                }
+                state.usbPower = usbSetting.value.usbPower;
+                state.usbPowerKnown = true;
+                session.gatt.onDisconnect(() => {
+                  if (!isActive(state)) return;
+                  stop(state);
+                  fail(state, new Error("Skale disconnected before readiness"));
+                });
+                await session.gatt.writeWithoutResponse(service, commandCharacteristic, encode([0xed]));
+                await session.gatt.writeWithoutResponse(service, commandCharacteristic, encode([0xec]));
+                await delay();
+                await session.gatt.subscribe(service, weightCharacteristic, async (data, sample) => {
+                  if (!isActive(state)) return;
+                  if (!state.readyForWeight) return;
+                  const weight = decodeWeight(data);
+                  if (weight === null) return;
+                  try {
+                    await session.publish({weight, battery: state.battery}, sample);
+                    if (!state.settled && isActive(state)) {
+                      state.settled = true;
+                      state.resolve();
+                    }
+                  } catch (_) {
+                    if (isActive(state)) fail(state, new Error("Skale weight publication failed"));
+                  }
+                });
+                try {
+                  await session.gatt.subscribe(service, buttonCharacteristic, async data => {
+                    const button = decodeBase64(data);
+                    if (!isActive(state) || !button || button.length !== 1) return;
+                    if (button[0] === 0x02) {
+                      squarePressed(deviceId, () => isActive(state) && !unloaded);
+                      return;
+                    }
+                    if (button[0] !== 0x01) return;
+                    try {
+                      await command([0x10]);
+                    } catch (error) {
+                      if (isActive(state)) fail(state, error);
+                      throw error;
+                    }
+                  });
+                } catch (_) {
+                  // Older firmware may omit the button characteristic; weight remains usable.
+                }
+                await delay();
+                if (!isActive(state)) throw new Error("Skale session retired");
+                await session.gatt.writeWithoutResponse(service, commandCharacteristic, encode([0xed]));
+                await session.gatt.writeWithoutResponse(service, commandCharacteristic, encode([0xec]));
+                await session.gatt.writeWithoutResponse(service, commandCharacteristic, encode([0x03]));
+                state.readyForWeight = true;
+                if (services.includes(deviceInformationService)) {
+                  publishInfo(state, services).catch(() => {});
+                } else if (services.includes(batteryService) && state.usbPowerKnown &&
+                           !state.usbPower) {
+                  readBattery(state).catch(() => {});
+                }
+                if (services.includes(batteryService) && state.usbPowerKnown &&
+                    !state.usbPower) {
+                  scheduleBatteryRefresh(state);
+                }
+                await firstWeight;
+              } catch (error) {
+                stop(state);
+                fail(state, error);
+                throw error;
+              }
+            },
+            async disconnect(context) {
+              const state = active;
+              stop(state);
+              if (context && context.gatt) {
+                try {
+                  await context.gatt.writeWithoutResponse(service, commandCharacteristic, encode([0xee]));
+                } catch (_) {}
+              }
+            },
+            tare() { return command([0x10]); },
+            startTimer() { return command([0xdd]); },
+            stopTimer() { return command([0xd1]); },
+            resetTimer() { return command([0xd0]); },
+            sleepDisplay() { return command([0xee]); },
+            async wakeDisplay() {
+              await command([0xed]);
+              await command([0xec]);
+            },
+          };
+        }
+      });
+    },
+    handleHttpRequest(request) {
+      if (request.method === "GET" && request.query && request.query.ui === "1") {
+        return htmlResponse(200, settingsPage);
+      }
+      const deviceId = requestDeviceId(request);
+      if (!deviceId) return jsonResponse(400, {error: "deviceId is required"});
+      if (request.method === "GET") {
+        return loadSettings(deviceId).then(setting => setting.known
+          ? jsonResponse(200, {
+            deviceId,
+            ...setting.value,
+            ...(machineControlMessage ? {machineControlMessage} : {}),
+          })
+          : jsonResponse(503, {error: "settings unavailable"}));
+      }
+      const body = request.body;
+      if (request.method !== "POST" || !body ||
+          typeof body.usbPower !== "boolean" ||
+          !["boolean", "undefined"].includes(typeof body.squareButtonShot) ||
+          Object.keys(body).some(key => key !== "usbPower" && key !== "squareButtonShot")) {
+        return jsonResponse(400, {
+          error: "usbPower must be a boolean; squareButtonShot is an optional boolean",
+        });
+      }
+      const squareButtonShot = typeof body.squareButtonShot === "boolean"
+        ? Promise.resolve(body.squareButtonShot)
+        : loadSettings(deviceId).then(setting => setting.known && setting.value.squareButtonShot);
+      let settings;
+      return squareButtonShot.then(square => {
+        settings = {usbPower: body.usbPower, squareButtonShot: square};
+        return saveSettings(deviceId, settings);
+      }).then(async () => {
+        const update = instanceControls.get(deviceId);
+        if (update) await update(settings);
+        return jsonResponse(200, {
+          deviceId,
+          ...settings,
+        });
+      }).catch(() => jsonResponse(502, {error: "settings persistence failed"}));
+    },
+    onUnload() {
+      unloaded = true;
+      machineControlMessage = null;
+      instanceControls.clear();
+      deviceSettings.clear();
+      settingsOperations.clear();
+      for (const pending of pendingStorageReads.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error("Skale plugin unloaded"));
+      }
+      for (const pending of pendingStorageWrites) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error("Skale plugin unloaded"));
+      }
+      pendingStorageReads.clear();
+      pendingStorageWrites.length = 0;
+      failedStorageReads.clear();
+      storageWriteFailure = storageError("plugin unloaded; create a new instance to retry");
+      storageWriteQueue = Promise.resolve();
+    },
+  };
+}
+
+// Keep the host entry point and a Node-testable export in the same artifact.
+if (typeof module !== "undefined") module.exports = {createPlugin};

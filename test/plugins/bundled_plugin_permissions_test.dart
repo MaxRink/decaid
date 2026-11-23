@@ -53,6 +53,11 @@ void main() {
       PluginPermissions.eventsShots,
       PluginPermissions.eventsWorkflow,
     },
+    'skale.reaplugin': {
+      PluginPermissions.transportBle,
+      PluginPermissions.api,
+      PluginPermissions.pluginStorage,
+    },
   };
   const versionsBeforePermissionEnforcement = <String, String>{
     'time-to-ready.reaplugin': '1.0.2',
