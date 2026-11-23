@@ -86,6 +86,16 @@ void main() {
         reached.add('POST advanced');
         return Response.ok('{}');
       })
+      ..get('/api/v1/plugins/<id>/ui', (Request r, String id) {
+        return Response.ok(
+          '<html></html>',
+          headers: {
+            'content-type': 'text/html',
+            if (id == 'csp.reaplugin')
+              'content-security-policy': "default-src 'self'",
+          },
+        );
+      })
       ..delete('/api/v1/machine/settings/reset', (Request r) {
         reached.add('DELETE reset');
         return Response.ok('{}');
@@ -367,6 +377,27 @@ void main() {
         );
         expect(response.statusCode, 200, reason: host);
       }
+    });
+  });
+
+  group('framing', () {
+    test('host-served HTML may only be framed by its own origin', () async {
+      final page = await send('GET', '/api/v1/plugins/x.reaplugin/ui');
+      expect(page.headers['x-frame-options'], 'SAMEORIGIN');
+      expect(page.headers['content-security-policy'], "frame-ancestors 'self'");
+    });
+
+    test('a plugin CSP keeps its rules and gains frame-ancestors', () async {
+      final page = await send('GET', '/api/v1/plugins/csp.reaplugin/ui');
+      expect(
+        page.headers['content-security-policy'],
+        "default-src 'self'; frame-ancestors 'self'",
+      );
+    });
+
+    test('JSON responses are left alone', () async {
+      final json = await send('GET', '/api/v1/machine/state');
+      expect(json.headers['content-security-policy'], isNull);
     });
   });
 

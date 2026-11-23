@@ -1468,6 +1468,12 @@ const shotId = new URLSearchParams(location.search).get("shotId");
 Prefer this for a page that fetches its data over the REST API; it keeps the
 value out of the generated HTML.
 
+Every HTML response on the API port, plugin pages included, carries
+`X-Frame-Options: SAMEORIGIN` and `Content-Security-Policy: frame-ancestors
+'self'` (appended to a `Content-Security-Policy` the plugin sets itself), so a
+plugin page can only be framed by another page on the API origin, never by a
+skin or a foreign site. Open a plugin page with a top-level navigation.
+
 Skins are served from a different browser origin than plugin pages, so a skin
 cannot write a plugin page's `sessionStorage` or `localStorage`. A query
 parameter on a top-level navigation is how a skin hands a plugin page its
