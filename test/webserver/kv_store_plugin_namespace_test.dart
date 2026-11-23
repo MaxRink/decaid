@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reaprime/src/services/account/proxy_token_service.dart';
 import 'package:reaprime/src/services/webserver_service.dart';
-import 'package:shelf/shelf.dart';
 import 'package:shelf_plus/shelf_plus.dart';
 
 import '../plugins/plugin_test_helpers.dart';
