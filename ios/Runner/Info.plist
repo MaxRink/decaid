@@ -39,6 +39,7 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_decentscale._tcp</string>
+		<string>_https._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Needed for camera-enabled skins, shot notes and feedback. Skins need your consent before receiving live camera images.</string>

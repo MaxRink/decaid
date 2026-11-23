@@ -164,6 +164,7 @@ A Decaid plugin consists of two required files:
     [`host.localApi`](#hostlocalapipath-options).
 - **drivers**: Device classes the plugin may register. Each declaration has a plugin-local `id` and a `type`: `sensor`, `scale`, or `grinder`. A manifest may declare at most 8 drivers. Driver declarations authorize registration; they do not grant transport access. For example, a WebSocket-backed device also needs `network.websocket`. A driver may declare up to 8 `surfaces`, each with a unique safe `id`, `role` (`settings` or `diagnostics`), and a safe non-reserved `endpoint` naming a declared same-plugin HTTP endpoint. At most one surface has role `settings`. Surfaces require the `api` permission; optional `label` is display text. Plugins cannot supply URLs, authority, credentials, or routes through surfaces. Surface endpoints must not contain unpaired UTF-16 surrogates, which cannot round-trip through URI encoding; valid surrogate pairs remain supported.
 - **surfaces** (optional): Plugin-level pages with role `setup`, `settings` or `diagnostics`, not tied to a device. See [Plugin surfaces](#plugin-surfaces).
+- **discovery** (optional): Local-network service types the plugin may browse with `host.discovery`. See [Network discovery](#network-discovery-hostdiscovery).
 - **settings**: User-configurable options with `type` (`string`, `number`, `boolean`, `enum`), an optional `label` giving the setting a human-friendly name, an optional `description` explaining what the setting does, an optional `default`, and an optional `secure` flag for credentials such as passwords. Enum `values` are a JSON array of strings. Secure values use platform credential storage, are supplied in memory to `onLoad(settings)`, and are never returned by the REST API.
 
   `GET /api/v1/plugins` returns this schema verbatim under `settings`, so a skin can render a settings form — labels, help text and defaults included — without reading the plugin's repository. `GET /api/v1/plugins/:id/settings` returns the stored values only.
@@ -1136,6 +1137,57 @@ Unsupported controls fail with `unsupported_operation` before a plugin handler
 is invoked. Runtime control uses the singular `/api/v1/grinder/*` API and the
 generic device connect/disconnect routes.
 
+## Network discovery (`host.discovery`)
+
+A plugin can browse mDNS/DNS-SD services on the local network, for example to
+offer "Search the network" in a setup page. It declares what it may see in the
+manifest's top-level `discovery` key:
+
+```json
+"discovery": {
+  "mdns": [
+    { "type": "_https._tcp", "namePrefix": "Mahlkoenig grinder" }
+  ]
+}
+```
+
+```javascript
+if (typeof host.discovery?.browse === "function") {
+  const services = await host.discovery.browse({
+    serviceType: "_https._tcp",
+    namePrefix: "Mahlkoenig grinder", // optional; defaults to the declared prefixes
+    timeoutMs: 3000                    // optional; default 3000, clamped to 250-10000
+  });
+  // [{ name, host, port, addresses, txt }]
+}
+```
+
+- `mdns` holds 1-8 entries with exactly `type` (`_<name>._tcp` or
+  `_<name>._udp`) and `namePrefix` (1-63 characters). An invalid entry makes the
+  manifest invalid. Other keys under `discovery` are ignored.
+- `browse` resolves only instances whose name starts with a declared
+  `namePrefix` for that `serviceType` (case-insensitive), so a plugin never sees
+  unrelated devices such as printers. A requested `namePrefix` may narrow a
+  declared one but not widen or replace it. Undeclared types and other
+  prefixes reject with `code: "validation"` without browsing.
+- Each result has the instance `name`, `host` (the advertised host name without
+  the trailing dot, or the first address), `port`, `addresses` (IPv4 first) and
+  `txt` (the TXT record as a string map). At most 32 results are returned.
+  Prefer storing an address: `.local` resolution is not guaranteed on Android.
+- There is no new permission name, because hosts reject unknown permissions.
+  `browse` requires `api` or any `network.*` permission and rejects with
+  `code: "permission"` otherwise. One browse runs per plugin at a time; a
+  concurrent call rejects with `code: "busy"`.
+- Browsing is passive and read-only; discovery grants no connection. Opening
+  the found device still needs the usual `fetch` or `host.transport`
+  permission.
+- iOS and macOS browse only service types listed in the app's
+  `NSBonjourServices` (`_decentscale._tcp` and `_https._tcp` today); other types
+  return no results there.
+
+Hosts without this API have no `host.discovery` and ignore the manifest key,
+so feature-detect and fall back to manual address entry.
+
 ## Network Transports (`host.transport`)
 
 `host.transport` exposes permission-gated outbound network transports: WebSocket
@@ -1923,7 +1975,7 @@ it in Decaid UI.
 - **Global Functions**: `fetch()`, `btoa()`, `setTimeout()`, `clearTimeout()`
 - **Objects**: `Promise`, `JSON`, `Math`, `Date`, `Array`, `Object`
 - **Constants**: `undefined`, `null`, `Infinity`, `NaN`
-- **Host API**: `host.log()`, `host.emit()`, `host.storage()`, `host.decentProxy()`, `host.localApi()`, `host.transport`, `host.devices`
+- **Host API**: `host.log()`, `host.emit()`, `host.storage()`, `host.decentProxy()`, `host.localApi()`, `host.transport`, `host.devices`, `host.discovery`
 
 ### Not Available
 
