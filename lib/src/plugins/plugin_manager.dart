@@ -19,6 +19,7 @@ import 'plugin_decent_proxy_bridge.dart';
 import 'plugin_discovery.dart';
 import 'plugin_device_service.dart';
 import 'plugin_local_api_bridge.dart';
+import 'plugin_log.dart';
 import 'plugin_runtime.dart';
 import 'plugin_tls_pin.dart';
 import 'plugin_transport_service.dart';
@@ -105,6 +106,8 @@ class PluginManager {
   final _log = Logger("PluginManager");
 
   final Map<String, PluginRuntime> _plugins = {};
+  final Map<String, PluginLogLimiter> _pluginLogLimiters = {};
+  final Map<String, List<String>> _pluginLogSecrets = {};
   final JavascriptRuntime js;
   final KeyValueStoreService kvStore;
   final DecentProxyService? decentProxyService;
@@ -1383,7 +1386,7 @@ class PluginManager {
           return;
         }
         if (_hasPermission(pluginId, PluginPermissions.log)) {
-          _log.finest("[JS:$pluginId] ${msg['payload']?['message']}");
+          _writePluginLog(pluginId, '${msg['payload']?['message']}');
         }
         return;
       }
@@ -2349,6 +2352,10 @@ class PluginManager {
 
     final runtime = PluginRuntime(pluginId: id, manifest: manifest);
     final pluginBridgeToken = _newBridgeToken();
+    _pluginLogSecrets[id] = [
+      for (final key in manifest.secureSettingKeys)
+        if (settings[key] case final String value) value,
+    ];
 
     _plugins[id] = runtime;
     _pluginBridgeTokens[id] = pluginBridgeToken;
@@ -2712,7 +2719,25 @@ class PluginManager {
     }
   }
 
+  void _writePluginLog(String pluginId, String message) {
+    final admission = (_pluginLogLimiters[pluginId] ??= PluginLogLimiter())
+        .admit();
+    _logSuppressedPluginLines(pluginId, admission.suppressed);
+    if (!admission.write) return;
+    _log.info(
+      '[JS:$pluginId] '
+      '${redactPluginLog(message, _pluginLogSecrets[pluginId] ?? const [])}',
+    );
+  }
+
+  void _logSuppressedPluginLines(String pluginId, int suppressed) {
+    if (suppressed == 0) return;
+    _log.info('[JS:$pluginId] suppressed $suppressed plugin log lines');
+  }
+
   Future<void> _unloadPlugin(String id) async {
+    _logSuppressedPluginLines(id, _pluginLogLimiters.remove(id)?.drain() ?? 0);
+    _pluginLogSecrets.remove(id);
     notifications.retireSource(NotificationNamespace.plugin, id);
     _loggedPermissionDenials.removeWhere((denial) => denial.startsWith('$id:'));
     final pluginBridgeToken = _pluginBridgeTokens[id];
