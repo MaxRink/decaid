@@ -9253,6 +9253,16 @@ components:
               href:
                 type: string
                 example: /api/v1/plugins/mahlkoenig-e64.reaplugin/setup?ui=1&surface=setup
+        needsSetup:
+          type: boolean
+          description: >
+            True while the plugin has a current notice whose action is
+            openPluginSurface to its declared `setup` surface. Always present
+            on hosts that support it, so a client can feature-detect the key.
+        setupReason:
+          type: string
+          description: >
+            The message of that notice. Present only when needsSetup is true.
 
     PluginSettingSchema:
       type: object

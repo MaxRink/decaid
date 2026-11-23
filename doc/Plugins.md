@@ -1661,6 +1661,33 @@ Hosts without this contract ignore the unknown top-level key, so the plugin
 still loads there; such a plugin should keep its pages reachable another way
 (for example a `ui` endpoint).
 
+#### Reporting "needs setup"
+
+A plugin reports that it needs setup with an ordinary notice whose action
+opens its `setup` surface, and clears the state by dismissing that notice. No
+extra API or permission is involved beyond `notifications`:
+
+```javascript
+host.notify({
+  id: "setup",
+  message: "Enter your grinder's address and Owner password.",
+  action: { id: "setup", label: "Set up", type: "openPluginSurface", surfaceId: "setup" }
+});
+// after a successful configuration:
+host.dismissNotification("setup");
+```
+
+While such a notice is current, `GET /api/v1/plugins` reports
+`needsSetup: true` and `setupReason` (the notice message) for the plugin, and
+the native Plugins card shows a **Needs setup** badge with the reason. The
+state follows the notice: it survives a restart with the retained notice and
+disappears when the plugin dismisses it, is unloaded, disabled or removed.
+`needsSetup` is always present (`false` otherwise) on hosts that support it;
+its absence means an older host. On hosts that reject the action, the plugin
+falls back to a plain notice (see `host.notify`) and no badge is shown. A
+plugin should load in this state rather than throw from `onLoad` on an
+incomplete configuration, because a plugin that fails to load serves no pages.
+
 ### Native surface sheet
 
 Native Decaid opens plugin surfaces in a themed bottom sheet
