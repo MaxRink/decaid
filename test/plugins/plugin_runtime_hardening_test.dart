@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:reaprime/src/notifications/native_notification.dart';
 import 'package:reaprime/src/plugins/plugin_manager.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
 
@@ -323,6 +324,11 @@ void main() {
       );
       expect(notice.id, machineControlNoticeId);
       expect(notice.message, contains('control the machine'));
+      expect(
+        notice.actions.single.type,
+        NotificationActionType.reviewMachineControl,
+      );
+      expect(manager.notifications.isConfirmed(notice), isTrue);
     });
 
     test('a granted plugin may change machine state', () async {

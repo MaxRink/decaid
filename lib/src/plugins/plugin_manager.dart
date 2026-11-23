@@ -2896,6 +2896,7 @@ class PluginManager {
             canOpenAccount: _plugins[pluginId]!.manifest.permissions.contains(
               PluginPermissions.proxyDecentApi,
             ),
+            manifest: _plugins[pluginId]!.manifest,
           );
           await notifications.publish(
             notice,
@@ -3165,6 +3166,17 @@ class PluginManager {
               message:
                   'Allow $name to control the machine? It tried to change the '
                   'machine state. Allow it in Settings > Plugins > $name.',
+              actions: const [
+                NotificationAction(
+                  id: 'review',
+                  label: 'Review',
+                  type: NotificationActionType.reviewMachineControl,
+                ),
+              ],
+            ),
+            binding: NotificationBinding(
+              owner: (machineControlNoticeId, pluginId),
+              isAlive: () => _lifecycle == PluginManagerLifecycle.active,
             ),
           )
           .catchError(

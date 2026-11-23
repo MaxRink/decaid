@@ -51,6 +51,7 @@ import 'package:reaprime/src/models/device/de1_interface.dart';
 import 'package:reaprime/src/models/device/scale.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
 import 'package:reaprime/src/plugins/plugin_source_service.dart';
+import 'package:reaprime/src/notifications/machine_control_review_dialog.dart';
 import 'package:reaprime/src/notifications/notification_actions.dart';
 import 'package:reaprime/src/notifications/update_notifications.dart';
 import 'package:reaprime/src/services/android_updater.dart';
@@ -67,6 +68,7 @@ import 'package:reaprime/src/settings/data_management_page.dart';
 import 'package:reaprime/src/settings/device_management_page.dart';
 import 'package:reaprime/src/settings/advanced_page.dart';
 import 'package:reaprime/src/settings/plugins_settings_view.dart';
+import 'package:reaprime/src/settings/plugin_surface_sheet.dart';
 import 'package:reaprime/src/skin_selector/skin_selector_page.dart';
 
 import 'debug_feature/debug_item_details_view.dart';
@@ -219,6 +221,28 @@ class _MyAppState extends State<MyApp> {
       updateCheckService: widget.updateCheckService,
       onOpenAccount: () => NavigationService.navigatorKey.currentState
           ?.pushNamed(AccountPage.routeName),
+      onOpenPluginSurface: (notice, href) async {
+        final context = NavigationService.navigatorKey.currentContext;
+        if (context == null || !context.mounted) return false;
+        return showPluginSurface(
+          context,
+          Uri.parse(pluginSurfaceOrigin).resolve(href),
+          title: notice.sourceName,
+        );
+      },
+      onReviewMachineControl: (notice) async {
+        final context = NavigationService.navigatorKey.currentContext;
+        if (context == null || !context.mounted) return;
+        if (await showMachineControlReview(
+          context,
+          pluginName: notice.sourceName,
+        )) {
+          await widget.pluginLoaderService.setMachineControlGrant(
+            notice.sourceId,
+            true,
+          );
+        }
+      },
     );
     if (widget.updateCheckService case final service?) {
       _updateNotifications = UpdateNotifications(

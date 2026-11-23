@@ -263,10 +263,56 @@ valid. Acceptance means retained for presentation, not displayed, read, or
 acknowledged. A plugin can retry capacity or storage rejection while its
 condition remains relevant; it must correlate each result with its request ID.
 
-Only two action types are supported: `openExternalUrl` opens an absolute HTTPS
+Three action types are supported: `openExternalUrl` opens an absolute HTTPS
 URL without embedded credentials in the external browser; `openDecentAccount`
-opens native account settings and additionally requires `proxy.decent_api`.
-Both require an explicit user tap. Plugins cannot supply native routes, custom
+opens native account settings and additionally requires `proxy.decent_api`;
+`openPluginSurface` opens one of the plugin's own declared surfaces in the
+[native surface sheet](#native-surface-sheet). All require an explicit user tap.
+
+```javascript
+host.notify({
+  id: "setup",
+  message: "E64 needs its password again.",
+  action: { id: "setup", label: "Set up", type: "openPluginSurface", surfaceId: "setup" }
+});
+```
+
+`openPluginSurface` names its target with exactly one of `surfaceId` or
+`endpoint`, and accepts only the keys `id`, `label`, `type`, `pluginId`,
+`surfaceId`, `endpoint` and `deviceId`:
+
+- Without `deviceId` the target must be a top-level
+  [plugin surface](#plugin-surfaces); the host opens
+  `/api/v1/plugins/<id>/<endpoint>?ui=1&surface=<surfaceId>`.
+- With `deviceId` (1-256 characters) the target must be a driver surface; the
+  host opens it with `ui=1&deviceId=<deviceId>` like device management does.
+  The page validates the device identity, as for any device surface.
+- `pluginId`, when present, must be the posting plugin's own ID. A plugin can
+  never open another plugin's pages or an arbitrary URL; the host resolves the
+  href when the notice is published.
+
+An undeclared target, another plugin's ID or an unknown key rejects the notice
+with `reason: "validation"`. Hosts without this action reject it the same way,
+so feature-detect from `notificationResult` and republish without the action:
+
+```javascript
+onEvent(event) {
+  if (event.name === "notificationResult" && event.payload.id === "setup" &&
+      event.payload.reason === "validation") {
+    host.notify({ id: "setup", message: "Open Decaid > Settings > Plugins > E64 > Set up." });
+  }
+}
+```
+
+The host's own machine-control notice (`id: "host.machine-control"`, raised when
+a plugin without the grant writes a machine route) carries a host-only
+**Review** action. It opens a native dialog, "Allow <name> to control the
+machine?", with **Allow** (grants, like the switch on the Plugins screen, and
+removes the notice) and **Not now**. Plugins cannot post this action type.
+
+For `openPluginSurface` the plugin receives `notificationAction` with phase
+`activated`, or `failed` when the page cannot be opened; there is no
+`returned` phase. Plugins cannot supply native routes, custom
 URL schemes, executable callbacks, automatic actions, or UI priority. The host
 displays the plugin name/ID and external destination hostname alongside the copy.
 
