@@ -343,7 +343,9 @@ function createPlugin(host) {
     instance.context = context; instance.transport = transport; instance.observations = {}; instance.lastObservationAt = null;
     try {
       if (!instance.config.token && instance.config.mintTokens) {
-        instance.config.token = await mintToken(instance);
+        const token = await mintToken(instance);
+        if (epoch !== instance.epoch) return;
+        instance.config.token = token;
       }
       const opened = await transport.open({kind: "websocket", url: url(instance.config)});
       if (epoch !== instance.epoch) { await transport.close(opened.handle).catch(() => {}); return; }
@@ -352,13 +354,15 @@ function createPlugin(host) {
       await request(instance, "state", true); schedule(instance, epoch);
     } catch (error) {
       await disconnect(instance, epoch, "E64 connection failed");
-      const detail = error && error.message ? ": " + error.message : "";
+      // Host WebSocket errors can echo the connect URL, which carries the token.
+      const detail = error && error.message ? ": " + String(error.message).replace(/token=[^&#'"\s]*/g, "token=[redacted]") : "";
       throw new Error("E64 connection failed" + detail);
     }
   }
   function request(instance, name, publish) {
     if (!instance.connected || !instance.transport || !instance.handle) return Promise.reject(new Error("E64 is disconnected"));
-    if (instance.pending.size >= MAX_PENDING) return Promise.reject(new Error("E64 request queue is full"));
+    // Diagnostics reads must not starve the single in-flight state poll.
+    if (!publish && instance.pending.size >= MAX_PENDING) return Promise.reject(new Error("E64 request queue is full"));
     const epoch = instance.epoch, id = ++instance.nextId, command = commands[name];
     return new Promise((resolve, reject) => {
       const item = {epoch, type: command[1], name, publish, resolve, reject, timer: setTimeout(() => { if (instance.pending.delete(id)) reject(new Error("E64 request timed out")); }, TIMEOUT)};
@@ -388,8 +392,9 @@ function createPlugin(host) {
         const body = request.body;
         if (!body || typeof body !== "object" || Array.isArray(body)) return jsonResponse(400, {error: "invalid body"});
         if (request.endpoint === "xenia-brewratio") {
-          const weight = Number(body.SYNC_BEVERAGE_WEIGHT);
-          const filter = Number(body.SYNC_FILTER);
+          const numeric = (value) => typeof value === "number" || (typeof value === "string" && value.trim() !== "") ? Number(value) : NaN;
+          const weight = numeric(body.SYNC_BEVERAGE_WEIGHT);
+          const filter = numeric(body.SYNC_FILTER);
           if (!Number.isFinite(weight) || !Number.isInteger(filter)) return jsonResponse(400, {error: "invalid brew ratio"});
           xenia.syncWeight = Math.round(weight);
           xenia.syncFilter = filter;
