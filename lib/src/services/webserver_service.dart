@@ -827,9 +827,9 @@ Handler buildWebServerHandler(
   }
   final origins = browserOrigins;
   if (origins != null) {
-    pipeline = pipeline.addMiddleware(
-      extensionManagementBrowserOriginMiddleware(origins),
-    );
+    pipeline = pipeline
+        .addMiddleware(extensionManagementBrowserOriginMiddleware(origins))
+        .addMiddleware(apiBrowserBoundaryMiddleware(origins));
   }
   return pipeline
       .addMiddleware(accountProxyCorsMiddleware(accountProxyAllowedOrigins))

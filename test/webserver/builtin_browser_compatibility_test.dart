@@ -641,7 +641,7 @@ void main() {
     );
 
     test(
-      'forged Host and forwarding headers do not change the docs verdict',
+      'a forged alias Host is refused for a browser even from the docs origin',
       () async {
         final plain = await surface.send(
           'POST',
@@ -661,16 +661,9 @@ void main() {
           },
         );
         expect(plain.status, 200, reason: _evidence('POST docs origin', plain));
-        expect(
-          forged.status,
-          plain.status,
-          reason:
-              'the docs-origin verdict must not depend on client supplied Host or '
-              'forwarding headers, and a trusted docs origin must stay trusted '
-              'when they are forged.\n${_evidence('plain', plain)}\n'
-              '${_evidence('forged', forged)}',
-        );
         expect(plain.corsAllowOrigin, surface.numericDocsOrigin);
+        expect(forged.status, 403, reason: _evidence('forged', forged));
+        expect(forged.error, untrustedBrowserHostError);
       },
     );
 
@@ -1864,7 +1857,7 @@ void main() {
       );
     });
 
-    test('replayed updateReaSetting request is applied from either page origin', () async {
+    test('replayed updateReaSetting request is applied only from the numeric page origin', () async {
       addTearDown(() => surface.settingsService.setAutomaticUpdateCheck(true));
       expect(surface.settings.automaticUpdateCheck, isTrue);
 
@@ -1893,14 +1886,11 @@ void main() {
       );
       expect(
         aliasReply.status,
-        200,
+        403,
         reason:
-            'automaticUpdateCheck=false is deliberately exempt from the browser '
-            'origin gate in both modes, so this safe body is admitted from any '
-            'origin. That exemption is unchanged by the redirect.\n'
-            '${_evidence('POST $_settingsPath', aliasReply)}',
+            'a browser on an alias name is refused for every write, safe or '
+            'not.\n${_evidence('POST $_settingsPath', aliasReply)}',
       );
-      expect(surface.settings.automaticUpdateCheck, isFalse);
     });
   });
 
@@ -1979,7 +1969,7 @@ void main() {
         403,
         reason: _evidence('POST alias settings', reply),
       );
-      expect(reply.error, untrustedBrowserOriginError);
+      expect(reply.error, untrustedBrowserHostError);
       expect(reply.corsAllowOrigin, isEmpty);
       expect(surface.skins.mutations, before);
     });
@@ -2022,7 +2012,7 @@ void main() {
           403,
           reason: _evidence('POST hostile settings', reply),
         );
-        expect(reply.error, untrustedBrowserOriginError);
+        expect(reply.error, crossOriginRequestError);
         expect(reply.corsAllowOrigin, isEmpty);
         expect(surface.skins.mutations, before);
       },
