@@ -1663,8 +1663,10 @@ value out of the generated HTML.
 A plugin page or surface response (HTML under `/api/v1/plugins/<id>/`) carries
 `Content-Security-Policy: frame-ancestors 'self'` plus the device's own skin
 origins: `http` on the live skin page port (and the API docs port), on the
-numeric device address the request used and on `localhost`, `127.0.0.1` and
-`[::1]`. It is appended to a `Content-Security-Policy` the plugin sets itself
+numeric IPv4 device address the request used and on `localhost` and
+`127.0.0.1`. IPv6 literals such as `[::1]` are left out because CSP
+source expressions cannot name them (Chrome rejects the whole source), so a
+skin opened on an IPv6 address cannot frame plugin pages. It is appended to a `Content-Security-Policy` the plugin sets itself
 and sends no `X-Frame-Options`, which cannot name a second origin. So the
 active skin may show a plugin page in an `<iframe>` (for example a popup), and
 any other site may not. The bundled settings page and the host's other HTML
