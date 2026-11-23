@@ -144,6 +144,16 @@ class WebUISkin {
   }
 }
 
+class _SkinIdChangedException extends UserFacingFormatException {
+  const _SkinIdChangedException(this.declaredSkinId)
+    : super(
+        'The skin package declares a different skin id than the installed '
+        'skin.',
+      );
+
+  final String declaredSkinId;
+}
+
 class WebUIStorage {
   final _log = Logger('WebUIStorage');
   static const _stagingDirName = '.webui-install-staging';
@@ -810,6 +820,24 @@ class WebUIStorage {
           tempFile.path,
           expectedSkinId: boundSkinId,
         );
+      } on _SkinIdChangedException catch (error) {
+        final declared = error.declaredSkinId;
+        if (expectedSkinId != null ||
+            !markAsRemoteBundled ||
+            !_mayTrackRelease(declared, repo)) {
+          rethrow;
+        }
+        _log.warning(
+          'Bundled skin source $repo now publishes skin "$declared" instead '
+          'of "$boundSkinId"; tracking "$declared" from now on and keeping '
+          '"$boundSkinId" installed without updates',
+        );
+        installedSkinId = await _installFromZip(
+          tempFile.path,
+          expectedSkinId: declared,
+        );
+        _skinMetadata.remove(boundSkinId);
+        _remoteBundledSkinIds.remove(boundSkinId);
       } finally {
         await tempDir.delete(recursive: true);
       }
@@ -838,6 +866,8 @@ class WebUIStorage {
 
       await _scanInstalledSkins();
       return RemoteUpdateStatus.updated;
+    } on _SkinIdChangedException {
+      rethrow;
     } catch (e, st) {
       _log.severe('Failed to install from GitHub release: $repo', e, st);
       rethrow;
@@ -846,6 +876,11 @@ class WebUIStorage {
 
   bool _tracksReleaseRepo(WebUIReaMetadata metadata, String repo) =>
       metadata.sourceUrl?.startsWith('github_release:$repo@') ?? false;
+
+  bool _mayTrackRelease(String skinId, String repo) {
+    final metadata = _skinMetadata[skinId];
+    return metadata?.sourceUrl == null || _tracksReleaseRepo(metadata!, repo);
+  }
 
   Future<RemoteUpdateStatus> _installFromUrlAsRemoteBundled(
     String url, {
@@ -1338,10 +1373,7 @@ class WebUIStorage {
     if (expectedSkinId != null &&
         declaredSkinId != null &&
         declaredSkinId != expectedSkinId) {
-      throw const UserFacingFormatException(
-        'The skin package declares a different skin id than the installed '
-        'skin.',
-      );
+      throw _SkinIdChangedException(declaredSkinId);
     }
 
     if (!File('${sourceDir.path}/index.html').existsSync()) {

@@ -299,10 +299,20 @@ Future<void> startWebServer(
     grindersHandler = GrindersHandler(storage: grinderStorage);
   }
 
+  int? apiListenerPort;
+  String? apiListenerAddress;
+  int? apiDocsListenerPort;
+  final browserOrigins = extensionManagementBrowserOrigins(
+    webUIService,
+    apiListenerPort: () => apiListenerPort,
+    docsListenerPort: () => apiDocsListenerPort,
+  );
+
   final kvStoreHandler = KvStoreHandler(
     isPluginNamespace: (namespace) => pluginService.availablePlugins.any(
       (plugin) => plugin.id.toLowerCase() == namespace.toLowerCase(),
     ),
+    deviceOrigins: browserOrigins,
   );
   await kvStoreHandler.store.initialize();
 
@@ -397,9 +407,6 @@ Future<void> startWebServer(
     );
   }
 
-  int? apiListenerPort;
-  String? apiListenerAddress;
-  int? apiDocsListenerPort;
   Future<Set<String>> deviceAddresses() =>
       webUIService.currentBrowserOriginAddresses();
   final handler = _init(
@@ -428,11 +435,7 @@ Future<void> startWebServer(
     proxyTokenService,
     () => accountProxyCorsAllowedOrigins(webUIService),
     () => settingsController.currentRequireExtensionManagementAuthorization(),
-    extensionManagementBrowserOrigins(
-      webUIService,
-      apiListenerPort: () => apiListenerPort,
-      docsListenerPort: () => apiDocsListenerPort,
-    ),
+    browserOrigins,
     BuiltinPageListener(
       listenerPort: () => apiListenerPort,
       deviceAddresses: deviceAddresses,
@@ -923,14 +926,10 @@ bool _isPluginPage(Request request) {
 
 Iterable<String> _skinFrameSources(Request request, Set<int>? ports) sync* {
   if (ports == null || ports.isEmpty) return;
-  final hosts = <String>{'localhost', '127.0.0.1', '[::1]'};
+  final hosts = <String>{'localhost', '127.0.0.1'};
   final requested = InternetAddress.tryParse(request.requestedUri.host);
-  if (requested != null && !requested.address.contains('%')) {
-    hosts.add(
-      requested.type == InternetAddressType.IPv6
-          ? '[${requested.address}]'
-          : requested.address,
-    );
+  if (requested?.type == InternetAddressType.IPv4) {
+    hosts.add(requested!.address);
   }
   for (final port in ports) {
     for (final host in hosts) {

@@ -921,10 +921,12 @@ class De1Handler {
     );
   }
 
-  Future<Response> _infoHandler(Request request) async {
-    return withDe1((De1Interface de1) async {
-      return jsonOk(de1.machineInfo.toJson());
-    });
+  Response _infoHandler(Request request) {
+    try {
+      return jsonOk(_controller.connectedDe1().machineInfo.toJson());
+    } on DeviceNotConnectedException {
+      return jsonServiceUnavailable({'error': 'No machine connected'});
+    }
   }
 
   Future<Response> _stateHandler(Request request) async {

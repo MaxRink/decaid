@@ -782,6 +782,15 @@ host-side, per-plugin setting the user turns on.
   for every plugin.
 - The target counts as the host when it resolves to loopback, `0.0.0.0` or an
   address of this device, on the API port.
+- The grant does not let a plugin start a machine that requires starts at the
+  group head. When `GET /api/v1/machine/info` reports `"GHC": true` (an active
+  group head controller), DE1 firmware ignores a remote start of `espresso`,
+  `steam`, `hotWater` or `flush`: the request only arms the group head (white
+  indication) and the user must start the operation there. The host still sends
+  the request and answers 200, so a 200 does not mean the shot started; follow
+  `/ws/v1/machine/snapshot` for the real state and tell the user to press the
+  group head. Stopping (`PUT /api/v1/machine/state/idle`) works remotely. See
+  [the DE1 device note](device-notes/de1.md#group-head-controller-start-restriction).
 
 ```javascript
 // Basic GET request
@@ -1663,8 +1672,10 @@ value out of the generated HTML.
 A plugin page or surface response (HTML under `/api/v1/plugins/<id>/`) carries
 `Content-Security-Policy: frame-ancestors 'self'` plus the device's own skin
 origins: `http` on the live skin page port (and the API docs port), on the
-numeric device address the request used and on `localhost`, `127.0.0.1` and
-`[::1]`. It is appended to a `Content-Security-Policy` the plugin sets itself
+numeric IPv4 device address the request used and on `localhost` and
+`127.0.0.1`. IPv6 literals such as `[::1]` are left out because CSP
+source expressions cannot name them (Chrome rejects the whole source), so a
+skin opened on an IPv6 address cannot frame plugin pages. It is appended to a `Content-Security-Policy` the plugin sets itself
 and sends no `X-Frame-Options`, which cannot name a second origin. So the
 active skin may show a plugin page in an `<iframe>` (for example a popup), and
 any other site may not. The bundled settings page and the host's other HTML
@@ -2000,9 +2011,14 @@ it in Decaid UI.
   leaf certificate for that request or connection and nothing else
 - Storage is kept per plugin. The key-value store routes
   (`/api/v1/store/<namespace>/<key>`) refuse a namespace equal to an installed
-  plugin's id (compared case-insensitively) with 403 unless the request
-  carries an `extensions:manage` credential, so other clients cannot read or
-  overwrite it over REST; the plugin itself uses `host.storage`. A backup made
+  plugin's id (compared case-insensitively) with 403 to requests from other
+  machines unless they carry an `extensions:manage` credential, so LAN clients
+  cannot read or overwrite it over REST. Requests whose socket peer is the
+  device itself (loopback or one of its own addresses) may use the namespace:
+  the plugin's own page in the app WebView reads and writes its data there,
+  the plugin's `fetch` to `localhost:8080` reaches the same data as
+  `host.storage`, and so can skins, other plugins and other apps on the same
+  device. A backup made
   from the app's own Data Management screen, or by a client with an
   `extensions:manage` token, includes every installed plugin's storage in
   `store.json`, and restoring such a backup the same way writes it back and

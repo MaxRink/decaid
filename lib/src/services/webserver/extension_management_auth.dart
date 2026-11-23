@@ -109,7 +109,19 @@ final class ExtensionManagementBrowserOrigins {
       );
       return BrowserOriginVerdict.untrusted;
     }
-    if (peer.isLoopback) return BrowserOriginVerdict.trusted;
+    return await _isDeviceAddress(peer, 'the loopback origin $origin')
+        ? BrowserOriginVerdict.trusted
+        : BrowserOriginVerdict.untrusted;
+  }
+
+  Future<bool> isDevicePeer(Request request) async {
+    final peer = _socketPeer(request.context[_shelfConnectionInfoContextKey]);
+    return peer != null &&
+        await _isDeviceAddress(peer, 'the request from ${peer.address}');
+  }
+
+  Future<bool> _isDeviceAddress(InternetAddress peer, String refused) async {
+    if (peer.isLoopback) return true;
     final Set<String> addresses;
     try {
       addresses = {
@@ -117,17 +129,14 @@ final class ExtensionManagementBrowserOrigins {
       };
     } catch (error, stackTrace) {
       _log.warning(
-        'Could not enumerate the device addresses; refusing the loopback '
-        'origin $origin',
+        'Could not enumerate the device addresses; refusing $refused',
         error,
         stackTrace,
       );
-      return BrowserOriginVerdict.untrusted;
+      return false;
     }
     final peerKey = _hostKey(peer.address);
-    return peerKey != null && addresses.contains(peerKey)
-        ? BrowserOriginVerdict.trusted
-        : BrowserOriginVerdict.untrusted;
+    return peerKey != null && addresses.contains(peerKey);
   }
 
   Future<bool> isDeviceHost(String host) async {

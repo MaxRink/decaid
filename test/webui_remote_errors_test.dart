@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:logging/logging.dart';
 import 'package:reaprime/src/settings/settings_controller.dart';
 import 'package:reaprime/src/util/remote_update_exception.dart';
 import 'package:reaprime/src/util/remote_update_report.dart';
@@ -275,5 +276,126 @@ void main() {
       await Future.wait([first, second]);
       expect(storage.updateCheck.value, isNull);
     }, () => MockClient((_) async => release.future));
+  });
+
+  group('a bundled source whose release changes its skin id', () {
+    Uint8List skinZip(String id, String body) => Uint8List.fromList(
+      ZipEncoder().encode(
+        Archive()
+          ..addFile(ArchiveFile.string('index.html', body))
+          ..addFile(
+            ArchiveFile.string(
+              'skin-manifest.json',
+              jsonEncode({'id': id, 'name': id}),
+            ),
+          ),
+      ),
+    );
+
+    MockClient releases(Map<String, (String, Uint8List)> byRepo) => MockClient((
+      request,
+    ) async {
+      final url = request.url.toString();
+      for (final MapEntry(key: repo, value: (tag, bytes)) in byRepo.entries) {
+        if (url.contains('/$repo/releases')) {
+          return http.Response(
+            jsonEncode({
+              'tag_name': tag,
+              'name': tag,
+              'published_at': '2026-01-01T00:00:00Z',
+              'assets': [
+                {
+                  'name': 'skin.zip',
+                  'browser_download_url': 'https://example.test/$repo/$tag.zip',
+                  'size': bytes.length,
+                },
+              ],
+            }),
+            200,
+          );
+        }
+        if (url == 'https://example.test/$repo/$tag.zip') {
+          return http.Response.bytes(bytes, 200);
+        }
+      }
+      return http.Response('not found: $url', 404);
+    });
+
+    Future<RemoteUpdateItemResult> check(
+      Map<String, (String, Uint8List)> byRepo,
+    ) async {
+      final results = await http.runWithClient(
+        storage.checkRemoteBundledSkins,
+        () => releases({
+          'fixture/second': ('v1', skinZip('second-skin', 'second v1')),
+          ...byRepo,
+        }),
+      );
+      return results.firstWhere((result) => result.item == 'fixture/first');
+    }
+
+    String indexOf(String id) =>
+        File('${directory.path}/$id/index.html').readAsStringSync();
+
+    late List<LogRecord> records;
+
+    setUp(() async {
+      records = [];
+      final logs = Logger.root.onRecord
+          .where((record) => record.loggerName == 'WebUIStorage')
+          .listen(records.add);
+      addTearDown(logs.cancel);
+      await storage.initialize(downloadRemote: false);
+      final first = await check({
+        'fixture/first': ('v1', skinZip('old-skin', 'old v1')),
+      });
+      expect(first.status, RemoteUpdateStatus.updated);
+      records.clear();
+    });
+
+    test(
+      'moves the source to the new skin once and keeps the old skin',
+      () async {
+        final renamed = await check({
+          'fixture/first': ('v2', skinZip('new-skin', 'new v2')),
+        });
+
+        expect(renamed.status, RemoteUpdateStatus.updated);
+        expect(indexOf('new-skin'), 'new v2');
+        expect(indexOf('old-skin'), 'old v1');
+        final skins = {
+          for (final skin in storage.installedSkins) skin.id: skin,
+        };
+        expect(skins['new-skin']!.isBundled, isTrue);
+        expect(skins['old-skin']!.isBundled, isFalse);
+        expect(records.where((r) => r.level >= Level.SEVERE), isEmpty);
+        final warnings = records
+            .where((r) => r.level == Level.WARNING)
+            .toList();
+        expect(warnings, hasLength(1));
+        expect(warnings.single.message, contains('old-skin'));
+        expect(warnings.single.message, contains('new-skin'));
+        expect(warnings.single.stackTrace, isNull);
+
+        records.clear();
+        final again = await check({
+          'fixture/first': ('v2', skinZip('new-skin', 'new v2')),
+        });
+        expect(again.status, RemoteUpdateStatus.alreadyCurrent);
+        expect(records.where((r) => r.level >= Level.WARNING), isEmpty);
+      },
+    );
+
+    test('cannot take over a skin that another source tracks', () async {
+      final hijack = await check({
+        'fixture/first': ('v3', skinZip('second-skin', 'hijack')),
+      });
+
+      expect(hijack.status, RemoteUpdateStatus.failed);
+      expect('${hijack.error}', contains('different skin id'));
+      expect(indexOf('second-skin'), 'second v1');
+      expect(indexOf('old-skin'), 'old v1');
+      expect(records.where((r) => r.level >= Level.SEVERE), isEmpty);
+    });
   });
 }

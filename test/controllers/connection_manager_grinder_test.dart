@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:logging/logging.dart';
 import 'package:reaprime/src/controllers/connection_manager.dart';
 import 'package:reaprime/src/controllers/device_controller.dart';
 import 'package:reaprime/src/models/device/de1_interface.dart';
@@ -144,6 +145,41 @@ void main() {
       },
     );
   }
+
+  test('a failed grinder connect logs the error and its stack', () async {
+    final previousLevel = Logger.root.level;
+    Logger.root.level = Level.ALL;
+    final records = <LogRecord>[];
+    final logs = Logger.root.onRecord
+        .where((record) => record.loggerName == 'ConnectionManager')
+        .listen(records.add);
+    addTearDown(() async {
+      await logs.cancel();
+      Logger.root.level = previousLevel;
+    });
+    grinder = TestGrinder(
+      deviceId: 'grinder',
+      connectGate: grinderGate,
+      connectError: StateError('grinder initialization failed'),
+    );
+    grinderGate.complete();
+
+    final result = await manager.connectGrinder(grinder);
+
+    expect(result.success, isFalse);
+    final warning = records.singleWhere(
+      (record) =>
+          record.level == Level.WARNING &&
+          record.message.contains('grinder initialization failed'),
+    );
+    expect(warning.message, contains(grinder.deviceId));
+    expect(
+      records.where(
+        (record) => record.level == Level.FINE && record.stackTrace != null,
+      ),
+      isNotEmpty,
+    );
+  });
 
   test('scale-only recovery never attempts the preferred grinder', () async {
     scanner.addDevice(scale);

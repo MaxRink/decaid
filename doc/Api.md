@@ -215,8 +215,9 @@ for every route, not only extension management:
   `Content-Security-Policy: frame-ancestors 'self'`. Plugin pages and surfaces
   (HTML under `/api/v1/plugins/<id>/`) carry no `X-Frame-Options` and
   `frame-ancestors 'self'` plus the device's skin origins (live skin page and
-  docs ports on the requested numeric device address and on loopback), so the
-  active skin can embed them and other sites cannot.
+  docs ports on the requested numeric IPv4 device address, `localhost` and
+  `127.0.0.1`; IPv6 literals are not valid CSP sources and are left out), so
+  the active skin can embed them and other sites cannot.
 
 Requests without an `Origin` (and without `Sec-Fetch-Site`) are not affected:
 Home Assistant, `curl`, MCP clients, native app code and `host.localApi` keep
@@ -543,9 +544,9 @@ For browser clients on a different origin, `ETag` is exposed via `Access-Control
 
 | Method | Path | Description | Handler |
 |--------|------|-------------|---------|
-| GET | `/api/v1/machine/info` | Machine model, firmware, features | `de1handler.dart` |
+| GET | `/api/v1/machine/info` | Machine model, firmware, features; `503` `{"error": "No machine connected"}` while no machine is connected | `de1handler.dart` |
 | GET | `/api/v1/machine/state` | Current machine state + substate. The steam substates `pausedSteam` and `puffing` report as themselves; a stopped refill kit reports `needsWater`/`refillStopped` rather than `needsWater`/`idle` | |
-| PUT | `/api/v1/machine/state/{newState}` | Request state change (`idle`, `sleep`, `espresso`, …) | |
+| PUT | `/api/v1/machine/state/{newState}` | Request state change (`idle`, `sleep`, `espresso`, …). On a machine whose `machine/info` reports `"GHC": true`, a remote `espresso`, `steam`, `hotWater` or `flush` start is still sent and answers 200, but the DE1 only arms the group head and the user must start there; stopping with `idle` works remotely ([device note](device-notes/de1.md#group-head-controller-start-restriction)) | |
 | GET | `/api/v1/machine/settings` | DE1 machine settings (temps, flows) | |
 | POST | `/api/v1/machine/settings` | Update machine settings (one grouped, serialized device write per request). API fan writes are retained locally per machine across app restarts and reapplied after reconnect; the default is 55 (DE1 clamps it to 50) until a fan value is written. The bounded map keeps 32 machines and evicts the oldest-updated entry. Each connection captures its raw handshake serial, falling back to device ID; account-resolved effective serials are excluded. Raw identity changes across connections do not migrate buckets, while account-only effective identity changes within a connection leave the bucket fixed. If neither is available, defaults are used with no retained entry. | |
 | POST | `/api/v1/machine/shotSettings` | Update shot settings (steam temp, hot water, target volume, group temp) | |
@@ -1136,8 +1137,10 @@ single-owner: no other reader may hold the port while Decaid owns it.
 | DELETE | `/api/v1/store/:namespace/:key` | Delete key | |
 
 A namespace equal to an installed plugin's id (case-insensitive) belongs to
-that plugin's `host.storage` and answers 403 on every store route unless the
-request carries an `extensions:manage` bearer.
+that plugin's `host.storage`. Requests whose socket peer is this device
+(loopback or one of the device's own addresses), such as a plugin's own page in
+the app WebView, may use it. Requests from any other machine answer 403 on every
+store route unless they carry an `extensions:manage` bearer.
 
 `GET /api/v1/store/:namespace?full=1` returns the entire namespace as a `{key: value}` map in one request instead of one GET per key. It sends an `ETag`, so a repeat request with `If-None-Match` returns `304 Not Modified` when nothing changed — cheap to poll. Without the flag the endpoint returns just the array of keys.
 

@@ -490,11 +490,19 @@ paths:
       tags: [Machine]
       responses:
         "200":
-          description: Information about the currently connected machine or an error if not connected
+          description: Information about the currently connected machine
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MachineInfo"
+        "503":
+          description: >
+            No machine is connected (for example during startup before the
+            DE1 connects). The body is `{"error": "No machine connected"}`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/machine/state:
     get:
@@ -511,7 +519,14 @@ paths:
   /api/v1/machine/state/{newState}:
     put:
       summary: Request Machine State Change
-      description: Requests a state change for the espresso machine.
+      description: >
+        Requests a state change for the espresso machine. A 200 means the
+        request was written to the machine, not that the machine entered the
+        state. On a DE1 whose `GET /api/v1/machine/info` reports `GHC: true`
+        (an active group head controller), the firmware ignores a remote start
+        of `espresso`, `steam`, `hotWater` or `flush`: it only arms the group
+        head and the user must start the operation there. Such a request is
+        still sent and answers 200; stopping with `idle` works remotely.
       tags: [Machine]
       parameters:
         - name: newState
@@ -3489,9 +3504,12 @@ paths:
       responses:
         "403":
           description: >
-            The namespace equals an installed plugin's id (case-insensitive)
-            and the request carries no `extensions:manage` bearer; that
-            namespace is reserved for the plugin's own `host.storage`.
+            The namespace equals an installed plugin's id (case-insensitive),
+            the request comes from another machine (its socket peer is not
+            loopback or one of this device's own addresses) and it carries no
+            `extensions:manage` bearer. That namespace holds the plugin's
+            `host.storage`; pages and plugins running on the device itself,
+            such as a plugin's own UI in the app WebView, may use it.
           content:
             application/json:
               schema:
@@ -3536,9 +3554,12 @@ paths:
       responses:
         "403":
           description: >
-            The namespace equals an installed plugin's id (case-insensitive)
-            and the request carries no `extensions:manage` bearer; that
-            namespace is reserved for the plugin's own `host.storage`.
+            The namespace equals an installed plugin's id (case-insensitive),
+            the request comes from another machine (its socket peer is not
+            loopback or one of this device's own addresses) and it carries no
+            `extensions:manage` bearer. That namespace holds the plugin's
+            `host.storage`; pages and plugins running on the device itself,
+            such as a plugin's own UI in the app WebView, may use it.
           content:
             application/json:
               schema:
@@ -3574,9 +3595,12 @@ paths:
       responses:
         "403":
           description: >
-            The namespace equals an installed plugin's id (case-insensitive)
-            and the request carries no `extensions:manage` bearer; that
-            namespace is reserved for the plugin's own `host.storage`.
+            The namespace equals an installed plugin's id (case-insensitive),
+            the request comes from another machine (its socket peer is not
+            loopback or one of this device's own addresses) and it carries no
+            `extensions:manage` bearer. That namespace holds the plugin's
+            `host.storage`; pages and plugins running on the device itself,
+            such as a plugin's own UI in the app WebView, may use it.
           content:
             application/json:
               schema:
@@ -3602,9 +3626,12 @@ paths:
       responses:
         "403":
           description: >
-            The namespace equals an installed plugin's id (case-insensitive)
-            and the request carries no `extensions:manage` bearer; that
-            namespace is reserved for the plugin's own `host.storage`.
+            The namespace equals an installed plugin's id (case-insensitive),
+            the request comes from another machine (its socket peer is not
+            loopback or one of this device's own addresses) and it carries no
+            `extensions:manage` bearer. That namespace holds the plugin's
+            `host.storage`; pages and plugins running on the device itself,
+            such as a plugin's own UI in the app WebView, may use it.
           content:
             application/json:
               schema:

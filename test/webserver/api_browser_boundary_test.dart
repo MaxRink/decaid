@@ -407,7 +407,6 @@ void main() {
             "'self'",
             'http://localhost:$_skinPort',
             'http://127.0.0.1:$_skinPort',
-            'http://[::1]:$_skinPort',
           ]),
         );
 
@@ -428,12 +427,35 @@ void main() {
                 source.endsWith(':$_skinPort') &&
                     (source.contains(_deviceAddress) ||
                         source.contains('localhost') ||
-                        source.contains('127.0.0.1') ||
-                        source.contains('[::1]')),
+                        source.contains('127.0.0.1')),
           ),
           isTrue,
           reason: '$allowed',
         );
+      },
+    );
+
+    test(
+      'frame-ancestors carries no IPv6 literal, which CSP cannot express',
+      () async {
+        for (final host in [
+          '[::1]:8080',
+          '[fe80::1]:8080',
+          '[fd00::64]:8080',
+        ]) {
+          final page = await send(
+            'GET',
+            '/api/v1/plugins/x.reaplugin/ui',
+            host: host,
+          );
+          final allowed = frameAncestors(page);
+          expect(allowed, contains('http://localhost:$_skinPort'));
+          expect(
+            allowed.where((source) => source.contains('[')),
+            isEmpty,
+            reason: '$host: $allowed',
+          );
+        }
       },
     );
 

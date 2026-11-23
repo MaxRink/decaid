@@ -79,6 +79,48 @@ class _Fixture {
 }
 
 void main() {
+  test('a plugin candidate sighted by the watch still connects after the watch '
+      'stops', () async {
+    final fixture = _Fixture();
+    addTearDown(fixture.dispose);
+    await fixture.load();
+    await fixture.start();
+    final sighted = fixture.next;
+    fixture.advertise();
+    final plugin = await sighted;
+    expect(plugin.implementation, DeviceImplementation.plugin);
+
+    await fixture.discovery.stopDeviceWatch();
+    await plugin.onConnect();
+
+    expect(
+      await plugin.connectionState.first,
+      domain.ConnectionState.connected,
+    );
+    expect(fixture.transports.single.connectCalls, 1);
+    await plugin.disconnect();
+  });
+
+  test(
+    'a plugin candidate sighted by the watch is refused after the watch stops '
+    'once its driver is unloaded',
+    () async {
+      final fixture = _Fixture();
+      addTearDown(fixture.dispose);
+      await fixture.load();
+      await fixture.start();
+      final sighted = fixture.next;
+      fixture.advertise();
+      final plugin = await sighted;
+
+      await fixture.discovery.stopDeviceWatch();
+      await fixture.manager.unloadPlugin('ble.sensor');
+
+      await expectLater(plugin.onConnect(), throwsA(anything));
+      expect(fixture.transports, isEmpty);
+    },
+  );
+
   for (final advertisementFirst in [false, true]) {
     test(
       'system/advertisement ownership with advertisementFirst=$advertisementFirst',
