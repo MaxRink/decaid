@@ -29,6 +29,7 @@ android {
 
     defaultConfig {
         applicationId = "net.tadel.reaprime"
+        (findProperty("decaidAppIdSuffix") as String?)?.let { applicationIdSuffix = it }
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 28
@@ -73,3 +74,8 @@ flutter {
 
 
 
+
+if (findProperty("decaidAppIdSuffix") != null) {
+    tasks.matching { it.name.endsWith("GoogleServices") || it.name.contains("Crashlytics") }
+        .configureEach { enabled = false }
+}
