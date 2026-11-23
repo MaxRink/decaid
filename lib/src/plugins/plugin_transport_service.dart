@@ -409,13 +409,7 @@ class PluginTransportService {
     final port = _portOption(options);
     final socket = pin == null
         ? await connectSecureSocket(host, port)
-        : await SecureSocket.connect(
-            host,
-            port,
-            context: SecurityContext(withTrustedRoots: true),
-            onBadCertificate: (certificate) =>
-                certificateMatchesPin(certificate, pin),
-          );
+        : await _connectPinnedSecureSocket(host, port, pin);
     if (record.terminal) {
       socket.destroy();
       throw const PluginTransportException('Plugin unloaded during connect');
@@ -722,16 +716,31 @@ Future<WebSocket> _connectPinnedWebSocket(
   Iterable<String>? protocols,
   String pin,
 ) async {
-  final client = pinnedHttpClient(pin);
+  final check = TlsPinCheck(pin);
+  final client = pinnedHttpClient(check);
   try {
-    return await WebSocket.connect(
-      url,
-      protocols: protocols,
-      customClient: client,
+    return await check.guard(
+      () => WebSocket.connect(url, protocols: protocols, customClient: client),
     );
   } finally {
     client.close();
   }
+}
+
+Future<SecureSocket> _connectPinnedSecureSocket(
+  String host,
+  int port,
+  String pin,
+) {
+  final check = TlsPinCheck(pin);
+  return check.guard(
+    () => SecureSocket.connect(
+      host,
+      port,
+      context: SecurityContext(withTrustedRoots: true),
+      onBadCertificate: check.accepts,
+    ),
+  );
 }
 
 Future<Socket> _connectSocket(String host, int port) =>

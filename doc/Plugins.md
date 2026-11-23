@@ -816,6 +816,24 @@ const { handle } = await host.transport.open({
   `api`, and each transport still requires its `network.*` permission.
 - A pinned certificate that is rotated by the server stops working until the
   plugin is given the new pin.
+- When the pin does not match the certificate the platform rejected, the
+  rejected `fetch` or `open()` error carries `code: "tls_pin_mismatch"` and
+  `peerSha256`, the presented certificate's SHA-256 as 64 lowercase hex
+  digits. A setup page can show that fingerprint and ask the user to confirm
+  it before storing it as the new pin. The host never trusts it by itself, and
+  no request is sent over the refused connection. Other failures, including an
+  unpinned handshake failure, carry neither field. Older hosts reject without
+  them, so feature-detect with `error.code === "tls_pin_mismatch"`:
+
+  ```javascript
+  try {
+    await fetch(url, { tlsPinSha256: storedPin });
+  } catch (error) {
+    if (error.code === "tls_pin_mismatch") {
+      showFingerprintForConfirmation(error.peerSha256);
+    }
+  }
+  ```
 
 **Note**: The JavaScript environment has limited APIs. Currently available:
 
