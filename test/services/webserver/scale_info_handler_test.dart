@@ -8,6 +8,8 @@ import 'package:reaprime/src/controllers/scale_controller.dart';
 import 'package:reaprime/src/models/device/device.dart';
 import 'package:reaprime/src/models/errors.dart';
 import 'package:reaprime/src/models/device/scale.dart';
+import 'package:reaprime/src/plugins/plugin_manifest.dart';
+import 'package:reaprime/src/plugins/plugin_scale.dart';
 import 'package:reaprime/src/services/webserver_service.dart';
 import 'package:reaprime/src/settings/settings_controller.dart';
 import 'package:shelf_plus/shelf_plus.dart';
@@ -31,7 +33,10 @@ void main() {
 
   tearDown(() => deviceController.dispose());
 
-  Future<Response> requestInfo(ScaleController controller) async {
+  Future<Response> requestInfo(
+    ScaleController controller, {
+    bool Function(String pluginId)? isPluginRuntimeActive,
+  }) async {
     final app = Router().plus;
     final registry = AuxiliaryScaleRegistry();
     addTearDown(registry.dispose);
@@ -40,6 +45,7 @@ void main() {
       de1Controller: de1Controller,
       settingsController: settingsController,
       auxiliaryScaleRegistry: registry,
+      isPluginRuntimeActive: isPluginRuntimeActive,
     ).addRoutes(app);
     return app.call(
       Request('GET', Uri.parse('http://localhost/api/v1/scale/info')),
@@ -91,6 +97,101 @@ void main() {
 
     expect(response.statusCode, 200);
     expect(jsonDecode(await response.readAsString()), isEmpty);
+  });
+
+  group('plugin surfaces', () {
+    PluginScale pluginScale({
+      List<PluginDeviceSurface> surfaces = const [
+        PluginDeviceSurface(
+          id: 'settings',
+          role: 'settings',
+          endpoint: 'device-settings',
+          label: 'Skale settings',
+        ),
+        PluginDeviceSurface(
+          id: 'diag',
+          role: 'diagnostics',
+          endpoint: 'device-diagnostics',
+        ),
+      ],
+    }) {
+      final scale = PluginScale(
+        deviceId: 'plugin:skale:skale:AA BB',
+        name: 'Skale 2',
+        pluginId: 'skale',
+        capabilities: const {},
+        surfaces: surfaces,
+        invoke: (_, _) async => const {},
+      );
+      addTearDown(scale.dispose);
+      return scale;
+    }
+
+    Future<Map<String, dynamic>> info(
+      Scale scale, {
+      bool Function(String pluginId)? isPluginRuntimeActive,
+    }) async {
+      final controller = _FixedScaleController(scale);
+      addTearDown(controller.dispose);
+      final response = await requestInfo(
+        controller,
+        isPluginRuntimeActive: isPluginRuntimeActive,
+      );
+      expect(response.statusCode, 200);
+      return jsonDecode(await response.readAsString()) as Map<String, dynamic>;
+    }
+
+    test('lists declared surfaces of an active plugin scale', () async {
+      final json = await info(
+        pluginScale(),
+        isPluginRuntimeActive: (id) => id == 'skale',
+      );
+
+      expect(json['surfaces'], [
+        {
+          'id': 'settings',
+          'role': 'settings',
+          'label': 'Skale settings',
+          'href':
+              '/api/v1/plugins/skale/device-settings?ui=1'
+              '&deviceId=plugin%3Askale%3Askale%3AAA+BB&deviceName=Skale+2',
+        },
+        {
+          'id': 'diag',
+          'role': 'diagnostics',
+          'href':
+              '/api/v1/plugins/skale/device-diagnostics?ui=1'
+              '&deviceId=plugin%3Askale%3Askale%3AAA+BB&deviceName=Skale+2',
+        },
+      ]);
+    });
+
+    test('omits surfaces while the plugin runtime is inactive', () async {
+      expect(
+        await info(pluginScale(), isPluginRuntimeActive: (_) => false),
+        isNot(contains('surfaces')),
+      );
+      expect(await info(pluginScale()), isNot(contains('surfaces')));
+    });
+
+    test('omits surfaces when the plugin declares none', () async {
+      expect(
+        await info(
+          pluginScale(surfaces: const []),
+          isPluginRuntimeActive: (_) => true,
+        ),
+        isNot(contains('surfaces')),
+      );
+    });
+
+    test('omits surfaces for native scales', () async {
+      final scale = _InfoScale(DeviceInformation(firmwareVersion: 'R029'));
+      addTearDown(scale.dispose);
+
+      final json = await info(scale, isPluginRuntimeActive: (_) => true);
+
+      expect(json, {'firmwareVersion': 'R029'});
+    });
   });
 }
 

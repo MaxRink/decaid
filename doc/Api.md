@@ -611,7 +611,7 @@ Pre-stream responses are `400` for malformed input, `404` for an unknown artifac
 | PUT | `/api/v1/scale/timer/stop` | Stop scale timer | |
 | PUT | `/api/v1/scale/timer/reset` | Reset scale timer | |
 
-`GET /api/v1/scale/info` is scoped to the currently connected scale. It returns `503` when no scale is connected and `{}` when connected metadata is not yet known. `firmwareVersion`, when present, is an opaque value reported by the scale (for example `R029`). `batteryLevel` is optional and nullable; unknown values are omitted, while `0` and `100` are valid readings. This endpoint is separate from device inventory.
+`GET /api/v1/scale/info` is scoped to the currently connected scale. It returns `503` when no scale is connected and `{}` when connected metadata is not yet known. `firmwareVersion`, when present, is an opaque value reported by the scale (for example `R029`). `batteryLevel` is optional and nullable; unknown values are omitted, while `0` and `100` are valid readings. For a plugin-backed scale whose owning plugin runtime is active, optional `surfaces` lists the driver's declared surfaces (`id`, `role` — `settings` or `diagnostics` — optional `label`, and a host-built same-plugin `href` carrying `ui=1`, the runtime `deviceId` and a display-only `deviceName`), resolved by the same `PluginDeviceSurfaceAuthority` as native device management. Skins can open a `settings` surface to reach the plugin's per-device settings page. `surfaces` is omitted for native scales, for plugin scales that declare none, and while the plugin runtime is inactive. This endpoint is separate from device inventory.
 
 ### Devices
 

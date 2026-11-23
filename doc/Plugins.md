@@ -1001,7 +1001,10 @@ in the platform in-app browser, preserving its `ui=1`, `deviceId`, and optional
 display-only `deviceName` query. Native device management supplies the name to the
 shared authority, which encodes all query values once; the UI does not rebuild
 the query. The name is not identity, and ownership is not inferred from device IDs.
-Other authority callers that omit the name retain their existing hrefs. Only
+`GET /api/v1/scale/info` exposes the same name-carrying hrefs for a connected
+plugin scale as `surfaces` (only while the owning runtime is active), so skins
+can link to the per-device settings page. Other authority callers that omit the
+name retain their existing hrefs. Only
 the current device instance may launch; retired, replaced, and unloaded instances
 are fenced. The plugin owns identity validation and per-device persistence through
 its namespaced KV store (`pluginStorage` permission), separate from plugin-global
