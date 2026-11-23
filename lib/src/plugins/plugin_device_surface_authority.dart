@@ -48,17 +48,12 @@ List<Map<String, String>> pluginSurfaceLinks(PluginManifest manifest) =>
           'id': surface.id,
           'role': surface.role,
           if (surface.label != null) 'label': surface.label!,
-          'href': Uri(
-            pathSegments: [
-              '',
-              'api',
-              'v1',
-              'plugins',
-              manifest.id,
-              surface.endpoint,
-            ],
-            queryParameters: {'ui': '1', 'surface': surface.id},
-          ).toString(),
+          'href': pluginSurfaceHref(manifest.id, surface),
         }),
       ),
     );
+
+String pluginSurfaceHref(String pluginId, PluginDeviceSurface surface) => Uri(
+  pathSegments: ['', 'api', 'v1', 'plugins', pluginId, surface.endpoint],
+  queryParameters: {'ui': '1', 'surface': surface.id},
+).toString();
