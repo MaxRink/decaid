@@ -40,7 +40,6 @@ void main() {
       PluginPermissions.eventsShots,
     },
     'mahlkoenig-e64.reaplugin': {
-      PluginPermissions.log,
       PluginPermissions.api,
       PluginPermissions.networkWebsocket,
       PluginPermissions.eventsMachine,
