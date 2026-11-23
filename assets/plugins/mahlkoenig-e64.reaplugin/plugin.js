@@ -87,6 +87,8 @@ function createPlugin(host) {
       if (!validHost(row.host)) fail("instance host must be a loopback, private, link-local or .local address");
       const certSha256 = row.certSha256 === undefined ? null : typeof row.certSha256 === "string" ? row.certSha256.replace(/:/g, "").toLowerCase() : "";
       if (certSha256 !== null && !/^[0-9a-f]{64}$/.test(certSha256)) fail("certSha256 must be 64 hex characters");
+      const restPort = row.restPort === undefined ? 443 : row.restPort;
+      if (!Number.isInteger(restPort) || restPort < 1 || restPort > 65535) fail("restPort is invalid");
       if (!Number.isInteger(pollMs) || pollMs < 0 || (pollMs !== 0 && pollMs < 100) || pollMs > 3600000) fail("pollMs is out of bounds");
       const token = boundSecret(tokens, "TokensJson", id, "token", row.host);
       const password = boundSecret(passwords, "PasswordsJson", id, "password", row.host);
@@ -95,7 +97,7 @@ function createPlugin(host) {
       if (!mintTokens && !token) fail("each instance needs a token unless MintTokens is true");
       if (mintTokens && !token && !password && !allowNoPassword) fail("MintTokens needs a password or AllowNoPasswordWorkaround for " + id);
       ids.add(id);
-      return {id, name, scheme, host: row.host, port: row.port, pollMs, token, certSha256,
+      return {id, name, scheme, host: row.host, port: row.port, pollMs, token, certSha256, restPort,
         password, mintTokens, allowNoPassword, staticToken: Boolean(token)};
     });
     if (Object.keys(tokens).some((id) => !ids.has(id))) fail("TokensJson contains an unknown id");
@@ -189,7 +191,8 @@ function createPlugin(host) {
     const value = data && (Object.prototype.hasOwnProperty.call(data, "grindState") ? data.grindState : (data.state || data.status || data.mode));
     if (typeof value !== "string") return "unknown";
     const normalized = value.toLowerCase();
-    if (["grinding", "running", "active"].includes(normalized)) return "grinding";
+    // Firmware labels from the 2026-11-19 capture: Idle -> Grind -> GbwPostGrind -> Idle.
+    if (["grinding", "running", "active", "grind", "manualstartgrind", "gbtstartgrind"].includes(normalized)) return "grinding";
     if (["idle", "ready", "stopped"].includes(normalized)) return "idle";
     if (["error", "fault"].includes(normalized)) return "error";
     return "unknown";
@@ -358,10 +361,10 @@ function createPlugin(host) {
       const payload = noPasswordPayload();
       role = payload.role; password = payload.password;
     }
-    // The E64 REST API is HTTPS-only on 443 (HTTP 80 redirects), whatever the WebSocket scheme.
+    // The E64 REST API is HTTPS-only (443; HTTP 80 redirects), whatever the WebSocket scheme.
     let failure = "login request failed";
     try {
-      const response = await fetch("https://" + hostName(config) + "/rest_api/login", {
+      const response = await fetch("https://" + hostName(config) + (config.restPort === 443 ? "" : ":" + config.restPort) + "/rest_api/login", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({userRole: role, password}),
@@ -375,6 +378,7 @@ function createPlugin(host) {
           instance.tokenSource = config.password ? "password" : "workaround";
           instance.lastMintAt = new Date().toISOString();
           instance.lastMintError = null; instance.mintFailures = 0; instance.nextMintAt = null;
+          loginNotice(instance, null);
           return auth.slice(7).trim();
         }
         failure = "login returned no bearer token";
@@ -384,7 +388,17 @@ function createPlugin(host) {
     instance.lastMintError = failure;
     instance.mintFailures++;
     instance.nextMintAt = Date.now() + Math.min(MINT_BACKOFF_MS * Math.pow(2, instance.mintFailures - 1), MINT_BACKOFF_MAX_MS);
+    loginNotice(instance, failure);
     throw new Error(failure);
+  }
+  // A failing login is a current condition the user must fix; withdraw it once a login succeeds.
+  function loginNotice(instance, failure) {
+    const id = "login-" + instance.config.id;
+    try {
+      if (failure === null) host.dismissNotification(id);
+      else host.notify({id, message: "E64 " + instance.config.name + ": " + failure + ". Check the Owner password, certSha256 and grinder address.",
+        action: {id: "help", label: "Help", type: "openExternalUrl", url: "https://github.com/MaxRink/decaid-e64ws-plugin#token-acquisition"}});
+    } catch (_) {}
   }
   function disconnect(instance, expectedEpoch, reason) {
     if (expectedEpoch !== undefined && expectedEpoch !== instance.epoch) return Promise.resolve();
