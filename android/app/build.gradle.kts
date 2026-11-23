@@ -74,6 +74,24 @@ flutter {
     source = "../.."
 }
 
+val releaseSigningEnv = listOf(
+    "ANDROID_KEYSTORE_PASSWORD",
+    "ANDROID_KEY_ALIAS",
+    "ANDROID_KEY_PASSWORD",
+)
+
+gradle.taskGraph.whenReady {
+    val missing = releaseSigningEnv.filter { System.getenv(it).isNullOrEmpty() }
+    val signsRelease = allTasks.any {
+        it.project == project && it.name.startsWith("package") && it.name.endsWith("Release")
+    }
+    if (System.getenv("CI") == "true" && signsRelease && missing.isNotEmpty()) {
+        throw GradleException(
+            "CI release builds must not fall back to the debug signing " +
+                "defaults; set ${missing.joinToString()}",
+        )
+    }
+}
 dependencies {
     testImplementation("junit:junit:4.13.2")
 }
@@ -107,6 +125,7 @@ tasks.configureEach {
         dependsOn(guardGeneratedPluginRegistration)
     }
 }
+
 
 
 
