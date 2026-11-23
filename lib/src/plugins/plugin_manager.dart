@@ -1089,7 +1089,8 @@ class PluginManager {
               method: init.method || "GET",
               headers: init.headers || {},
               body: init.body ?? null,
-              tlsPinSha256: init.tlsPinSha256 ?? null
+              tlsPinSha256: init.tlsPinSha256 ?? null,
+              responseType: init.responseType ?? null
             }));
           });
         };
@@ -1109,14 +1110,24 @@ class PluginManager {
           }
 
           const headers = makeHeaders(msg.headers);
+          const isBase64 = typeof msg.bodyBase64 === "string";
+          const base64Only =
+            "This response was requested with responseType base64; use base64()";
 
           const response = {
             status: msg.status,
             ok: msg.status >= 200 && msg.status < 300,
             headers,
-            text: async () => msg.body ?? "",
-            json: async () => JSON.parse(msg.body ?? "null")
+            text: async () => {
+              if (isBase64) throw new TypeError(base64Only);
+              return msg.body ?? "";
+            },
+            json: async () => {
+              if (isBase64) throw new TypeError(base64Only);
+              return JSON.parse(msg.body ?? "null");
+            }
           };
+          if (isBase64) response.base64 = async () => msg.bodyBase64;
           pending.resolve(response);
         };
 
@@ -3697,6 +3708,13 @@ class PluginManager {
     final method = ((msg['method'] as String?) ?? 'GET').toUpperCase();
     final headers = msg['headers'] as Map? ?? {};
     final body = msg['body'];
+    final binary = switch (msg['responseType']) {
+      null || 'text' => false,
+      'base64' => true,
+      _ => throw const FormatException(
+        'responseType must be "base64" or omitted',
+      ),
+    };
     if (_isMachineControlWrite(method, uri) &&
         await _isHostApi(uri.host, uri.port)) {
       final refusal = _machineControlRefusal(op.pluginId, uri);
@@ -3709,7 +3727,7 @@ class PluginManager {
         : (pinnedHttpClient(pin)
             ..connectionTimeout = const Duration(seconds: 10));
     try {
-      return await _sendFetch(op, client, method, uri, headers, body);
+      return await _sendFetch(op, client, method, uri, headers, body, binary);
     } finally {
       if (pin != null) client.close(force: true);
     }
@@ -3722,6 +3740,7 @@ class PluginManager {
     Uri uri,
     Map headers,
     Object? body,
+    bool binary,
   ) async {
     final request = await client.openUrl(method, uri);
     op.request = request;
@@ -3751,7 +3770,10 @@ class PluginManager {
       'id': int.parse(op.requestId),
       'status': response.statusCode,
       'headers': responseHeaders,
-      'body': utf8.decode(bytes, allowMalformed: true),
+      if (binary)
+        'bodyBase64': base64Encode(bytes)
+      else
+        'body': utf8.decode(bytes, allowMalformed: true),
     };
   }
 }
