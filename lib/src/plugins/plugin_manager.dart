@@ -426,9 +426,34 @@ class PluginManager {
     js.evaluate(r'''
       (function () {
         "use strict";
-        if (globalThis.__plugins__) return;
+        if (globalThis.__registerPlugin) return;
 
-        globalThis.__plugins__ = Object.create(null);
+        const __pluginRegistry = new Map();
+        Object.defineProperty(globalThis, "__registerPlugin", {
+          value: function (bridgeToken, plugin) {
+            if (typeof bridgeToken !== "string" ||
+                __mapHas(__pluginRegistry, bridgeToken)) {
+              throw new Error("Plugin registration refused");
+            }
+            __mapSet(__pluginRegistry, bridgeToken, plugin);
+          },
+          writable: false,
+          configurable: false,
+          enumerable: false
+        });
+        Object.defineProperty(globalThis, "__unregisterPlugin", {
+          value: function (bridgeToken) {
+            const plugin = __mapGet(__pluginRegistry, bridgeToken);
+            try {
+              plugin?.onUnload?.();
+            } finally {
+              __mapDelete(__pluginRegistry, bridgeToken);
+            }
+          },
+          writable: false,
+          configurable: false,
+          enumerable: false
+        });
         
         // Add HTTP response handling
         const __nativeSendMessage = sendMessage;
@@ -633,7 +658,7 @@ class PluginManager {
 
         Object.defineProperty(globalThis, "__dispatchPluginHttp", {
           value: function (pluginId, bridgeToken, generation, requestId, event) {
-            const plugin = globalThis.__plugins__[pluginId];
+            const plugin = __mapGet(__pluginRegistry, bridgeToken);
             if (!plugin || typeof plugin.__httpRequestHandler !== "function") return;
             try {
               const response = plugin.__httpRequestHandler(event);
@@ -703,13 +728,37 @@ class PluginManager {
             };
         }
 
-        globalThis.__dispatchToPlugin = function (pluginId, evt) {
-          const plugin = globalThis.__plugins__[pluginId];
+        if (typeof globalThis.atob === 'undefined') {
+          globalThis.atob = function (input) {
+            const chars =
+              "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            const str = String(input).replace(/[\t\n\f\r ]/g, "");
+            const clean = str.length % 4 === 0 ? str.replace(/==?$/, "") : str;
+            if (clean.length % 4 === 1 || /[^A-Za-z0-9+/]/.test(clean)) {
+              throw new Error("The string to be decoded is not correctly encoded.");
+            }
+            let output = "";
+            let buffer = 0;
+            let bits = 0;
+            for (let i = 0; i < clean.length; i++) {
+              buffer = (buffer << 6) | chars.indexOf(clean.charAt(i));
+              bits += 6;
+              if (bits >= 8) {
+                bits -= 8;
+                output += String.fromCharCode((buffer >> bits) & 0xff);
+              }
+            }
+            return output;
+          };
+        }
+
+        globalThis.__dispatchToPlugin = function (bridgeToken, evt) {
+          const plugin = __mapGet(__pluginRegistry, bridgeToken);
           if (!plugin || typeof plugin.onEvent !== "function") return;
           try {
             plugin.onEvent(evt);
           } catch (e) {
-            console.error("Plugin error", pluginId, e);
+            console.error("Plugin error", e);
           }
         };
 
@@ -1174,16 +1223,28 @@ class PluginManager {
             const intrinsicNames = [
               "Object", "Function", "Array", "JSON", "Promise", "Map", "Set",
               "WeakMap", "WeakSet", "String", "Number", "Boolean", "Symbol",
-              "Reflect", "Math", "Date", "RegExp", "Error", "TypeError"
+              "Reflect", "Math", "Date", "RegExp", "Error", "TypeError",
+              "BigInt", "Proxy", "ArrayBuffer", "SharedArrayBuffer", "DataView",
+              "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array",
+              "Uint16Array", "Int32Array", "Uint32Array", "Float32Array",
+              "Float64Array", "BigInt64Array", "BigUint64Array", "TextEncoder",
+              "TextDecoder", "btoa", "atob"
             ];
-            for (const name of intrinsicNames) {
-              const intrinsic = globalThis[name];
-              if (intrinsic === undefined) continue;
+            const freezeWithPrototype = (intrinsic, freezePrototype) => {
+              if (intrinsic === undefined || intrinsic === null) return;
               Object.freeze(intrinsic);
-              if (name !== "Error" && name !== "TypeError" &&
-                  intrinsic.prototype) {
+              if (freezePrototype && intrinsic.prototype) {
                 Object.freeze(intrinsic.prototype);
               }
+            };
+            for (const name of intrinsicNames) {
+              freezeWithPrototype(
+                globalThis[name],
+                name !== "Error" && name !== "TypeError"
+              );
+            }
+            if (typeof Uint8Array === "function") {
+              freezeWithPrototype(Object.getPrototypeOf(Uint8Array), true);
             }
             for (const name of [...hostGlobalNames, ...intrinsicNames]) {
               const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
@@ -2523,7 +2584,7 @@ class PluginManager {
         }
         
         // Store the plugin object
-        globalThis.__plugins__[pluginId] = plugin;
+        globalThis.__registerPlugin(pluginBridgeToken, plugin);
         
         // Add HTTP API handler if the plugin defines one
         if (typeof plugin.handleHttpRequest === "function") {
@@ -2613,17 +2674,12 @@ class PluginManager {
 
     try {
       try {
-        final result = js.evaluate('''
-          (function () {
-            const plugin = globalThis.__plugins__["$id"];
-            try {
-              plugin?.onUnload?.();
-            } finally {
-              delete globalThis.__plugins__["$id"];
-            }
-          })();
-        ''');
-        if (result.isError) {
+        final result = pluginBridgeToken == null
+            ? null
+            : js.evaluate(
+                'globalThis.__unregisterPlugin(${jsonEncode(pluginBridgeToken)});',
+              );
+        if (result != null && result.isError) {
           _log.warning('Plugin onUnload failed: $id: ${result.stringResult}');
         }
       } catch (e, st) {
@@ -2787,8 +2843,9 @@ class PluginManager {
         );'''
         : '';
 
+    if (pluginBridgeToken == null) return;
     js.evaluate('''
-    __dispatchToPlugin("$pluginId", {
+    __dispatchToPlugin(${jsonEncode(pluginBridgeToken)}, {
       name: "$name",
       payload: ${jsonEncode(payload)}
     });

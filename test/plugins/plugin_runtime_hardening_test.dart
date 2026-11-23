@@ -103,6 +103,90 @@ void main() {
       },
     );
 
+    test('base64 helpers and binary built-ins cannot be hooked', () async {
+      await _run(
+        manager,
+        id: 'sniffer.plugin',
+        jsBody: '''
+          globalThis.__stolen = [];
+          const steal = (value) => { globalThis.__stolen.push(String(value)); };
+          const attempt = (fn) => { try { fn(); } catch (e) {} };
+          const realBtoa = globalThis.btoa;
+          attempt(() => { globalThis.btoa = (v) => { steal(v); return realBtoa(v); }; });
+          attempt(() => { Object.defineProperty(globalThis, "btoa", { value: (v) => { steal(v); return realBtoa(v); } }); });
+          attempt(() => { globalThis.atob = (v) => { steal(v); return ""; }; });
+          attempt(() => { Uint8Array.prototype.set = function () { steal("set"); }; });
+          const typedArray = Object.getPrototypeOf(Uint8Array);
+          attempt(() => { typedArray.prototype.subarray = function () { steal("subarray"); return this; }; });
+          attempt(() => { ArrayBuffer.prototype.slice = function () { steal("slice"); return this; }; });
+          attempt(() => { DataView.prototype.getUint8 = function () { steal("getUint8"); return 0; }; });
+          if (typeof TextEncoder === "function") {
+            attempt(() => { TextEncoder.prototype.encode = function (v) { steal(v); return new Uint8Array(); }; });
+          }
+          host.emit("result", JSON.stringify(true));
+        ''',
+      );
+
+      final victim = await _run(
+        manager,
+        id: 'credentials.plugin',
+        jsBody: '''
+          const auth = btoa("user:pass");
+          const bytes = new Uint8Array([1, 2, 3]);
+          bytes.set([9], 0);
+          const tail = bytes.subarray(1);
+          const view = new DataView(new ArrayBuffer(2).slice(0));
+          report({ auth, decoded: atob(auth), first: bytes[0], tail: tail.length, view: view.getUint8(0) });
+        ''',
+      );
+      expect(victim, {
+        'auth': 'dXNlcjpwYXNz',
+        'decoded': 'user:pass',
+        'first': 9,
+        'tail': 2,
+        'view': 0,
+      });
+      expect(
+        manager.js.evaluate('JSON.stringify(globalThis.__stolen)').stringResult,
+        '[]',
+      );
+    });
+
+    test(
+      'loaded plugin objects are not reachable from other plugins',
+      () async {
+        await _run(
+          manager,
+          id: 'victim.events',
+          jsBody: '''
+          globalThis.__victimEvents = 0;
+          host.emit("result", JSON.stringify(true));
+        ''',
+        );
+        final probe = await _run(
+          manager,
+          id: 'prober.plugin',
+          jsBody: '''
+          const seen = {
+            registry: typeof globalThis.__plugins__,
+            names: Object.getOwnPropertyNames(globalThis)
+              .filter((name) => name.toLowerCase().includes("plugins")),
+          };
+          try {
+            globalThis.__registerPlugin("guessed-token", { onEvent() {} });
+            seen.registered = true;
+          } catch (e) {
+            seen.registered = false;
+          }
+          try { globalThis.__unregisterPlugin("guessed-token"); } catch (e) {}
+          report(seen);
+        ''',
+        );
+        expect((probe as Map)['registry'], 'undefined');
+        expect(probe['names'], isEmpty);
+      },
+    );
+
     test('ordinary plugin code still runs on frozen built-ins', () async {
       final result = await _run(
         manager,
@@ -131,11 +215,13 @@ void main() {
   test('every bundled plugin still loads on the frozen runtime', () async {
     final manager = PluginManager(kvStore: FakeKeyValueStoreService());
     addTearDown(manager.dispose);
-    final bundles = Directory('assets/plugins')
-        .listSync()
-        .whereType<Directory>()
-        .where((dir) => File('${dir.path}/plugin.js').existsSync())
-        .toList();
+    final extra = Platform.environment['DECAID_EXTRA_PLUGIN_DIRS'];
+    final bundles = [
+      ...Directory('assets/plugins').listSync().whereType<Directory>(),
+      if (extra != null)
+        for (final path in extra.split(':'))
+          if (path.isNotEmpty) Directory(path),
+    ].where((dir) => File('${dir.path}/plugin.js').existsSync()).toList();
     expect(bundles, isNotEmpty);
     for (final bundle in bundles) {
       final manifest = PluginManifest.fromJson(
