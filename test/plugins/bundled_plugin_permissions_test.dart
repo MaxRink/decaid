@@ -43,6 +43,7 @@ void main() {
       PluginPermissions.api,
       PluginPermissions.networkWebsocket,
       PluginPermissions.eventsMachine,
+      PluginPermissions.eventsShots,
       PluginPermissions.notifications,
     },
     'assisted-dialin.reaplugin': {
