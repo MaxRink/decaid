@@ -981,6 +981,8 @@ Device management consumes the driver's declared surface with `role: "settings"`
 through `PluginDeviceSurfaceAuthority`. This applies to Scale, Sensor, Grinder,
 and other plugin-backed devices, without requiring a connection or filtering by
 session availability. Devices with no settings-role surface have no settings action.
+A declared `role: "diagnostics"` surface adds a separate **Device diagnostics**
+action next to it, resolved, gated and launched the same way.
 The host validates surfaces against declared same-plugin HTTP endpoints and the
 `api` permission when parsing the manifest.
 
