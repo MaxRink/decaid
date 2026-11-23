@@ -686,8 +686,10 @@ Decaid dispatches a request to the plugin.
 but it does so as an ordinary network client with no authority: the plugin and
 skin management routes answer 401 to it, whatever headers the plugin sets. Use
 [`host.localApi`](#hostlocalapipath-options) with the `manage.extensions`
-permission for those routes. The rest of the API stays open to `fetch`, as it is
-to any client on the network.
+permission for those routes. A plugin `fetch` also cannot write to the host's
+own `/api/v1/machine/*` routes (anything but `GET`/`HEAD`); machine reads and the
+rest of the API stay open to `fetch`, as they are to any client on the
+network.
 
 ```javascript
 // Basic GET request
@@ -1726,15 +1728,33 @@ it in Decaid UI.
   server addresses or credentials from `host.storage`; keep them in plugin
   settings, whose POST route is gated and whose secure values are never returned
 - No filesystem access beyond the plugin's own directory
-- `fetch` and `host.transport` are not limited by destination, so they can
-  reach Decaid's own API like any client on the network. They carry no
+- Apart from the machine control limits below, `fetch` and `host.transport`
+  are not limited by destination, so they can reach Decaid's own API like any
+  client on the network. They carry no
   authority: the plugin and skin management routes answer 401 to them. Only
   `host.localApi`, with the `manage.extensions` permission, carries that
   authority, and only for the plugin's current loaded generation
 - All loaded plugins share one JavaScript runtime and are not isolated from each
   other. A plugin's permissions, `manage.extensions` included, should be treated
   as available to every plugin loaded beside it, so grant `manage.extensions`
-  only on a device whose other plugins you trust as well
+  only on a device whose other plugins you trust as well. As a partial
+  mitigation, before the first plugin is evaluated the host freezes the shared
+  built-ins (`Object`, `Function`, `Array`, `JSON`, `Promise`, `Map`, `Set`,
+  `WeakMap`, `WeakSet`, `String`, `Number`, `Boolean`, `Symbol`, `Reflect`,
+  `Math`, `Date`, `RegExp` and their prototypes, plus the `Error` and
+  `TypeError` constructors) and makes the host's own globals (`host`, `fetch`,
+  `sendMessage` and every `__`-prefixed host function) read-only, so one
+  plugin cannot hook another plugin's `JSON.stringify`, promise callbacks or
+  fetch responses. Assigning to a frozen built-in throws in strict code and is
+  ignored otherwise; plugins must not patch or polyfill built-ins.
+  `Error.prototype` stays writable so subclasses can set `this.name`
+- `fetch` cannot send a non-`GET`/`HEAD` request to the host's own
+  `/api/v1/machine/*` routes (machine state, profile, settings, calibration,
+  firmware) when the target resolves to this device (loopback, `0.0.0.0` or a
+  local interface address) on the API port; the call rejects. Reads such as
+  `GET /api/v1/machine/info` keep working. `host.transport` likewise refuses a
+  WebSocket to `/ws/v1/machine/raw` on the host API and raw `tcp`/`tls`
+  connections to the host API port
 - An `Authorization` header that carries a token Decaid recognises is removed
   from a request before it reaches a plugin-defined endpoint, so a client that
   sends its token to a plugin endpoint does not hand that token to the plugin
