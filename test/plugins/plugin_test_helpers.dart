@@ -56,6 +56,7 @@ PluginManifest testManifest(
   },
   List<PluginDriverDeclaration> drivers = const [],
   PluginApi? api,
+  Map<String, dynamic> settings = const {},
 }) {
   return PluginManifest(
     id: id,
@@ -66,7 +67,7 @@ PluginManifest testManifest(
     apiVersion: 1,
     permissions: permissions,
     drivers: drivers,
-    settings: {},
+    settings: settings,
     api: api ?? PluginApi(endpoints: []),
   );
 }
