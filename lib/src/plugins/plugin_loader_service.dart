@@ -1169,6 +1169,7 @@ class PluginLoaderService {
       'assets/plugins/dcamp.reaplugin',
       'assets/plugins/mahlkoenig-e64.reaplugin',
       'assets/plugins/assisted-dialin.reaplugin',
+      'assets/plugins/skale.reaplugin',
     ];
   }
 
