@@ -58,6 +58,8 @@ void main() {
       PluginPermissions.transportBle,
       PluginPermissions.api,
       PluginPermissions.pluginStorage,
+      PluginPermissions.log,
+      PluginPermissions.notifications,
     },
   };
   const versionsBeforePermissionEnforcement = <String, String>{
