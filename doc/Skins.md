@@ -349,6 +349,15 @@ from the skin's identity and remembered across restarts. Persistent browser
 storage is keyed by origin, so `localStorage` and IndexedDB written by a skin
 are still there the next time the app starts.
 
+When a legacy folder and the canonical folder both declare the same skin ID,
+Decaid selects the canonical folder (the folder named exactly after that ID).
+The legacy folder is left untouched. If the canonical folder has no remembered
+port, Decaid transfers a remembered port from a same-ID legacy folder to it.
+The current skin files therefore remain on the old browser origin; browser
+storage is not copied or cleared. An already remembered canonical port takes
+precedence, and an occupied port still uses the temporary-origin fallback
+below.
+
 `sessionStorage` is not covered by that guarantee. It is scoped to a page
 session, so it is cleared when the page is unloaded — including the background
 unload described above — and it never survives an app restart.
@@ -3374,6 +3383,11 @@ ApplicationDocuments/
 
 > **Skin id restrictions:** A skin's id (from `skin-manifest.json`, `manifest.json`, or the install folder name) becomes a directory name under `web-ui/`, so it must be a single safe filesystem path component: no `/` or `\` separators, no `.` or `..`, no leading drive letter or NUL byte, and no Windows-reserved characters. Unsafe ids are rejected with a clear error and the skin is not installed.
 
+If more than one installed folder declares the same skin ID, the folder whose
+name equals that ID takes precedence, regardless of discovery order. A
+legacy-only installation still works. Decaid does not remove the other folders
+as part of discovery or origin preservation.
+
 ### Cross-Skin Asset Sharing
 
 A skin can fetch files from any other installed skin via:
@@ -3787,23 +3801,30 @@ rows and are limited to 85% of available height. Opening or closing the compact
 list does not resize, remount or navigate the WebView. Back, Escape, outside
 taps and X close only the notification view.
 There are no generic trash, dismissal or Dismiss all controls.
+Confirmed Decaid app updates offer one View action. It closes the center and
+opens Settings' existing update dialog on the launcher, outside the skin.
+Viewing does not start a download. Android downloads show shared updater
+progress and require the dialog's Download and Install confirmations. Back or
+Cancel closes the dialog without cancelling a download; reopening reveals the
+existing operation rather than starting another. An open dialog follows the
+latest confirmed release and reports when the update is no longer available.
+Other platforms retain their supported release-viewing behavior. Restored
+notices require an update check before their actions become available.
 The heading's close tooltip uses Flutter's localized label; the native app
 currently enables English only, independently of each skin's language support.
 The originating service or plugin withdraws resolved conditions; no history is
 retained. Reading never resolves a condition or resumes uploads. Skins gain
 no notification API, and existing navigation-guide SnackBars keep their actions.
 Opening the list marks only its initial snapshot read; closing it does not mark
-later arrivals or changes read. An explicit Skip this version action skips only
-the displayed, confirmed update. A restored, unconfirmed app update
-replaces View/Download with one "Check for updates" button using the same manual
+later arrivals or changes read. A restored, unconfirmed app update
+replaces View with one "Check for updates" button using the same manual
 app-update service as Settings. Checking disables that button; failure keeps the
-notice and allows retry. Confirmation restores View/Download/Skip, a newer update
+notice and allows retry. Confirmation restores View, a newer update
 replaces the entry, and a successful obsolete/no-update result removes it.
 Opening the list does not trigger a check or change the background schedule.
 Plugin notices cannot acquire this trusted host control.
-Android's Download action closes the
-list before opening download confirmation. Cancelling that confirmation retains
-the update notice, and installation still requires a separate action.
+Android's Download and Install actions remain in the shared updater dialog,
+not in the notification list. Closing that dialog retains the update notice.
 
 **Server control endpoints:**
 

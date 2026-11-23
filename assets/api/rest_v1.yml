@@ -32,8 +32,9 @@ info:
     or webUiPath, and a pull or two-way sync that includes the settings
     section. A trusted origin is scheme `http` on localhost, 127.0.0.1, ::1 or
     a numeric address currently assigned to a local network interface, on the
-    live skin page port or the actual API listener port; anything else,
-    including `Origin: null`, `https`, a hostname and a retired port, is
+    live skin page port, the actual API listener port, or the built-in API docs
+    viewer port while its listener is bound; anything else, including
+    `Origin: null`, `https`, a hostname and a retired port, is
     refused. A literal loopback host is trusted only from a request whose TCP
     socket peer is loopback or one of the device's current addresses; a peer
     that is missing, unreadable or belongs to another machine is refused, so a
@@ -45,6 +46,27 @@ info:
     admitted. Requests without an `Origin` header are unaffected. Origin is not
     authentication: a non-browser client can omit or forge it, so this
     boundary covers browser pages only.
+
+    A `GET` of a built-in page that arrives through a hostname is answered with
+    302 to the same path on the numeric local endpoint: `/` and `/index.html`
+    on the docs viewer port, `/api/v1/plugins/settings.reaplugin/ui` on the API
+    port. The destination carries only `http`, the port the listener bound and
+    one numeric address of the client's address family: the address the
+    listener actually bound when that is concrete, otherwise the single usable
+    current interface address, and 127.0.0.1 or ::1 for a loopback client. The
+    incoming query string and credentials are not carried over, and the
+    `Location` ends in an explicitly empty fragment so a fragment on the alias
+    address is not inherited by the numeric page (a browser reattaches it when
+    the redirect target has no fragment, and it never reaches the server), and
+    the answer carries `Cache-Control: no-store`. The page entry is refused with
+    403 and `{"error":"This page is only served from the device address"}` when
+    that destination is not unique (more than one current address of the
+    family), when the listener has not bound, or when the request carries no
+    socket peer or an unclassifiable `Host` - anything that is not a numeric
+    address, `localhost`, a bracketed IPv6 literal or DNS labels with an optional
+    port in 1-65535; opening the numeric address directly avoids the redirect.
+    No other route, spec file, third-party plugin page or mutation is redirected,
+    and the redirect adds no trusted origin.
 x-admission-control:
   windowSeconds: 1
   globalConcurrent: 128
@@ -76,7 +98,9 @@ paths:
         Returns the static API documentation locations. The paths under `docs`
         are relative to the same host as the API request, using the advertised
         documentation port (4001) rather than port 8080. The documentation
-        listener may be unavailable even when this endpoint responds.
+        listener may be unavailable even when this endpoint responds. A viewer
+        opened through a hostname is redirected to the same path on the numeric
+        local endpoint.
       tags: [Documentation]
       responses:
         "200":
@@ -200,7 +224,9 @@ paths:
             after successful scan teardown, without restarting full discovery.
             Pending machine/selection work, occupied slots, auxiliary claims,
             and sleeping-scale restrictions disable the shortcut. Otherwise the
-            normal full explicit scan applies. Failed or uncertain BLE teardown
+            normal full explicit scan applies. The usb-hds:any family preference
+            always waits for scan completion to detect multiple matching scales.
+            Failed or uncertain BLE teardown
             never starts an early connection. If an early-stop request fails but
             the scan later completes normally with BLE ownership released, normal
             post-scan connection policy applies. Unrelated discovery failures do
@@ -1740,6 +1766,12 @@ paths:
       responses:
         "200":
           description: Decent settings updated successfully
+        "400":
+          description: Invalid setting value, including an unsupported or absent session-only scale ID that cannot be saved as a durable preference
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401":
           description: >-
             When protection is ON, the body changes the served skin, the
@@ -7115,24 +7147,22 @@ components:
             milk-probe scaffolding lives in `/sensors`, not here.
           items:
             type: string
-            enum: [
-              cupWarmer,
-              integratedScale,
-              ledStrip,
-              stopAtWeight,
-              scaleCalibration,
-              preheat,
-              wakeSchedule,
-            ]
-          example: [
-            cupWarmer,
-            integratedScale,
-            ledStrip,
-            stopAtWeight,
-            scaleCalibration,
-            preheat,
-            wakeSchedule,
-          ]
+            enum:
+              - cupWarmer
+              - integratedScale
+              - ledStrip
+              - stopAtWeight
+              - scaleCalibration
+              - preheat
+              - wakeSchedule
+          example:
+            - cupWarmer
+            - integratedScale
+            - ledStrip
+            - stopAtWeight
+            - scaleCalibration
+            - preheat
+            - wakeSchedule
 
     CupWarmerState:
       type: object
@@ -7271,18 +7301,17 @@ components:
           description: Seconds left in the current settle/average phase
         status:
           type: string
-          enum: [
-            ok,
-            incomplete,
-            noZero,
-            notSettled,
-            badWeight,
-            badDelta,
-            illConditioned,
-            outOfRange,
-            notIsolated,
-            none,
-          ]
+          enum:
+            - ok
+            - incomplete
+            - noZero
+            - notSettled
+            - badWeight
+            - badDelta
+            - illConditioned
+            - outOfRange
+            - notIsolated
+            - none
           description: Result of the last latch attempt (`none` = in progress / not attempted)
 
     ScaleCalibrationCommandRequest:
@@ -7894,7 +7923,15 @@ components:
           nullable: true
           example: "F4:12:FA:5C:3D:8E"
         preferredScaleId:
-          description: Device ID of the preferred scale for auto-connect on startup. When set, REA will automatically connect to this scale when it's discovered during device scan. Session-only USB scale IDs are not persisted as preferences. Set to null to clear the preference.
+          description: >
+            Preferred scale device ID, or usb-hds:any to prefer a serial-less USB
+            Half Decent Scale. A currently discovered serial-less USB HDS attachment
+            ID is normalized to usb-hds:any. Other session-only scale IDs return 400
+            instead of silently leaving the existing preference unchanged. The family
+            selector can be saved without a live device and connects automatically
+            only when a completed scan finds exactly one matching non-auxiliary
+            scale; multiple matches require explicit selection. Stable USB IDs and
+            other scale IDs keep exact-device semantics. Set null to clear.
           type: string
           nullable: true
           example: "AA:BB:CC:DD:EE:FF"
@@ -7997,7 +8034,16 @@ components:
           nullable: true
           example: "F4:12:FA:5C:3D:8E"
         preferredScaleId:
-          description: Device ID of the preferred scale for auto-connect on startup. Session-only USB scale IDs are not persisted as preferences. Returns null if no preferred device is set.
+          description: >
+            Preferred scale device ID or null when unset. A persisted usb-hds:any
+            family preference is presented as the current attachment ID when
+            exactly one protocol-identified serial-less USB HDS is discovered,
+            for compatibility with clients comparing settings and inventory IDs.
+            If none or multiple match, returns usb-hds:any instead. Storage and
+            backup retain the durable family selector; reading settings never
+            changes it or assigns scale ownership. The selector is not a device
+            ID and must not be used in addressed routes. Automatic connection
+            still requires a unique non-auxiliary match after scan completion.
           type: string
           nullable: true
           example: "AA:BB:CC:DD:EE:FF"

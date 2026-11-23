@@ -13,7 +13,7 @@ Decaid exposes REST and WebSocket APIs on port 8080. Full OpenAPI specs are in [
 {"api":"v1","docs":{"port":4001,"viewer":"/","openapi":"/rest_v1.yml","asyncapi":"/websocket_v1.yml"}}
 ```
 
-The `viewer`, `openapi`, and `asyncapi` paths use the same host as the API request with the manifest's `docs.port` (4001), not port 8080; the manifest does not guarantee that the separate docs listener is available. For example, reconstruct `http://decaid.local:4001/rest_v1.yml` or `http://decaid.local:4001/websocket_v1.yml` from the manifest. An unmatched API route returns JSON with `error: "Route not found"` and a `hint` naming the same-host docs port and the viewer/OpenAPI/AsyncAPI paths.
+The `viewer`, `openapi`, and `asyncapi` paths use the same host as the API request with the manifest's `docs.port` (4001), not port 8080; the manifest does not guarantee that the separate docs listener is available. For example, reconstruct `http://decaid.local:4001/rest_v1.yml` or `http://decaid.local:4001/websocket_v1.yml` from the manifest. The viewer then sends its own API calls to the host it was served from rather than to the `localhost` default the shipped spec carries, so a browser on another machine addresses the device. An unmatched API route returns JSON with `error: "Route not found"` and a `hint` naming the same-host docs port and the viewer/OpenAPI/AsyncAPI paths.
 
 For skin development, see [`doc/Skins.md`](Skins.md). For plugin development, see [`doc/Plugins.md`](Plugins.md).
 
@@ -186,7 +186,7 @@ What counts as the device's own origin:
 
 | Trusted | Rejected |
 |---|---|
-| Scheme `http`, host `localhost`, `127.0.0.1`, `::1`, or a numeric address currently assigned to a local network interface, and a port equal to the live skin page port or the actual API listener port | `Origin: null`, an empty value, `https` or any other scheme, a hostname such as `decaid.local`, another device's address, `user@host`, a path, query or fragment, a comma or a space in the value |
+| Scheme `http`, host `localhost`, `127.0.0.1`, `::1`, or a numeric address currently assigned to a local network interface, and a port equal to the live skin page port, the actual API listener port or the built-in API docs viewer port while its listener is bound | `Origin: null`, an empty value, `https` or any other scheme, a hostname such as `decaid.local`, another device's address, `user@host`, a path, query or fragment, a comma or a space in the value |
 
 A loopback origin is trusted only while the request's TCP socket peer is
 loopback or is exactly one of the addresses this device currently holds. A
@@ -199,15 +199,63 @@ elsewhere from borrowing the name.
 
 The ports and the addresses come from the running services and never from the
 request itself: the skin port follows a skin switch, a restart and a dynamically
-allocated port, the API port is the one the listener actually bound, and the
-address set is enumerated when a comparison needs it, so a moved or retired
-address is picked up without a restart or a skin serve. A port that is not live
-is not trusted, so `http://localhost:3000` is refused while the skin server is
-on another port. The port 3000 entry point only redirects to the active origin
-and an inactive skin's alias port only serves a redirect, so a skin page always
-runs, and posts, from its live origin. `Host`, `Referer`, `X-Forwarded-For`,
-`X-Forwarded-Host`, `X-Real-IP`, `Forwarded` and DNS resolution are never
-consulted, so a name that resolves to the device (DNS rebinding) is not enough.
+allocated port, the API port is the one the listener actually bound, the docs
+viewer port is the one the docs listener actually bound (and is trusted only
+while that bind succeeded), and the address set is enumerated when a comparison
+needs it, so a moved or retired address is picked up without a restart or a skin
+serve. A port that is not live is not trusted, so `http://localhost:3000` is
+refused while the skin server is on another port. The port 3000 entry point only
+redirects to the active origin and an inactive skin's alias port only serves a
+redirect, so a skin page always runs, and posts, from its live origin. `Host`,
+`Referer`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`, `Forwarded` and
+DNS resolution are never consulted, so a name that resolves to the device (DNS
+rebinding) is not enough.
+
+#### Opening a built-in page through a name
+
+A name is still not authority, but a browser that reached a built-in page through
+one would otherwise keep a page it may not use: the page loads, and every
+management request it makes is then refused. So the two first-party pages Decaid
+serves are canonicalised once, at the page entry, before any handler, plugin or
+body work:
+
+| Request | Answer |
+|---|---|
+| `GET /` or `GET /index.html` on the API docs viewer port | `302` to the same path on the numeric local endpoint |
+| `GET /api/v1/plugins/settings.reaplugin/ui` on the API port | `302` to the same path on the numeric local endpoint |
+
+The destination carries only `http`, a numeric local address and the port the
+listener bound; a loopback client keeps `127.0.0.1` or `::1`, and a remote client
+gets the address the listener bound when that is concrete, otherwise the single
+usable current numeric address of the client's own address family. Addresses are
+compared as parsed values, so the IPv4, IPv4-mapped and compressed spellings of
+one interface count once. Wildcard, multicast and broadcast addresses, plus
+link-local or scoped IPv6 addresses, are never a destination. The name decides only whether a
+redirect is needed and never where it points. The redirect keeps neither the
+incoming query string nor any credentials, and the `Location` ends in an
+explicitly empty fragment: a browser inherits the fragment of the address it
+entered through whenever the redirect target has no fragment component, and that
+fragment is never sent to the server, so the redirect is the only place it can be
+cleared. The answer carries `Cache-Control: no-store` and
+`Referrer-Policy: no-referrer`. A device address
+that is not unique is not resolved by preference: when the device holds more
+than one current address of the client's address family, the page entry is
+refused with `403` and
+`{"error":"This page is only served from the device address"}`, so on a
+multi-interface device open the numeric address directly. The same refusal
+covers a listener that is not bound, a request without socket provenance and an
+absent or malformed `Host` header. A `Host` is malformed unless it is a numeric
+address, `localhost`, a bracketed IPv6 literal or dot-separated DNS labels, with
+an optional port in `1`-`65535`: `/`, `?`, `#`, `,`, `;`, `@`, whitespace inside
+the value, a control character, `[localhost]`, a bracketed IPv4 address, port `0`
+or a port above `65535` in the value is refused rather than treated as a name.
+
+Nothing else moves: every other route, the spec files, third-party plugin pages
+and every mutation keep their existing behaviour, an `Origin` that is a name stays
+refused in both modes even with a valid `extensions:manage` bearer, and a numeric
+or `localhost` entry is not redirected at all. The browser finishes on the
+numeric origin, which the rules above already trust, so the mutation is admitted
+by the existing policy rather than by the redirect.
 
 Requests without an `Origin` header are not affected at all: `curl`, Home
 Assistant, MCP clients, native app code, `host.localApi` (in process) and every
@@ -827,7 +875,11 @@ from normal scan results; it is never a persisted `grinderId`.
 
 Settings fields include: `gatewayMode`, `themeMode`, `logLevel`, `weightFlowMultiplier`, `volumeFlowMultiplier`, `hotWaterFlowMultiplier`, `scalePowerMode`, `blockOnNoScale`, `blockTareDuringShot`, `stopHotWaterAtWeight`, `preferredMachineId`, `preferredScaleId`, `preferredGrinderDeviceId`, `defaultSkinId`, `automaticUpdateCheck`, `chargingMode`, `nightModeEnabled`, `nightModeSleepTime`, `nightModeMorningTime`, `lowBatteryBrightnessLimit`, `keepAwake`, `simulatedDevices`.
 
-Android session-only USB machine and scale IDs are usable for the current attachment but are not durable preferences. Writing one to `preferredMachineId` or `preferredScaleId` leaves the existing preference unchanged; `null` still clears it. Device inventory coalesces a remembered canonical USB record with a live session-only machine only after that attachment supplies the matching descriptor serial. The working session keeps its ID until a safe reconnect.
+Android session-only USB IDs are usable for the current attachment but are not durable device identities. Writing one to `preferredMachineId` leaves the existing preference unchanged. For `preferredScaleId`, a currently discovered, protocol-identified serial-less USB Half Decent Scale is saved as the durable family selector `usb-hds:any`; unsupported or absent session-only scale IDs return `400`. Clients may also save `usb-hds:any` directly without a connected scale. `null` still clears either preference.
+
+The USB HDS family preference auto-connects only when a completed scan finds exactly one matching scale not reserved as auxiliary. Multiple matches require explicit selection; early-connect optimizations do not choose the first family match. Stable USB serial identities, BLE scales and Wi-Fi scales retain exact-device preferences.
+
+For existing clients comparing settings and inventory IDs, `GET /api/v1/settings` presents the family preference as the current attachment ID when exactly one protocol-identified serial-less USB HDS is discovered. With none or multiple matches it returns `usb-hds:any`; this selector is not a device ID and must not be used in addressed routes. This readback is presentation only: stored settings and backups retain `usb-hds:any`, device inventory IDs remain unchanged, and no connection role is assigned. Device inventory coalesces a remembered canonical USB record with a live session-only machine only after that attachment supplies the matching descriptor serial. The working session keeps its ID until a safe reconnect.
 
 
 `stopHotWaterAtWeight` (boolean, default `true`): when on and a scale is connected, hot-water dispensing tares the scale and stops at the configured hot-water `volume` target treated as grams (mirrors the espresso stop-at-weight). The machine's own volume/time stop remains a backstop, and the value is ignored in `full` gateway mode (a skin owns the machine). `hotWaterFlowMultiplier` (number, default `0.3`) is the seconds-of-lookahead applied to scale weight flow for that stop — separate from `weightFlowMultiplier` because hot water dispenses with a different pump/flow profile than espresso. See [DeviceManagement.md](DeviceManagement.md#hot-water-stop-at-weight).
@@ -1181,6 +1233,20 @@ current token immediately, while release archives, ZIPs, and CDN downloads
 remain unauthenticated. The token owner is the GitHub identity shown on native
 feedback issues and attachment gists. Secure-storage read failures are surfaced
 in native settings and do not block app startup; requests retry loading later.
+
+For feedback from outside the Decaid organization, use a personal access token
+(classic) with `public_repo`, plus `gist` only for logs/screenshots. The broader
+`repo` scope includes public-repository access but also grants private-repository
+access and is unnecessary for Decaid. Fine-grained tokens may authenticate and
+read metadata, but GitHub restricts their public-organization issue writes for
+non-members. Use an expiry and keep tokens private.
+
+Native **Test token** checks an unsaved draft first, otherwise the saved user
+PAT, using read-only `GET https://api.github.com/user`. Success verifies
+authentication and identity only, not permission to create issues or Gists.
+Testing never saves a draft or changes active credentials. No token is required
+for public update metadata, and no PAT-testing API is exposed to skins/plugins.
+
 Account failures take precedence over missing GitHub configuration: `503` only
 applies after successful account verification. Other submission failures remain
 `500`. Trusted-LAN callers use the host's account without separate caller
@@ -1283,6 +1349,16 @@ For clients this means:
 Machine sockets opened before the first machine connection behave like any later disconnected gap:
 the socket stays open and remains silent until a machine attaches. No error or status frame is emitted
 on the typed telemetry sockets.
+
+### Raw notification semantics
+
+For UnifiedDe1 transports, `/ws/v1/machine/raw` mirrors incoming state info,
+DE1/Bengle shot samples, shot settings, water levels and MMR notifications once
+at BLE/serial ingress, independently of typed subscribers. Replaying a typed
+value, reading an initial characteristic, seeding serial settings or writing
+local settings does not synthesize a `notify` frame. Firmware-map and calibration
+notifications retain typed-only delivery. Raw command read/write receipts keep
+their existing operation types and payload shape.
 
 ### Sensor sockets follow replacement
 
