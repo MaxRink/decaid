@@ -136,14 +136,18 @@ abstract class PluginProtocolDevice extends PluginDeviceAdapter {
       onReady?.call();
       _state.add(ConnectionState.connected);
     } catch (error, stackTrace) {
-      if (_session == session) {
-        try {
+      _log.info('Plugin device connect failed device=$deviceId: $error');
+      try {
+        if (_session == session) {
           await disconnect();
-        } catch (_) {}
-      } else if (prepared) {
-        try {
+        } else if (prepared) {
           await invoke(PluginDeviceOperation.disconnect, {'session': session});
-        } catch (_) {}
+        }
+      } catch (cleanupError) {
+        _log.fine(
+          'Plugin device cleanup after a failed connect failed '
+          'device=$deviceId: $cleanupError',
+        );
       }
       Error.throwWithStackTrace(error, stackTrace);
     }

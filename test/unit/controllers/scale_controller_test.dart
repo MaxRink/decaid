@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:logging/logging.dart';
 import 'package:reaprime/src/controllers/scale_controller.dart';
 import 'package:reaprime/src/models/device/device.dart';
 import 'package:reaprime/src/models/device/scale.dart';
@@ -227,6 +228,34 @@ void main() {
 
     await sub.cancel();
     controller.dispose();
+  });
+
+  test('a scale whose onConnect throws logs the error and its stack', () async {
+    final previousLevel = Logger.root.level;
+    Logger.root.level = Level.ALL;
+    final records = <LogRecord>[];
+    final logs = Logger.root.onRecord
+        .where((record) => record.loggerName == 'ScaleController')
+        .listen(records.add);
+    addTearDown(() async {
+      await logs.cancel();
+      Logger.root.level = previousLevel;
+    });
+    final controller = ScaleController();
+    addTearDown(controller.dispose);
+
+    await expectLater(
+      controller.connectToScale(_FailingScale('W')),
+      throwsA(isA<StateError>()),
+    );
+
+    final warning = records.singleWhere(
+      (record) => record.level == Level.WARNING,
+    );
+    expect(warning.message, contains('W'));
+    expect(warning.message, contains('connect failed'));
+    final fine = records.singleWhere((record) => record.level == Level.FINE);
+    expect(fine.stackTrace, isNotNull);
   });
 
   test('switching away from a handoff-capable scale releases it WITHOUT '
