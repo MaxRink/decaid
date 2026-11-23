@@ -8,12 +8,16 @@ import 'package:saf_stream/saf_stream.dart';
 import 'package:saf_util/saf_util.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:reaprime/src/account/account_page.dart';
+import 'package:reaprime/src/notifications/notification_center.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
+import 'package:reaprime/src/plugins/plugin_device_surface_authority.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
+import 'package:reaprime/src/plugins/plugin_notifications.dart';
 import 'package:reaprime/src/plugins/plugin_source.dart';
 import 'package:reaprime/src/plugins/plugin_source_service.dart';
 import 'package:reaprime/src/services/account/decent_account_service.dart';
 import 'package:reaprime/src/services/security_scoped_file.dart';
+import 'package:reaprime/src/settings/plugin_surface_sheet.dart';
 import 'package:reaprime/src/widgets/page_action_menu.dart';
 import 'package:reaprime/src/widgets/remote_error_snack_bar.dart';
 import 'package:reaprime/src/util/user_facing_exception.dart';
@@ -107,6 +111,8 @@ class PluginsSettingsView extends StatefulWidget {
     this.pluginSourceService,
     this.decentAccountService,
     this.allowInstall = true,
+    this.surfaceLauncher,
+    this.notifications,
   });
 
   static const routeName = '/plugins';
@@ -115,6 +121,8 @@ class PluginsSettingsView extends StatefulWidget {
   final PluginSourceService? pluginSourceService;
   final DecentAccountService? decentAccountService;
   final bool allowInstall;
+  final PluginSurfaceLauncher? surfaceLauncher;
+  final NotificationCenter? notifications;
 
   @override
   State<PluginsSettingsView> createState() => _PluginsSettingsViewState();
@@ -137,11 +145,17 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
   @override
   void initState() {
     super.initState();
+    widget.notifications?.addListener(_onNoticesChanged);
     _loadPlugins();
+  }
+
+  void _onNoticesChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    widget.notifications?.removeListener(_onNoticesChanged);
     _repoController.dispose();
     _detailController.dispose();
     super.dispose();
@@ -341,6 +355,8 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
                 ),
               ],
             ),
+            _buildSetupBadge(context, plugin),
+            if (isLoaded) _buildSurfaceButtons(context, plugin),
             const SizedBox(height: 12),
             if (plugin.permissions.isNotEmpty)
               Column(
@@ -428,6 +444,79 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
         ),
       ),
     );
+  }
+
+  Widget _buildSetupBadge(BuildContext context, PluginManifest plugin) {
+    final notices = widget.notifications?.value;
+    final reason = notices == null ? null : pluginSetupReason(plugin, notices);
+    if (reason == null) return const SizedBox.shrink();
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: colors.tertiaryContainer,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              'Needs setup',
+              style: TextStyle(color: colors.onTertiaryContainer),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(child: Text(reason)),
+        ],
+      ),
+    );
+  }
+
+  static const _surfaceRoleLabels = {
+    'setup': 'Set up',
+    'settings': 'Settings',
+    'diagnostics': 'Diagnostics',
+  };
+
+  Widget _buildSurfaceButtons(BuildContext context, PluginManifest plugin) {
+    final links = pluginSurfaceLinks(plugin);
+    if (links.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Wrap(
+        spacing: 12,
+        runSpacing: 8,
+        children: [
+          for (final role in _surfaceRoleLabels.keys)
+            for (final link in links.where((link) => link['role'] == role))
+              (role == 'setup' ? ShadButton.new : ShadButton.outline)(
+                onPressed: () => _openPluginSurface(context, plugin, link),
+                child: Text(_surfaceRoleLabels[role]!),
+              ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openPluginSurface(
+    BuildContext context,
+    PluginManifest plugin,
+    Map<String, String> link,
+  ) async {
+    final uri = Uri.parse(pluginSurfaceOrigin).resolve(link['href']!);
+    var opened = false;
+    try {
+      opened =
+          await (widget.surfaceLauncher?.call(uri) ??
+              showPluginSurface(context, uri, title: plugin.name));
+    } catch (e, st) {
+      Logger('PluginsSettingsView').warning('Failed to open surface', e, st);
+    }
+    if (!opened && context.mounted) {
+      _showSnackBar(context, 'Unable to open ${plugin.name}', isError: true);
+    }
   }
 
   Widget _buildMachineControlSwitch(
@@ -1086,6 +1175,13 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
             type: entry.value['type'] as String?,
           ),
     };
+    final invalidJsonKeys = <String>{
+      for (final entry in settingsSchema.entries)
+        if (pluginSettingHint(entry.value, 'multiline') &&
+            newSettings[entry.key] is String &&
+            isInvalidJsonLikeText(newSettings[entry.key] as String))
+          entry.key,
+    };
 
     await showDialog<void>(
       context: context,
@@ -1105,7 +1201,7 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
               width: double.maxFinite,
               child: ListView(
                 shrinkWrap: true,
-                children: settingsSchema.entries.map((entry) {
+                children: _groupedSettingFields(settingsSchema, (entry) {
                   final key = entry.key;
                   final schema = entry.value;
                   final currentValue = newSettings[key];
@@ -1125,10 +1221,19 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
 
                   String getDisplayValue(dynamic value) {
                     if (value == null) return '';
+                    if (value is String && enumValues.contains(value)) {
+                      return pluginSettingValueLabel(schema, value);
+                    }
                     return value.toString();
                   }
 
+                  final hasValueDescriptions = enumValues.any(
+                    (value) =>
+                        pluginSettingValueDescription(schema, value) != null,
+                  );
+
                   return Padding(
+                    key: ValueKey('plugin-setting-$key'),
                     padding: const EdgeInsets.only(bottom: 16),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1226,13 +1331,45 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
                               }
                             },
                           )
+                        else if (schema['type'] == 'enum' &&
+                            hasValueDescriptions)
+                          ShadRadioGroup<String>(
+                            initialValue: selectedEnumValue,
+                            spacing: 8,
+                            onChanged: (value) {
+                              if (value != null) {
+                                setState(() {
+                                  newSettings[key] = value;
+                                });
+                              }
+                            },
+                            items: [
+                              for (final value in enumValues)
+                                ShadRadio<String>(
+                                  value: value,
+                                  label: Text(
+                                    pluginSettingValueLabel(schema, value),
+                                  ),
+                                  sublabel:
+                                      switch (pluginSettingValueDescription(
+                                        schema,
+                                        value,
+                                      )) {
+                                        final String description => Text(
+                                          description,
+                                        ),
+                                        null => null,
+                                      },
+                                ),
+                            ],
+                          )
                         else if (schema['type'] == 'enum')
                           ShadSelect<String>(
                             initialValue: selectedEnumValue,
                             enabled: enumValues.isNotEmpty,
                             placeholder: const Text('Select a value...'),
                             selectedOptionBuilder: (context, value) =>
-                                Text(value),
+                                Text(pluginSettingValueLabel(schema, value)),
                             onChanged: (value) {
                               if (value != null) {
                                 setState(() {
@@ -1244,10 +1381,32 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
                                 .map(
                                   (value) => ShadOption<String>(
                                     value: value,
-                                    child: Text(value),
+                                    child: Text(
+                                      pluginSettingValueLabel(schema, value),
+                                    ),
                                   ),
                                 )
                                 .toList(),
+                          )
+                        else if (pluginSettingHint(schema, 'multiline'))
+                          ShadInput(
+                            placeholder: Text('Enter value...'),
+                            initialValue: getDisplayValue(
+                              currentValue ?? defaultValue,
+                            ),
+                            minLines: 3,
+                            maxLines: null,
+                            keyboardType: TextInputType.multiline,
+                            onChanged: (value) {
+                              setState(() {
+                                newSettings[key] = value;
+                                if (isInvalidJsonLikeText(value)) {
+                                  invalidJsonKeys.add(key);
+                                } else {
+                                  invalidJsonKeys.remove(key);
+                                }
+                              });
+                            },
                           )
                         else
                           ShadInput(
@@ -1260,6 +1419,17 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
                                 newSettings[key] = value;
                               });
                             },
+                          ),
+                        if (invalidJsonKeys.contains(key))
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              'Not valid JSON',
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.error,
+                                fontSize: 12,
+                              ),
+                            ),
                           ),
                         const SizedBox(height: 4),
                         if (defaultValue != null)
@@ -1274,7 +1444,7 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
                       ],
                     ),
                   );
-                }).toList(),
+                }),
               ),
             ),
             actions: [
@@ -1284,42 +1454,51 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
               ),
               if (settingsSchema.isNotEmpty)
                 ShadButton(
-                  onPressed: () async {
-                    try {
-                      final outgoing = Map<String, dynamic>.from(newSettings);
-                      for (final entry in secureDrafts.entries) {
-                        final draft = entry.value;
-                        if (draft.clearRequested) {
-                          outgoing[entry.key] = null;
-                        } else if (draft.text.isEmpty) {
-                          outgoing[entry.key] = {'isSet': draft.originalIsSet};
-                        } else {
-                          outgoing[entry.key] =
-                              parseValue(draft.text, draft.type ?? 'string') ??
-                              {'isSet': draft.originalIsSet};
-                        }
-                      }
-                      await widget.pluginLoaderService.savePluginSettings(
-                        pluginId,
-                        outgoing,
-                      );
-                      if (context.mounted == false) {
-                        return;
-                      }
-                      _showSnackBar(context, 'Settings saved');
-                      Navigator.pop(context);
-                    } catch (e, st) {
-                      Logger('PluginsSettingsView')
-                          .warning('Failed to save settings', e, st);
-                      if (context.mounted) {
-                        _showSnackBar(
-                          context,
-                          'Failed to save settings: $e',
-                          isError: true,
-                        );
-                      }
-                    }
-                  },
+                  onPressed: invalidJsonKeys.isNotEmpty
+                      ? null
+                      : () async {
+                          try {
+                            final outgoing = Map<String, dynamic>.from(
+                              newSettings,
+                            );
+                            for (final entry in secureDrafts.entries) {
+                              final draft = entry.value;
+                              if (draft.clearRequested) {
+                                outgoing[entry.key] = null;
+                              } else if (draft.text.isEmpty) {
+                                outgoing[entry.key] = {
+                                  'isSet': draft.originalIsSet,
+                                };
+                              } else {
+                                outgoing[entry.key] =
+                                    parseValue(
+                                      draft.text,
+                                      draft.type ?? 'string',
+                                    ) ??
+                                    {'isSet': draft.originalIsSet};
+                              }
+                            }
+                            await widget.pluginLoaderService.savePluginSettings(
+                              pluginId,
+                              outgoing,
+                            );
+                            if (context.mounted == false) {
+                              return;
+                            }
+                            _showSnackBar(context, 'Settings saved');
+                            Navigator.pop(context);
+                          } catch (e, st) {
+                            Logger('PluginsSettingsView')
+                                .warning('Failed to save settings', e, st);
+                            if (context.mounted) {
+                              _showSnackBar(
+                                context,
+                                'Failed to save settings: $e',
+                                isError: true,
+                              );
+                            }
+                          }
+                        },
                   child: const Text('Save'),
                 ),
             ],
@@ -1327,6 +1506,31 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
         },
       ),
     );
+  }
+
+  List<Widget> _groupedSettingFields(
+    Map<String, dynamic> schema,
+    Widget Function(MapEntry<String, dynamic> entry) buildField,
+  ) {
+    final visible = schema.entries.where(
+      (entry) => !pluginSettingHint(entry.value, 'hidden'),
+    );
+    final advanced = visible
+        .where((entry) => pluginSettingHint(entry.value, 'advanced'))
+        .map(buildField)
+        .toList();
+    return [
+      ...visible
+          .where((entry) => !pluginSettingHint(entry.value, 'advanced'))
+          .map(buildField),
+      if (advanced.isNotEmpty)
+        ExpansionTile(
+          title: const Text('Advanced'),
+          tilePadding: EdgeInsets.zero,
+          childrenPadding: EdgeInsets.zero,
+          children: advanced,
+        ),
+    ];
   }
 
   Widget _buildDecentAccountStatus(Future<DecentAccountStatus> status) {

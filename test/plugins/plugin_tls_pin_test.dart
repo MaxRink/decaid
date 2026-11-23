@@ -197,6 +197,37 @@ void main() {
       expect(hits, 0);
     });
 
+    test('a wrong pin reports the presented certificate digest', () async {
+      if (skipWithoutOpenssl()) return;
+      final result = await runPlugin(
+        manager,
+        id: 'pin.mismatch',
+        permissions: {PluginPermissions.api},
+        jsBody:
+            '${fetchJs('https://127.0.0.1:${server.port}/', tlsPin: wrongPin)}'
+            '.then(report, (e) => report({ code: e.code, '
+            'peerSha256: e.peerSha256, message: e.message }));',
+      );
+      expect(result['code'], 'tls_pin_mismatch');
+      expect(result['peerSha256'], pin);
+      expect(result['message'], contains('HandshakeException'));
+      expect(hits, 0);
+    });
+
+    test('an unpinned failure carries no presented digest', () async {
+      if (skipWithoutOpenssl()) return;
+      final result = await runPlugin(
+        manager,
+        id: 'pin.none.digest',
+        permissions: {PluginPermissions.api},
+        jsBody:
+            '${fetchJs('https://127.0.0.1:${server.port}/')}'
+            '.then(report, (e) => report({ code: e.code ?? null, '
+            'peerSha256: e.peerSha256 ?? null }));',
+      );
+      expect(result, {'code': null, 'peerSha256': null});
+    });
+
     test('without a pin the platform validation refuses', () async {
       if (skipWithoutOpenssl()) return;
       final result = await runPlugin(
@@ -325,6 +356,38 @@ void main() {
             '.then(() => report({ opened: true }), fail);',
       );
       expect(result['error'], contains('HandshakeException'));
+      expect(manager.liveTransportCount, 0);
+    });
+
+    test('a wrong pin reports the presented digest on tls and wss', () async {
+      if (skipWithoutOpenssl()) return;
+      final tls = await SecureServerSocket.bind(
+        InternetAddress.loopbackIPv4,
+        0,
+        serverContext,
+      );
+      tls.listen((_) {}, onError: (Object _) {});
+      addTearDown(tls.close);
+      const reportError = '(e) => ({ code: e.code, peerSha256: e.peerSha256 })';
+      final result = await runPlugin(
+        manager,
+        id: 'pin.transport.mismatch',
+        permissions: {
+          PluginPermissions.networkTls,
+          PluginPermissions.networkWebsocket,
+        },
+        jsBody:
+            '''
+        Promise.all([
+          ${openJs({'kind': 'tls', 'host': '127.0.0.1', 'port': tls.port, 'tlsPinSha256': wrongPin})}
+            .then(() => ({ opened: true }), $reportError),
+          ${openJs({'kind': 'websocket', 'url': 'wss://127.0.0.1:${server.port}/echo', 'tlsPinSha256': wrongPin})}
+            .then(() => ({ opened: true }), $reportError),
+        ]).then((both) => report({ tls: both[0], wss: both[1] }), fail);
+      ''',
+      );
+      final expected = {'code': 'tls_pin_mismatch', 'peerSha256': pin};
+      expect(result, {'tls': expected, 'wss': expected});
       expect(manager.liveTransportCount, 0);
     });
 

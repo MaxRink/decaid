@@ -16,6 +16,7 @@ import 'plugin_ble_registry.dart';
 import 'plugin_ble_service.dart';
 import 'plugin_ble_session.dart';
 import 'plugin_decent_proxy_bridge.dart';
+import 'plugin_discovery.dart';
 import 'plugin_device_service.dart';
 import 'plugin_local_api_bridge.dart';
 import 'plugin_runtime.dart';
@@ -31,7 +32,7 @@ import '../services/account/decent_proxy_service.dart';
 import '../services/ble/ble_exception_mapper.dart';
 import '../services/webserver/extension_management_auth.dart';
 
-enum _PendingOpKind { fetch, pluginHttp, decentProxy, localApi }
+enum _PendingOpKind { fetch, pluginHttp, decentProxy, localApi, discovery }
 
 const machineControlNoticeId = 'host.machine-control';
 
@@ -128,6 +129,8 @@ class PluginManager {
   bool Function(String pluginId) machineControlGranted = _noMachineControl;
   final Duration decentProxyTimeout;
   final Duration localApiTimeout;
+  final PluginMdnsBrowser mdnsBrowser;
+  final Set<String> _discoveryBrowsing = {};
   final Duration transportCloseTimeout;
   final Duration deviceInvocationTimeout;
   final PluginDeviceService deviceService;
@@ -184,6 +187,7 @@ class PluginManager {
     this.pluginHttpTimeout = const Duration(seconds: 30),
     this.decentProxyTimeout = const Duration(seconds: 30),
     this.localApiTimeout = const Duration(seconds: 60),
+    this.mdnsBrowser = browseMdnsWithBonsoir,
     JavascriptRuntime? js,
     WebSocketConnector? connectWebSocket,
     SocketConnector? connectSocket,
@@ -592,6 +596,32 @@ class PluginManager {
           return __wrapDecentProxyPromise(promise);
         }
 
+        function __discoveryBrowse(pluginId, generation, bridgeToken, options) {
+          const requestId = "__discovery_" + __decentProxyNonce + "_" + (++__decentProxySeq);
+          const promise = new __NativePromise((resolve, reject) => {
+            const pendingByPlugin = __pendingDecentProxyByPlugin(pluginId);
+            __mapSet(pendingByPlugin, requestId, { generation: generation, resolve: resolve, reject: reject });
+            try {
+              __sendHostMessage({
+                pluginId: pluginId,
+                generation: generation,
+                bridgeToken: bridgeToken,
+                type: "discoveryBrowse",
+                requestId: requestId,
+                options: options
+              });
+            } catch (e) {
+              __mapDelete(pendingByPlugin, requestId);
+              reject(e);
+            }
+          });
+          return __wrapDecentProxyPromise(
+            __nativeReflectApply(__nativePromiseThen, promise, [
+              (response) => response.services
+            ])
+          );
+        }
+
         function __completeDecentProxyRequest(pluginId, requestId, response) {
           const pendingByPlugin = __mapGet(__pendingDecentProxyRequests, pluginId);
           if (!pendingByPlugin) return;
@@ -629,6 +659,7 @@ class PluginManager {
           value: __nativeFreeze({
             decentProxy: __decentProxy,
             localApi: __localApi,
+            discoveryBrowse: __discoveryBrowse,
             completeDecentProxyRequest: __completeDecentProxyRequest,
             cancelForPlugin: __cancelDecentProxyRequestsForPlugin,
             cancelAll: __cancelAllDecentProxyRequests
@@ -870,6 +901,7 @@ class PluginManager {
           if (msg.error) {
             const error = new __NativeError(msg.error);
             if (msg.code) error.code = msg.code;
+            if (msg.peerSha256) error.peerSha256 = msg.peerSha256;
             pending.reject(error);
             return;
           }
@@ -1154,7 +1186,10 @@ class PluginManager {
           _pendingFetches.delete(msg.id);
 
           if (msg.error) {
-            pending.reject(new Error(msg.error));
+            const error = new Error(msg.error);
+            if (msg.code) error.code = msg.code;
+            if (msg.peerSha256) error.peerSha256 = msg.peerSha256;
+            pending.reject(error);
             return;
           }
 
@@ -1359,6 +1394,10 @@ class PluginManager {
       }
       if (type == 'localApi') {
         await _handleLocalApiMessage(pluginId, msg);
+        return;
+      }
+      if (type == 'discoveryBrowse') {
+        await _handleDiscoveryMessage(pluginId, msg);
         return;
       }
       if (!_isCurrentPluginMessage(pluginId, msg) && !retiringStorageWrite) {
@@ -2167,6 +2206,14 @@ class PluginManager {
       }
     } on PluginTransportException catch (e) {
       _replyTransport(requestId, bridgeToken, error: e.message, code: e.code);
+    } on TlsPinMismatchException catch (e) {
+      _replyTransport(
+        requestId,
+        bridgeToken,
+        error: e.toString(),
+        code: TlsPinMismatchException.code,
+        peerSha256: e.peerSha256,
+      );
     } catch (e) {
       _replyTransport(requestId, bridgeToken, error: e.toString());
     }
@@ -2178,11 +2225,12 @@ class PluginManager {
     Map<String, dynamic>? result,
     String? error,
     String? code,
+    String? peerSha256,
   }) {
     try {
       js.evaluate(
         'globalThis.__handleTransportReply('
-        '${jsonEncode({'requestId': requestId, 'bridgeToken': ?bridgeToken, 'result': result, 'error': error, 'code': code})});',
+        '${jsonEncode({'requestId': requestId, 'bridgeToken': ?bridgeToken, 'result': result, 'error': error, 'code': code, 'peerSha256': ?peerSha256})});',
       );
       while (js.executePendingJob() > 0) {}
     } catch (e, st) {
@@ -2560,7 +2608,16 @@ class PluginManager {
             );
           },
           transport: transport,
-          devices: devices
+          devices: devices,
+          discovery: Object.freeze({
+            browse: (options = {}) =>
+              globalThis.__reaprimePluginBridge.discoveryBrowse(
+                pluginId,
+                pluginGeneration,
+                pluginBridgeToken,
+                options
+              )
+          })
         };
         
         // Inject and evaluate the plugin code
@@ -2883,6 +2940,7 @@ class PluginManager {
             canOpenAccount: _plugins[pluginId]!.manifest.permissions.contains(
               PluginPermissions.proxyDecentApi,
             ),
+            manifest: _plugins[pluginId]!.manifest,
           );
           await notifications.publish(
             notice,
@@ -3152,6 +3210,17 @@ class PluginManager {
               message:
                   'Allow $name to control the machine? It tried to change the '
                   'machine state. Allow it in Settings > Plugins > $name.',
+              actions: const [
+                NotificationAction(
+                  id: 'review',
+                  label: 'Review',
+                  type: NotificationActionType.reviewMachineControl,
+                ),
+              ],
+            ),
+            binding: NotificationBinding(
+              owner: (machineControlNoticeId, pluginId),
+              isAlive: () => _lifecycle == PluginManagerLifecycle.active,
             ),
           )
           .catchError(
@@ -3249,6 +3318,7 @@ class PluginManager {
     Map<String, dynamic>? result,
     String? error,
     String? errorCode,
+    String? peerSha256,
   }) {
     op.timeout?.cancel();
     if (_pendingOps.remove(op.key) == null) return;
@@ -3263,7 +3333,12 @@ class PluginManager {
           } catch (_) {}
         }
         final fetchPayload = error != null
-            ? {'id': int.parse(op.requestId), 'error': error}
+            ? {
+                'id': int.parse(op.requestId),
+                'error': error,
+                'code': ?errorCode,
+                'peerSha256': ?peerSha256,
+              }
             : result;
         js.evaluate(
           'globalThis.__handleFetchResponse(${jsonEncode(fetchPayload)});',
@@ -3277,7 +3352,9 @@ class PluginManager {
         } else {
           completer.complete(result);
         }
-      case _PendingOpKind.decentProxy || _PendingOpKind.localApi:
+      case _PendingOpKind.decentProxy ||
+          _PendingOpKind.localApi ||
+          _PendingOpKind.discovery:
         js.evaluate(
           'globalThis.__reaprimePluginBridge.completeDecentProxyRequest('
           '${jsonEncode(op.pluginId)}, ${jsonEncode(op.requestId)}, '
@@ -3430,6 +3507,97 @@ class PluginManager {
       _completeOp(op, result: response);
     } catch (e) {
       _completeOp(op, error: e.toString());
+    }
+  }
+
+  static const _discoveryPermissions = {
+    PluginPermissions.api,
+    PluginPermissions.networkWebsocket,
+    PluginPermissions.networkTcp,
+    PluginPermissions.networkTls,
+  };
+
+  Future<void> _handleDiscoveryMessage(
+    String pluginId,
+    Map<String, dynamic> msg,
+  ) async {
+    final requestId = msg['requestId'] as String?;
+    if (requestId == null) return;
+    final generation = msg['generation'] is num
+        ? (msg['generation'] as num).toInt()
+        : 0;
+    final op = _PendingOp(
+      kind: _PendingOpKind.discovery,
+      pluginId: pluginId,
+      generation: generation,
+      requestId: requestId,
+    );
+    if (_pendingOps.containsKey(op.key)) return;
+    _pendingOps[op.key] = op;
+
+    final runtime = _plugins[pluginId];
+    if (msg['bridgeToken'] != _pluginBridgeTokens[pluginId]) {
+      _completeOp(op, error: 'Invalid plugin discovery caller');
+      return;
+    }
+    if (generation != _pluginGenerations[pluginId] ||
+        runtime?.isAlive != true) {
+      _completeOp(op, error: 'Plugin generation changed');
+      return;
+    }
+    if (!runtime!.manifest.permissions.any(_discoveryPermissions.contains)) {
+      _completeOp(
+        op,
+        error:
+            'host.discovery requires the api permission or a network.* '
+            'permission',
+        errorCode: 'permission',
+      );
+      return;
+    }
+    final PluginDiscoveryRequest request;
+    try {
+      request = resolvePluginDiscoveryRequest(
+        runtime.manifest.mdnsDiscovery,
+        msg['options'],
+      );
+    } on FormatException catch (e) {
+      _completeOp(op, error: e.message, errorCode: 'validation');
+      return;
+    }
+    if (!_discoveryBrowsing.add(pluginId)) {
+      _completeOp(
+        op,
+        error: 'A discovery browse is already running',
+        errorCode: 'busy',
+      );
+      return;
+    }
+    op.timeout = Timer(request.timeout + const Duration(seconds: 5), () {
+      _completeOp(op, error: 'Discovery timed out');
+    });
+    bool accepts(String name) =>
+        pluginDiscoveryNameMatches(name, request.namePrefixes);
+    try {
+      final services = await mdnsBrowser(
+        request.serviceType,
+        request.timeout,
+        accepts,
+      );
+      _completeOp(
+        op,
+        result: {
+          'services': services
+              .where((service) => accepts(service.name))
+              .take(maxPluginDiscoveryResults)
+              .map((service) => service.toJson())
+              .toList(),
+        },
+      );
+    } catch (e) {
+      _completeOp(op, error: 'Discovery failed: $e');
+    } finally {
+      _discoveryBrowsing.remove(pluginId);
     }
   }
 
@@ -3752,6 +3920,13 @@ class PluginManager {
     try {
       final response = await _performFetch(op, msg);
       _completeOp(op, result: response);
+    } on TlsPinMismatchException catch (e) {
+      _completeOp(
+        op,
+        error: e.toString(),
+        errorCode: TlsPinMismatchException.code,
+        peerSha256: e.peerSha256,
+      );
     } catch (e) {
       _completeOp(op, error: e.toString());
     }
@@ -3779,12 +3954,15 @@ class PluginManager {
     }
     final pin = parseTlsPinSha256(msg[tlsPinOption]);
     requireTlsScheme(pin, uri.scheme == 'https', 'an https:// url');
-    final client = pin == null
+    final check = pin == null ? null : TlsPinCheck(pin);
+    final client = check == null
         ? _getHttpClient()
-        : (pinnedHttpClient(pin)
+        : (pinnedHttpClient(check)
             ..connectionTimeout = const Duration(seconds: 10));
+    Future<Map<String, dynamic>> send() =>
+        _sendFetch(op, client, method, uri, headers, body, binary);
     try {
-      return await _sendFetch(op, client, method, uri, headers, body, binary);
+      return await (check == null ? send() : check.guard(send));
     } finally {
       if (pin != null) client.close(force: true);
     }

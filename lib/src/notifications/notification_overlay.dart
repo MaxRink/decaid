@@ -246,6 +246,10 @@ class _NotificationRow extends StatelessWidget {
                                 LucideIcons.download,
                               NotificationActionType.skipUpdate =>
                                 LucideIcons.skipForward,
+                              NotificationActionType.openPluginSurface =>
+                                LucideIcons.panelBottomOpen,
+                              NotificationActionType.reviewMachineControl =>
+                                LucideIcons.shieldCheck,
                             }, size: 16),
                             child: Flexible(child: Text(action.label)),
                           ),

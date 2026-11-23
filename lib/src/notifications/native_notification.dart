@@ -6,6 +6,8 @@ enum NotificationActionType {
   viewUpdate,
   downloadUpdate,
   skipUpdate,
+  openPluginSurface,
+  reviewMachineControl,
 }
 
 class NotificationAction {
@@ -14,18 +16,21 @@ class NotificationAction {
     required this.label,
     required this.type,
     this.url,
+    this.href,
   });
 
   final String id;
   final String label;
   final NotificationActionType type;
   final Uri? url;
+  final String? href;
 
   Map<String, dynamic> toJson() => {
     'id': id,
     'label': label,
     'type': type.name,
     if (url != null) 'url': url.toString(),
+    if (href != null) 'href': href,
   };
 
   factory NotificationAction.fromJson(Map<String, dynamic> json) {
@@ -47,11 +52,17 @@ class NotificationAction {
         'Notification links require credential-free HTTPS',
       );
     }
+    final href = json['href'];
+    if ((type == NotificationActionType.openPluginSurface) != (href != null) ||
+        (href != null && !isPluginSurfaceHref(href))) {
+      throw const FormatException('Invalid plugin surface action');
+    }
     return NotificationAction(
       id: notificationText(json['id'], 128),
       label: notificationText(json['label'], 40),
       type: type,
       url: url,
+      href: href as String?,
     );
   }
 }
@@ -175,4 +186,17 @@ String notificationText(dynamic value, int maxLength) {
     throw const FormatException('Invalid notification text');
   }
   return value;
+}
+
+bool isPluginSurfaceHref(Object? href) {
+  if (href is! String ||
+      href.length > 2048 ||
+      !href.startsWith('/api/v1/plugins/')) {
+    return false;
+  }
+  final uri = Uri.tryParse(href);
+  return uri != null &&
+      !uri.hasScheme &&
+      !uri.hasAuthority &&
+      uri.pathSegments.length == 5;
 }

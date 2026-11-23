@@ -9176,6 +9176,40 @@ components:
             permissions the installed version does not hold, or because the
             background update check found it for a plugin that has stored
             secure settings (then addedPermissions is empty).
+        surfaces:
+          type: array
+          maxItems: 8
+          description: >
+            Plugin-level pages declared in the manifest's top-level `surfaces`
+            (not tied to a device). Absent when none are declared. At most one
+            `setup` and one `settings` surface. Each href is a same-origin
+            relative URL to one of the plugin's own HTTP endpoints, built by
+            the host; plugins cannot supply URLs.
+          items:
+            type: object
+            required: [id, role, href]
+            properties:
+              id:
+                type: string
+              role:
+                type: string
+                enum: [setup, settings, diagnostics]
+              label:
+                type: string
+                description: Optional display text from the manifest.
+              href:
+                type: string
+                example: /api/v1/plugins/mahlkoenig-e64.reaplugin/setup?ui=1&surface=setup
+        needsSetup:
+          type: boolean
+          description: >
+            True while the plugin has a current notice whose action is
+            openPluginSurface to its declared `setup` surface. Always present
+            on hosts that support it, so a client can feature-detect the key.
+        setupReason:
+          type: string
+          description: >
+            The message of that notice. Present only when needsSetup is true.
 
     PluginSettingSchema:
       type: object
@@ -9225,6 +9259,40 @@ components:
           items:
             type: string
           description: Allowed values. Required when `type` is `enum`, otherwise absent.
+        hidden:
+          type: boolean
+          description: >
+            Presentation hint. When true, generated settings forms do not show
+            the setting; the plugin owns it through its own pages. The stored
+            value is kept on save. Hosts and skins that do not know the hint
+            show the setting as usual.
+        advanced:
+          type: boolean
+          description: >
+            Presentation hint. When true, generated forms place the setting in
+            a collapsed "Advanced" section.
+        multiline:
+          type: boolean
+          description: >
+            Presentation hint for `string` settings. Generated forms use a
+            multi-line field, and the native form refuses to save a value that
+            starts with `{` or `[` but is not valid JSON.
+        valueLabels:
+          type: object
+          additionalProperties:
+            type: string
+          description: >
+            Presentation hint for `enum` settings: display label per raw value.
+            Values without a label are shown raw. The stored value is always the
+            raw value.
+        valueDescriptions:
+          type: object
+          additionalProperties:
+            type: string
+          description: >
+            Presentation hint for `enum` settings: one explanatory line per raw
+            value. When any value has one, the native form renders the enum as
+            a list of choices with these lines as subtitles.
       example:
         type: boolean
         label: Upload shots automatically

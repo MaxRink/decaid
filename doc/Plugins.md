@@ -163,11 +163,25 @@ A Decaid plugin consists of two required files:
     See
     [`host.localApi`](#hostlocalapipath-options).
 - **drivers**: Device classes the plugin may register. Each declaration has a plugin-local `id` and a `type`: `sensor`, `scale`, or `grinder`. A manifest may declare at most 8 drivers. Driver declarations authorize registration; they do not grant transport access. For example, a WebSocket-backed device also needs `network.websocket`. A driver may declare up to 8 `surfaces`, each with a unique safe `id`, `role` (`settings` or `diagnostics`), and a safe non-reserved `endpoint` naming a declared same-plugin HTTP endpoint. At most one surface has role `settings`. Surfaces require the `api` permission; optional `label` is display text. Plugins cannot supply URLs, authority, credentials, or routes through surfaces. Surface endpoints must not contain unpaired UTF-16 surrogates, which cannot round-trip through URI encoding; valid surrogate pairs remain supported.
+- **surfaces** (optional): Plugin-level pages with role `setup`, `settings` or `diagnostics`, not tied to a device. See [Plugin surfaces](#plugin-surfaces).
+- **discovery** (optional): Local-network service types the plugin may browse with `host.discovery`. See [Network discovery](#network-discovery-hostdiscovery).
 - **settings**: User-configurable options with `type` (`string`, `number`, `boolean`, `enum`), an optional `label` giving the setting a human-friendly name, an optional `description` explaining what the setting does, an optional `default`, and an optional `secure` flag for credentials such as passwords. Enum `values` are a JSON array of strings. Secure values use platform credential storage, are supplied in memory to `onLoad(settings)`, and are never returned by the REST API.
 
   `GET /api/v1/plugins` returns this schema verbatim under `settings`, so a skin can render a settings form — labels, help text and defaults included — without reading the plugin's repository. `GET /api/v1/plugins/:id/settings` returns the stored values only.
 
   Write a `label` and a `description` for every setting. Without a `label`, clients fall back to the storage key, so a user sees `LengthThreshold` rather than "Minimum shot length"; the `description` is the only explanation they get.
+
+  Optional presentation hints shape generated forms (the native Plugins screen honours all of them; skins may):
+
+  | Hint | Applies to | Effect |
+  |---|---|---|
+  | `hidden: true` | any | Not shown. The stored value is kept on save. Use it for structured or internal values that the plugin's own setup page owns. |
+  | `advanced: true` | any | Shown in a collapsed "Advanced" section. |
+  | `multiline: true` | `string` | Multi-line field. The native form refuses to save a value that starts with `{` or `[` but is not valid JSON. |
+  | `valueLabels: {"raw": "Label"}` | `enum` | Display label per value; values without one show raw. The stored value stays raw. |
+  | `valueDescriptions: {"raw": "One line"}` | `enum` | One explanatory line per value. When any value has one, the native form shows the enum as a list of choices with subtitles. |
+
+  Hosts that do not know a hint ignore it, because setting schemas are passed through verbatim, so the hints are safe on older hosts. Hints are presentation only: they never change validation of the stored value.
 - **api**: HTTP and WebSocket endpoints exposed by the plugin
 
 Unknown permission names make the manifest invalid. Calls without their required
@@ -250,10 +264,56 @@ valid. Acceptance means retained for presentation, not displayed, read, or
 acknowledged. A plugin can retry capacity or storage rejection while its
 condition remains relevant; it must correlate each result with its request ID.
 
-Only two action types are supported: `openExternalUrl` opens an absolute HTTPS
+Three action types are supported: `openExternalUrl` opens an absolute HTTPS
 URL without embedded credentials in the external browser; `openDecentAccount`
-opens native account settings and additionally requires `proxy.decent_api`.
-Both require an explicit user tap. Plugins cannot supply native routes, custom
+opens native account settings and additionally requires `proxy.decent_api`;
+`openPluginSurface` opens one of the plugin's own declared surfaces in the
+[native surface sheet](#native-surface-sheet). All require an explicit user tap.
+
+```javascript
+host.notify({
+  id: "setup",
+  message: "E64 needs its password again.",
+  action: { id: "setup", label: "Set up", type: "openPluginSurface", surfaceId: "setup" }
+});
+```
+
+`openPluginSurface` names its target with exactly one of `surfaceId` or
+`endpoint`, and accepts only the keys `id`, `label`, `type`, `pluginId`,
+`surfaceId`, `endpoint` and `deviceId`:
+
+- Without `deviceId` the target must be a top-level
+  [plugin surface](#plugin-surfaces); the host opens
+  `/api/v1/plugins/<id>/<endpoint>?ui=1&surface=<surfaceId>`.
+- With `deviceId` (1-256 characters) the target must be a driver surface; the
+  host opens it with `ui=1&deviceId=<deviceId>` like device management does.
+  The page validates the device identity, as for any device surface.
+- `pluginId`, when present, must be the posting plugin's own ID. A plugin can
+  never open another plugin's pages or an arbitrary URL; the host resolves the
+  href when the notice is published.
+
+An undeclared target, another plugin's ID or an unknown key rejects the notice
+with `reason: "validation"`. Hosts without this action reject it the same way,
+so feature-detect from `notificationResult` and republish without the action:
+
+```javascript
+onEvent(event) {
+  if (event.name === "notificationResult" && event.payload.id === "setup" &&
+      event.payload.reason === "validation") {
+    host.notify({ id: "setup", message: "Open Decaid > Settings > Plugins > E64 > Set up." });
+  }
+}
+```
+
+The host's own machine-control notice (`id: "host.machine-control"`, raised when
+a plugin without the grant writes a machine route) carries a host-only
+**Review** action. It opens a native dialog, "Allow <name> to control the
+machine?", with **Allow** (grants, like the switch on the Plugins screen, and
+removes the notice) and **Not now**. Plugins cannot post this action type.
+
+For `openPluginSurface` the plugin receives `notificationAction` with phase
+`activated`, or `failed` when the page cannot be opened; there is no
+`returned` phase. Plugins cannot supply native routes, custom
 URL schemes, executable callbacks, automatic actions, or UI priority. The host
 displays the plugin name/ID and external destination hostname alongside the copy.
 
@@ -804,6 +864,24 @@ const { handle } = await host.transport.open({
   `api`, and each transport still requires its `network.*` permission.
 - A pinned certificate that is rotated by the server stops working until the
   plugin is given the new pin.
+- When the pin does not match the certificate the platform rejected, the
+  rejected `fetch` or `open()` error carries `code: "tls_pin_mismatch"` and
+  `peerSha256`, the presented certificate's SHA-256 as 64 lowercase hex
+  digits. A setup page can show that fingerprint and ask the user to confirm
+  it before storing it as the new pin. The host never trusts it by itself, and
+  no request is sent over the refused connection. Other failures, including an
+  unpinned handshake failure, carry neither field. Older hosts reject without
+  them, so feature-detect with `error.code === "tls_pin_mismatch"`:
+
+  ```javascript
+  try {
+    await fetch(url, { tlsPinSha256: storedPin });
+  } catch (error) {
+    if (error.code === "tls_pin_mismatch") {
+      showFingerprintForConfirmation(error.peerSha256);
+    }
+  }
+  ```
 
 **Note**: The JavaScript environment has limited APIs. Currently available:
 
@@ -1058,6 +1136,57 @@ requires `start` and `stop`; `grindSetting` requires `setGrindSetting(setting)`;
 Unsupported controls fail with `unsupported_operation` before a plugin handler
 is invoked. Runtime control uses the singular `/api/v1/grinder/*` API and the
 generic device connect/disconnect routes.
+
+## Network discovery (`host.discovery`)
+
+A plugin can browse mDNS/DNS-SD services on the local network, for example to
+offer "Search the network" in a setup page. It declares what it may see in the
+manifest's top-level `discovery` key:
+
+```json
+"discovery": {
+  "mdns": [
+    { "type": "_https._tcp", "namePrefix": "Mahlkoenig grinder" }
+  ]
+}
+```
+
+```javascript
+if (typeof host.discovery?.browse === "function") {
+  const services = await host.discovery.browse({
+    serviceType: "_https._tcp",
+    namePrefix: "Mahlkoenig grinder", // optional; defaults to the declared prefixes
+    timeoutMs: 3000                    // optional; default 3000, clamped to 250-10000
+  });
+  // [{ name, host, port, addresses, txt }]
+}
+```
+
+- `mdns` holds 1-8 entries with exactly `type` (`_<name>._tcp` or
+  `_<name>._udp`) and `namePrefix` (1-63 characters). An invalid entry makes the
+  manifest invalid. Other keys under `discovery` are ignored.
+- `browse` resolves only instances whose name starts with a declared
+  `namePrefix` for that `serviceType` (case-insensitive), so a plugin never sees
+  unrelated devices such as printers. A requested `namePrefix` may narrow a
+  declared one but not widen or replace it. Undeclared types and other
+  prefixes reject with `code: "validation"` without browsing.
+- Each result has the instance `name`, `host` (the advertised host name without
+  the trailing dot, or the first address), `port`, `addresses` (IPv4 first) and
+  `txt` (the TXT record as a string map). At most 32 results are returned.
+  Prefer storing an address: `.local` resolution is not guaranteed on Android.
+- There is no new permission name, because hosts reject unknown permissions.
+  `browse` requires `api` or any `network.*` permission and rejects with
+  `code: "permission"` otherwise. One browse runs per plugin at a time; a
+  concurrent call rejects with `code: "busy"`.
+- Browsing is passive and read-only; discovery grants no connection. Opening
+  the found device still needs the usual `fetch` or `host.transport`
+  permission.
+- iOS and macOS browse only service types listed in the app's
+  `NSBonjourServices` (`_decentscale._tcp` and `_https._tcp` today); other types
+  return no results there.
+
+Hosts without this API have no `host.discovery` and ignore the manifest key,
+so feature-detect and fall back to manual address entry.
 
 ## Network Transports (`host.transport`)
 
@@ -1552,6 +1681,92 @@ names nothing. Most parameters are then used as a lookup key against the REST
 API. **`return` is the exception, and it needs its own rule**, because it is a
 navigation target rather than a lookup key.
 
+### Plugin surfaces
+
+A plugin can declare plugin-level pages in a top-level `surfaces` array. They
+are not tied to a device, so a setup page works before any device exists:
+
+```json
+"surfaces": [
+  { "id": "setup", "role": "setup", "endpoint": "setup", "label": "Set up E64" },
+  { "id": "diagnostics", "role": "diagnostics", "endpoint": "diagnostics" }
+]
+```
+
+- `role` is `setup`, `settings` or `diagnostics`; at most one `setup` and one
+  `settings` surface, at most 8 surfaces, unique `id`s.
+- Each entry has exactly the keys `id`, `role`, `endpoint` and optional
+  `label`, validated like driver surfaces: a safe `id`, a safe non-reserved
+  `endpoint` naming a declared HTTP endpoint of the same plugin, and the `api`
+  permission. An invalid declaration makes the manifest invalid.
+- The host builds the URL: `/api/v1/plugins/<id>/<endpoint>?ui=1&surface=<id>`.
+  Plugins cannot supply URLs, hosts or routes.
+- `GET /api/v1/plugins` lists them per plugin as `surfaces: [{id, role,
+  label?, href}]`. The native Plugins screen shows **Set up**, **Settings** and
+  **Diagnostics** buttons on a loaded plugin's card and opens them in the
+  [native surface sheet](#native-surface-sheet). The generated settings form
+  stays in the card's menu.
+- Driver surfaces keep the roles `settings` and `diagnostics` only. Do not put
+  `setup` in a driver surface: hosts reject the whole manifest.
+
+Hosts without this contract ignore the unknown top-level key, so the plugin
+still loads there; such a plugin should keep its pages reachable another way
+(for example a `ui` endpoint).
+
+#### Reporting "needs setup"
+
+A plugin reports that it needs setup with an ordinary notice whose action
+opens its `setup` surface, and clears the state by dismissing that notice. No
+extra API or permission is involved beyond `notifications`:
+
+```javascript
+host.notify({
+  id: "setup",
+  message: "Enter your grinder's address and Owner password.",
+  action: { id: "setup", label: "Set up", type: "openPluginSurface", surfaceId: "setup" }
+});
+// after a successful configuration:
+host.dismissNotification("setup");
+```
+
+While such a notice is current, `GET /api/v1/plugins` reports
+`needsSetup: true` and `setupReason` (the notice message) for the plugin, and
+the native Plugins card shows a **Needs setup** badge with the reason. The
+state follows the notice: it survives a restart with the retained notice and
+disappears when the plugin dismisses it, is unloaded, disabled or removed.
+`needsSetup` is always present (`false` otherwise) on hosts that support it;
+its absence means an older host. On hosts that reject the action, the plugin
+falls back to a plain notice (see `host.notify`) and no badge is shown. A
+plugin should load in this state rather than throw from `onLoad` on an
+incomplete configuration, because a plugin that fails to load serves no pages.
+
+### Native surface sheet
+
+Native Decaid opens plugin surfaces in a themed bottom sheet
+that hosts a WebView instead of a full-screen browser tab. The sheet draws its
+own title, a close button and an **Open in browser** button, and adds these
+query parameters to the surface URL:
+
+| Parameter | Value |
+|---|---|
+| `embed` | `1`: the page is embedded; do not draw an own header or back button. |
+| `theme` | `light` or `dark`, from the app's current theme. |
+| `lang` | The app locale as a BCP 47 tag, for example `en-US`. |
+
+Pages ignore parameters they do not know, so a page written for stock hosts
+keeps working. A page can close the sheet itself, for example after a
+successful save:
+
+```javascript
+window.flutter_inappwebview?.callHandler("pluginSurface", { type: "close" });
+```
+
+Only `{type: "close"}` is understood. Main-frame navigation to another origin
+is not loaded in the sheet; `http` and `https` targets open in the external
+browser. On Linux, where the WebView is a no-op, and for **Open in browser**,
+the page opens in the platform browser with `theme` and `lang` but without
+`embed`.
+
 ### The `return` parameter
 
 `return` cannot be assigned to `location` as it arrives, for two reasons.
@@ -1760,7 +1975,7 @@ it in Decaid UI.
 - **Global Functions**: `fetch()`, `btoa()`, `setTimeout()`, `clearTimeout()`
 - **Objects**: `Promise`, `JSON`, `Math`, `Date`, `Array`, `Object`
 - **Constants**: `undefined`, `null`, `Infinity`, `NaN`
-- **Host API**: `host.log()`, `host.emit()`, `host.storage()`, `host.decentProxy()`, `host.localApi()`, `host.transport`, `host.devices`
+- **Host API**: `host.log()`, `host.emit()`, `host.storage()`, `host.decentProxy()`, `host.localApi()`, `host.transport`, `host.devices`, `host.discovery`
 
 ### Not Available
 

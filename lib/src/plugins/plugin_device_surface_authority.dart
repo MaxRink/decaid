@@ -40,3 +40,20 @@ class PluginDeviceSurfaceAuthority {
         ),
   );
 }
+
+List<Map<String, String>> pluginSurfaceLinks(PluginManifest manifest) =>
+    List.unmodifiable(
+      manifest.surfaces.map(
+        (surface) => Map<String, String>.unmodifiable({
+          'id': surface.id,
+          'role': surface.role,
+          if (surface.label != null) 'label': surface.label!,
+          'href': pluginSurfaceHref(manifest.id, surface),
+        }),
+      ),
+    );
+
+String pluginSurfaceHref(String pluginId, PluginDeviceSurface surface) => Uri(
+  pathSegments: ['', 'api', 'v1', 'plugins', pluginId, surface.endpoint],
+  queryParameters: {'ui': '1', 'surface': surface.id},
+).toString();

@@ -255,4 +255,63 @@ void main() {
       isFalse,
     );
   });
+
+  test('a plugin notice may open its own declared setup surface', () async {
+    final results = <Object?>[];
+    final sub = manager.emitStream.listen((e) => results.add(e['payload']));
+    addTearDown(sub.cancel);
+    await manager.loadPlugin(
+      id: 'setup.owner',
+      manifest: PluginManifest.fromJson({
+        'id': 'setup.owner',
+        'name': 'Setup owner',
+        'author': 'Test',
+        'description': 'Test',
+        'version': '1.0.0',
+        'apiVersion': 1,
+        'permissions': ['api', 'emit', 'notifications'],
+        'settings': <String, dynamic>{},
+        'api': [
+          {'id': 'setup', 'type': 'http', 'data': <String, dynamic>{}},
+        ],
+        'surfaces': [
+          {'id': 'setup', 'role': 'setup', 'endpoint': 'setup'},
+        ],
+      }),
+      settings: {},
+      jsCode: '''
+        function createPlugin(host) {
+          const action = (surfaceId) => ({
+            id: 'open', label: 'Set up', type: 'openPluginSurface', surfaceId
+          });
+          return {
+            id: 'setup.owner',
+            onLoad() {
+              host.notify({ id: 'setup', message: 'Needs setup', action: action('setup') });
+              host.notify({ id: 'bad', message: 'Bad', action: action('nope') });
+            },
+            onEvent(event) {
+              if (event.name === 'notificationResult') host.emit('result', event.payload);
+            }
+          };
+        }
+      ''',
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    final notice = manager.notifications.value.single;
+    expect(notice.id, 'setup');
+    expect(
+      notice.actions.single.href,
+      '/api/v1/plugins/setup.owner/setup?ui=1&surface=setup',
+    );
+    expect(
+      results.map((r) => (r as Map)['status'] ?? r).toList(),
+      containsAll(['accepted', 'rejected']),
+    );
+    expect(
+      results.whereType<Map>().where((r) => r['status'] == 'rejected').single,
+      containsPair('reason', 'validation'),
+    );
+  });
 }

@@ -30,6 +30,15 @@ final class PluginsHandler {
         json['machineControl'] = pluginService.machineControlGranted(
           manifest.id,
         );
+        if (manifest.surfaces.isNotEmpty) {
+          json['surfaces'] = pluginSurfaceLinks(manifest);
+        }
+        final setupReason = pluginSetupReason(
+          manifest,
+          pluginManager.notifications.value,
+        );
+        json['needsSetup'] = setupReason != null;
+        if (setupReason != null) json['setupReason'] = setupReason;
         list.add(json);
       }
       return jsonOk(list);
