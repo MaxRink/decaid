@@ -59,6 +59,15 @@ class PluginDowngradeException implements UserFacingException {
   String toString() => message;
 }
 
+class PluginPermissionApprovalRequiredException implements UserFacingException {
+  @override
+  final String message;
+  PluginPermissionApprovalRequiredException(this.message);
+
+  @override
+  String toString() => message;
+}
+
 enum PluginLoaderLifecycle { active, disposing, disposed }
 
 class PluginLoaderService {
@@ -279,6 +288,7 @@ class PluginLoaderService {
     String pluginId, {
     required Map<String, dynamic> manifestJson,
     required String pluginJs,
+    bool authorized = false,
   }) async {
     if (!isSafePathComponent(pluginId)) {
       throw FormatException(
@@ -301,9 +311,10 @@ class PluginLoaderService {
     return _withPluginMutationLock(pluginId, () async {
       _ensureActive();
       _ensureNotDowngrade(manifest);
+      final previousManifest = _availablePluginsCache[pluginId];
+      if (!authorized) _requireNoAddedPermissions(previousManifest, manifest);
       final settingsSnapshot = await _capturePersistedSettings(pluginId);
 
-      final previousManifest = _availablePluginsCache[pluginId];
       final pluginDir = Directory('${_pluginsDir.path}/$pluginId');
       final manifestFile = File('${pluginDir.path}/manifest.json');
       final sourceFile = File('${pluginDir.path}/plugin.js');
@@ -336,6 +347,18 @@ class PluginLoaderService {
       }
 
       try {
+        if (!authorized &&
+            previousSource != pluginJs &&
+            settingsSnapshot.secure.isNotEmpty) {
+          _log.warning(
+            'Source write changed the code of $pluginId without '
+            'extension-management authorization; clearing its secure settings',
+          );
+          await _withPluginSettingsLock(
+            pluginId,
+            () => _deleteSecureSettings(pluginId),
+          );
+        }
         stagedManifest.renameSync(manifestFile.path);
         stagedSource.renameSync(sourceFile.path);
         _availablePluginsCache[pluginId] = manifest;
@@ -433,6 +456,22 @@ class PluginLoaderService {
     throw PluginDowngradeException(
       'Plugin ${manifest.id} ${installed.version} is installed; '
       'remove it before installing ${manifest.version}',
+    );
+  }
+
+  void _requireNoAddedPermissions(
+    PluginManifest? installed,
+    PluginManifest candidate,
+  ) {
+    if (installed == null) return;
+    final added = candidate.permissions
+        .difference(installed.permissions)
+        .map((permission) => permission.wireName)
+        .toList();
+    if (added.isEmpty) return;
+    throw PluginPermissionApprovalRequiredException(
+      'A source write that adds permissions (${added.join(', ')}) needs an '
+      'extensions:manage token or a native install',
     );
   }
 

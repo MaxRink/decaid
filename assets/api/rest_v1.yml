@@ -3794,7 +3794,14 @@ paths:
         and reloaded; if the new source fails to load, the previous manifest,
         source, and running plugin are restored and the request fails. An
         unloaded plugin stays unloaded and its source is not validated.
-        Settings and the auto-load preference are preserved. Overwriting a
+        Settings and the auto-load preference are preserved, with two
+        exceptions for a request that carries no `extensions:manage`
+        credential (a bearer with that scope, or an approved
+        `manage.extensions` plugin via localApi): a write whose plugin.js
+        differs from the installed one clears the plugin's stored secure
+        settings, so new code never inherits secrets it was not configured
+        with, and a write whose manifest adds permissions to an installed
+        plugin is refused with 409. Overwriting a
         bundled plugin is temporary: on the next app start the bundled copy wins
         whenever its version is higher. This path shadows a plugin-declared
         endpoint named "source", the same way /settings does.
@@ -3876,7 +3883,9 @@ paths:
         "409":
           description: >
             The submitted version is lower than the installed version; remove
-            the plugin before installing an older version
+            the plugin before installing an older version. Also returned when
+            the manifest adds permissions to an installed plugin and the
+            request carries no `extensions:manage` credential
           content:
             application/json:
               schema:
