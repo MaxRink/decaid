@@ -1782,9 +1782,14 @@ it in Decaid UI.
   (`/api/v1/store/<namespace>/<key>`) refuse a namespace equal to an installed
   plugin's id (compared case-insensitively) with 403 unless the request
   carries an `extensions:manage` credential, so other clients cannot read or
-  overwrite it over REST; the plugin itself uses `host.storage`. It is still
-  not secret: backup export, import and sync include it, and a token holder
-  can read it. A plugin holding `manage.extensions` must not take instructions,
+  overwrite it over REST; the plugin itself uses `host.storage`. A backup made
+  from the app's own Data Management screen, or by a client with an
+  `extensions:manage` token, includes every installed plugin's storage in
+  `store.json`, and restoring such a backup the same way writes it back and
+  reloads each affected running plugin. A tokenless export leaves plugin
+  storage out, a tokenless import skips it with a warning in the `store`
+  section result, and sync never transfers it. It is still not secret: a token
+  holder can read it. A plugin holding `manage.extensions` must not take instructions,
   server addresses or credentials from `host.storage`; keep them in plugin
   settings, whose POST route is gated and whose secure values are never returned
 - No filesystem access beyond the plugin's own directory
@@ -1801,11 +1806,17 @@ it in Decaid UI.
   mitigation, before the first plugin is evaluated the host freezes the shared
   built-ins (`Object`, `Function`, `Array`, `JSON`, `Promise`, `Map`, `Set`,
   `WeakMap`, `WeakSet`, `String`, `Number`, `Boolean`, `Symbol`, `Reflect`,
-  `Math`, `Date`, `RegExp` and their prototypes, plus the `Error` and
+  `Math`, `Date`, `RegExp`, `BigInt`, `Proxy`, `ArrayBuffer`, `DataView`, every
+  typed array and the shared typed-array prototype, `TextEncoder`,
+  `TextDecoder`, `btoa` and `atob`, with their prototypes, plus the `Error` and
   `TypeError` constructors) and makes the host's own globals (`host`, `fetch`,
   `sendMessage` and every `__`-prefixed host function) read-only, so one
-  plugin cannot hook another plugin's `JSON.stringify`, promise callbacks or
-  fetch responses. Assigning to a frozen built-in throws in strict code and is
+  plugin cannot hook another plugin's `JSON.stringify`, `btoa`, byte buffers,
+  promise callbacks or fetch responses. Loaded plugin objects are kept in a
+  registry that is not reachable from plugin code and is keyed by each
+  plugin's private bridge token, so a plugin cannot read, replace or remove
+  another plugin's `onEvent` or HTTP handler. `atob` is provided when the
+  engine has none. Assigning to a frozen built-in throws in strict code and is
   ignored otherwise; plugins must not patch or polyfill built-ins.
   `Error.prototype` stays writable so subclasses can set `this.name`
 - `fetch` cannot send a non-`GET`/`HEAD` request to the host's own
@@ -1975,6 +1986,15 @@ or `POST /api/v1/plugins/update`:
   update has an empty `addedPermissions`;
 - it skips plugins installed from a GitHub branch entirely. A branch has no
   release to review, so branch installs only move on a manual check.
+
+A REST install (`POST /api/v1/plugins/install/github-release` or
+`/github-branch`) whose package carries the id of an already installed plugin
+is treated like a source write when the request has no `extensions:manage`
+credential: added permissions are refused with 409, and a changed `plugin.js`
+clears the plugin's stored secure settings and its
+[machine control grant](#machine-control-grant). Approving a pending update of
+a plugin that has stored secure settings needs the native Plugins screen or an
+`extensions:manage` credential in both modes; a request without one gets 403.
 
 A pending update can be approved by:
 

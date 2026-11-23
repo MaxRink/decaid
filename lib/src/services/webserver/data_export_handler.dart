@@ -98,6 +98,7 @@ class DataExportHandler {
   Future<File> exportToZipFile(
     Directory tempDir, {
     List<String>? sections,
+    bool includePluginStorage = false,
   }) async {
     final writer = await StreamingZipWriter.create(
       destination: File('${tempDir.path}${Platform.pathSeparator}export.zip'),
@@ -131,7 +132,14 @@ class DataExportHandler {
         try {
           final entry = writer.addEntry(section.filename);
           final sink = _EntryJsonSink(entry, _limits);
-          await section.exportJson(sink);
+          if (section is KvStoreExportSection) {
+            await section.exportJson(
+              sink,
+              includePluginStorage: includePluginStorage,
+            );
+          } else {
+            await section.exportJson(sink);
+          }
           entry.close();
         } catch (e, st) {
           _log.severe('Error exporting ${section.filename}', e, st);
@@ -161,7 +169,10 @@ class DataExportHandler {
   Future<Response> _handleExport(Request request) async {
     final tempDir = await TempArchiveDir.create('reaprime-export-');
     try {
-      final zipFile = await exportToZipFile(tempDir.directory);
+      final zipFile = await exportToZipFile(
+        tempDir.directory,
+        includePluginStorage: holdsExtensionManagementCredential(request),
+      );
       final length = await zipFile.length();
 
       final timestamp = DateTime.now()
@@ -210,6 +221,7 @@ class DataExportHandler {
     ConflictStrategy strategy, {
     List<String>? sections,
     bool extensionsAuthorized = false,
+    bool includePluginStorage = false,
   }) async {
     final StreamingZipReader reader;
     try {
@@ -274,6 +286,7 @@ class DataExportHandler {
             strategy,
             jsonFile,
             extensionsAuthorized: extensionsAuthorized,
+            includePluginStorage: includePluginStorage,
           );
 
           if (section.filename == 'settings.json' &&
@@ -377,6 +390,7 @@ class DataExportHandler {
     ConflictStrategy strategy,
     File jsonFile, {
     required bool extensionsAuthorized,
+    required bool includePluginStorage,
   }) async {
     try {
       await reader.writeEntryToFile(entry, jsonFile);
@@ -386,6 +400,12 @@ class DataExportHandler {
               input,
               strategy,
               extensionsAuthorized: extensionsAuthorized,
+            )
+          : section is KvStoreExportSection
+          ? await section.importJson(
+              input,
+              strategy,
+              includePluginStorage: includePluginStorage,
             )
           : await section.importJson(input, strategy);
     } on ZipReadException catch (e) {
@@ -449,6 +469,7 @@ class DataExportHandler {
         zipFile,
         strategy,
         extensionsAuthorized: await mayManageExtensions(request),
+        includePluginStorage: holdsExtensionManagementCredential(request),
       );
       return outcome.hasFailures
           ? jsonMultiStatus(outcome.toJson())

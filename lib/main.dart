@@ -932,6 +932,7 @@ void main(List<String> args) async {
   runApp(
     WithForegroundTask(
       child: AppRoot(
+        nativeApiToken: proxyTokenService.nativeToken,
         directConnect: cliArgs.direct,
         settingsController: settingsController,
         deviceController: deviceController,
@@ -1079,6 +1080,7 @@ class AppRoot extends StatefulWidget {
   final DisplayController displayController;
   final AccountConsentStore? accountConsentStore;
   final GithubCredentialProvider credentials;
+  final String? nativeApiToken;
 
   const AppRoot({
     super.key,
@@ -1109,6 +1111,7 @@ class AppRoot extends StatefulWidget {
     required this.displayController,
     this.accountConsentStore,
     required this.credentials,
+    this.nativeApiToken,
   });
 
   static void restart(BuildContext context) {
@@ -1211,6 +1214,7 @@ class _AppRootState extends State<AppRoot> {
         batteryController: widget.batteryController,
         displayController: widget.displayController,
         accountConsentStore: widget.accountConsentStore,
+        nativeApiToken: widget.nativeApiToken,
         credentials: widget.credentials,
         startupCoordinator: _startupCoordinator,
       ),

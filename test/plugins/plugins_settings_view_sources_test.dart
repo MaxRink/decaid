@@ -107,6 +107,7 @@ class _FakeSourceService extends PluginSourceService {
     String? assetName,
     bool includePrerelease = false,
     ExtensionManagementApproval? approveExtensionManagement,
+    bool authorized = true,
   }) async {
     installCalls++;
     if (installError != null) throw installError!;

@@ -100,6 +100,42 @@ void main() {
     }
   });
 
+  test('a bearer token is sent on export and import requests', () async {
+    final authorizations = <String?>[];
+    await serve((request) async {
+      authorizations.add(request.headers.value('authorization'));
+      await request.drain<void>();
+      if (request.method == 'GET') {
+        request.response.headers.contentType = ContentType(
+          'application',
+          'zip',
+        );
+        request.response.add([1]);
+      } else {
+        request.response.headers.contentType = ContentType(
+          'application',
+          'json',
+        );
+        request.response.write('{"profiles":{"imported":1}}');
+      }
+      await request.response.close();
+    });
+
+    final service = BackupTransferService(bearerToken: 'native-token');
+    try {
+      await service.downloadExportZip('$baseUrl/api/v1/data/export', tempDir);
+      await service.uploadZip(
+        '$baseUrl/api/v1/data/import',
+        'skip',
+        readStream: Stream.value([1]),
+        contentLength: 1,
+      );
+    } finally {
+      service.close();
+    }
+    expect(authorizations, ['Bearer native-token', 'Bearer native-token']);
+  });
+
   test('uploadZip streams a local file into the request', () async {
     final received = BytesBuilder();
     final uploadFile = File('${tempDir.path}/upload.zip');

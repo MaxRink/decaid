@@ -231,6 +231,7 @@ Map<String, dynamic> _manifestJson(
   String id, {
   String version = '1.0.0',
   List<String> permissions = const ['api', 'log'],
+  bool secureToken = false,
 }) => {
   'id': id,
   'author': 'Test',
@@ -241,6 +242,7 @@ Map<String, dynamic> _manifestJson(
   'permissions': permissions,
   'settings': {
     'Label': {'type': 'string'},
+    if (secureToken) 'Token': {'type': 'string', 'secure': true},
   },
   'api': [
     for (final endpoint in ['echo', 'enable', 'source', 'approve'])
@@ -271,6 +273,7 @@ function createPlugin(host) {
 List<int> _releaseArchive({
   String version = '1.0.0',
   List<String> permissions = const ['log'],
+  bool secureToken = false,
 }) {
   final archive = Archive()
     ..addFile(
@@ -281,6 +284,7 @@ List<int> _releaseArchive({
             _releasedId,
             version: version,
             permissions: permissions,
+            secureToken: secureToken,
           ),
         ),
       ),
@@ -1009,6 +1013,59 @@ void main() {
           }
         },
       );
+
+      test('a GitHub install over an installed plugin follows the source '
+          'write rules', () async {
+        releaseArchive = _releaseArchive(secureToken: true);
+        final first = await send(
+          'POST',
+          '/api/v1/plugins/install/github-release',
+          authorization: bearer(),
+          body: {'repo': 'acme/plugin'},
+        );
+        expect(first.status, 200, reason: '$first');
+        await service.savePluginSettings(_releasedId, {'Token': 'secret'});
+
+        releaseTag = 'v1.1.0';
+        releaseArchive = _releaseArchive(
+          version: '1.1.0',
+          permissions: ['log', 'proxy.decent_api'],
+          secureToken: true,
+        );
+        if (!required) {
+          final tokenless = await send(
+            'POST',
+            '/api/v1/plugins/install/github-release',
+            body: {'repo': 'evil/fork'},
+          );
+          expect(tokenless.status, 409, reason: '$tokenless');
+          expect(service.getPluginManifest(_releasedId)?.version, '1.0.0');
+        }
+
+        final updated = await send(
+          'POST',
+          '/api/v1/plugins/update',
+          authorization: bearer(),
+        );
+        expect(updated.status, 200, reason: '$updated');
+        if (!required) {
+          final tokenlessApproval = await send(
+            'POST',
+            '/api/v1/plugins/$_releasedId/update/approve',
+          );
+          expect(tokenlessApproval.status, 403, reason: '$tokenlessApproval');
+          expect(service.getPluginManifest(_releasedId)?.version, '1.0.0');
+        }
+        final approved = await send(
+          'POST',
+          '/api/v1/plugins/$_releasedId/update/approve',
+          authorization: 'Bearer $managerToken',
+        );
+        expect(approved.status, 200, reason: '$approved');
+        expect((await service.pluginSettings(_releasedId))['Token'], {
+          'isSet': true,
+        });
+      });
 
       test('GitHub install, update, approval and the 409 without a pending '
           'update', () async {

@@ -430,5 +430,85 @@ function createPlugin() {
         );
       });
     });
+    group('package installs over an installed plugin', () {
+      const id = 'reused.reaplugin';
+
+      Directory package({
+        String version = '1.1.0',
+        List<String> permissions = const [],
+        String marker = '',
+      }) {
+        final dir = Directory('${tempDir.path}/pkg_${version}_$marker')
+          ..createSync(recursive: true);
+        File('${dir.path}/manifest.json').writeAsStringSync(
+          jsonEncode({
+            ...manifestJson(id, version: version),
+            'permissions': permissions,
+            'settings': {
+              'token': {'type': 'string', 'secure': true},
+            },
+          }),
+        );
+        File('${dir.path}/plugin.js')
+            .writeAsStringSync('// $marker\n${pluginJs(id)}');
+        return dir;
+      }
+
+      Future<void> installWithSecretAndGrant() async {
+        await service.installPluginPackage(package(version: '1.0.0'));
+        await service.savePluginSettings(id, {'token': 's3cret'});
+        await service.setMachineControlGrant(id, true);
+      }
+
+      test('an unauthorized install that changes the code clears secrets '
+          'and the machine-control grant', () async {
+        await installWithSecretAndGrant();
+
+        await service.installPluginPackage(
+          package(marker: 'other'),
+          authorized: false,
+        );
+
+        expect(service.getPluginManifest(id)?.version, '1.1.0');
+        expect((await service.pluginSettings(id))['token'], {'isSet': false});
+        expect(service.machineControlGranted(id), isFalse);
+      });
+
+      test('an unauthorized install cannot add permissions', () async {
+        await installWithSecretAndGrant();
+
+        await expectLater(
+          service.installPluginPackage(
+            package(permissions: ['api']),
+            authorized: false,
+          ),
+          throwsA(isA<PluginPermissionApprovalRequiredException>()),
+        );
+        expect(service.getPluginManifest(id)?.version, '1.0.0');
+        expect((await service.pluginSettings(id))['token'], {'isSet': true});
+      });
+
+      test(
+        'an authorized install keeps secrets and may add permissions',
+        () async {
+          await installWithSecretAndGrant();
+
+          await service.installPluginPackage(
+            package(permissions: ['api'], marker: 'other'),
+          );
+
+          expect((await service.pluginSettings(id))['token'], {'isSet': true});
+          expect(service.machineControlGranted(id), isTrue);
+        },
+      );
+
+      test('an unauthorized fresh install is unaffected', () async {
+        await service.installPluginPackage(
+          package(permissions: ['api']),
+          authorized: false,
+        );
+        expect(service.getPluginManifest(id)?.version, '1.1.0');
+      });
+    });
   });
 }
