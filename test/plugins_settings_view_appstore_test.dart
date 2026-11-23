@@ -630,4 +630,166 @@ void main() {
       'BooleanSecret': true,
     });
   });
+
+  group('setting display hints', () {
+    PluginManifest hintsManifest() => PluginManifest(
+      id: 'hints.reaplugin',
+      name: 'Hints Plugin',
+      author: 'Test',
+      description: 'Test plugin',
+      version: '1.0.0',
+      apiVersion: 1,
+      permissions: {},
+      settings: {
+        'Owner': {
+          'type': 'enum',
+          'label': 'Who adjusts the grinder',
+          'values': ['off', 'grinder', 'decaid'],
+          'default': 'off',
+          'valueLabels': {'off': 'Just show the grinder', 'decaid': 'Decaid'},
+        },
+        'Mode': {
+          'type': 'enum',
+          'values': ['a', 'b'],
+          'default': 'a',
+          'valueLabels': {'a': 'Mode A', 'b': 'Mode B'},
+          'valueDescriptions': {'b': 'The second mode'},
+        },
+        'InternalBlob': {'type': 'string', 'hidden': true},
+        'Tuning': {'type': 'number', 'label': 'Tuning', 'advanced': true},
+        'Instances': {
+          'type': 'string',
+          'label': 'Instances',
+          'multiline': true,
+        },
+      },
+      api: PluginApi(endpoints: []),
+    );
+
+    Future<void> openHintsDialog(
+      WidgetTester tester,
+      Map<String, dynamic> settings,
+    ) async {
+      fakePluginLoaderService = FakePluginLoaderService(
+        plugins: [hintsManifest()],
+        settings: settings,
+      );
+      tester.view.physicalSize = const Size(1200, 2400);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        ShadApp(
+          builder: (_, child) => ScaffoldMessenger(child: child!),
+          home: PluginsSettingsView(
+            pluginLoaderService: fakePluginLoaderService,
+            allowInstall: false,
+          ),
+        ),
+      );
+      await tester.pump();
+      await _openPluginSettings(tester);
+    }
+
+    Finder field(String key, Type type) => find.descendant(
+      of: find.byKey(ValueKey('plugin-setting-$key')),
+      matching: find.byType(type),
+    );
+
+    testWidgets('hidden settings are not rendered but are preserved on save', (
+      tester,
+    ) async {
+      await openHintsDialog(tester, {'InternalBlob': '{"a":1}'});
+
+      expect(
+        find.byKey(const ValueKey('plugin-setting-InternalBlob')),
+        findsNothing,
+      );
+      expect(find.text('InternalBlob'), findsNothing);
+      await tester.tap(find.widgetWithText(ShadButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      expect(fakePluginLoaderService.savedSettings, {
+        'InternalBlob': '{"a":1}',
+      });
+    });
+
+    testWidgets('enum values show labels with the raw value as fallback', (
+      tester,
+    ) async {
+      await openHintsDialog(tester, {});
+
+      expect(find.text('Just show the grinder'), findsWidgets);
+      expect(find.text('Default: Just show the grinder'), findsOneWidget);
+      await tester.tap(find.byType(ShadSelect<String>));
+      await tester.pumpAndSettle();
+      expect(
+        find.widgetWithText(ShadOption<String>, 'grinder'),
+        findsOneWidget,
+      );
+      await tester.tap(find.widgetWithText(ShadOption<String>, 'Decaid'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ShadButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      expect(fakePluginLoaderService.savedSettings, {'Owner': 'decaid'});
+    });
+
+    testWidgets('enums with value descriptions render as choice cards', (
+      tester,
+    ) async {
+      await openHintsDialog(tester, {});
+
+      expect(find.byType(ShadRadioGroup<String>), findsOneWidget);
+      expect(find.text('The second mode'), findsOneWidget);
+      await tester.tap(find.text('Mode B'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(ShadButton, 'Save'));
+      await tester.pumpAndSettle();
+
+      expect(fakePluginLoaderService.savedSettings, {'Mode': 'b'});
+    });
+
+    testWidgets('advanced settings sit in a collapsed Advanced section', (
+      tester,
+    ) async {
+      await openHintsDialog(tester, {});
+
+      expect(find.text('Advanced'), findsOneWidget);
+      expect(find.text('Tuning'), findsNothing);
+      await tester.tap(find.text('Advanced'));
+      await tester.pumpAndSettle();
+      expect(find.text('Tuning'), findsOneWidget);
+    });
+
+    testWidgets('multiline strings use a multi-line field', (tester) async {
+      await openHintsDialog(tester, {});
+
+      final input = tester.widget<ShadInput>(field('Instances', ShadInput));
+      expect(input.maxLines, isNull);
+      expect(input.minLines, greaterThan(1));
+    });
+
+    testWidgets('invalid JSON in a multiline field blocks Save', (
+      tester,
+    ) async {
+      await openHintsDialog(tester, {});
+      final input = field('Instances', EditableText);
+
+      await tester.enterText(input, '[{"host": ');
+      await tester.pump();
+      expect(find.text('Not valid JSON'), findsOneWidget);
+      await tester.tap(find.widgetWithText(ShadButton, 'Save'));
+      await tester.pumpAndSettle();
+      expect(fakePluginLoaderService.saveCallCount, 0);
+
+      await tester.enterText(input, '[{"host": "a"}]');
+      await tester.pump();
+      expect(find.text('Not valid JSON'), findsNothing);
+      await tester.tap(find.widgetWithText(ShadButton, 'Save'));
+      await tester.pumpAndSettle();
+      expect(fakePluginLoaderService.savedSettings, {
+        'Instances': '[{"host": "a"}]',
+      });
+    });
+  });
 }

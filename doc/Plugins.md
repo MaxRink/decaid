@@ -168,6 +168,18 @@ A Decaid plugin consists of two required files:
   `GET /api/v1/plugins` returns this schema verbatim under `settings`, so a skin can render a settings form — labels, help text and defaults included — without reading the plugin's repository. `GET /api/v1/plugins/:id/settings` returns the stored values only.
 
   Write a `label` and a `description` for every setting. Without a `label`, clients fall back to the storage key, so a user sees `LengthThreshold` rather than "Minimum shot length"; the `description` is the only explanation they get.
+
+  Optional presentation hints shape generated forms (the native Plugins screen honours all of them; skins may):
+
+  | Hint | Applies to | Effect |
+  |---|---|---|
+  | `hidden: true` | any | Not shown. The stored value is kept on save. Use it for structured or internal values that the plugin's own setup page owns. |
+  | `advanced: true` | any | Shown in a collapsed "Advanced" section. |
+  | `multiline: true` | `string` | Multi-line field. The native form refuses to save a value that starts with `{` or `[` but is not valid JSON. |
+  | `valueLabels: {"raw": "Label"}` | `enum` | Display label per value; values without one show raw. The stored value stays raw. |
+  | `valueDescriptions: {"raw": "One line"}` | `enum` | One explanatory line per value. When any value has one, the native form shows the enum as a list of choices with subtitles. |
+
+  Hosts that do not know a hint ignore it, because setting schemas are passed through verbatim, so the hints are safe on older hosts. Hints are presentation only: they never change validation of the stored value.
 - **api**: HTTP and WebSocket endpoints exposed by the plugin
 
 Unknown permission names make the manifest invalid. Calls without their required

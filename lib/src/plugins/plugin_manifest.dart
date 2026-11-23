@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:collection/collection.dart';
 import 'package:reaprime/src/models/device/grinder_device.dart';
 import 'package:reaprime/src/util/safe_path.dart';
@@ -21,6 +23,35 @@ String pluginSettingLabel(String key, dynamic schema) {
   if (label is! String) return key;
   final trimmed = label.trim();
   return trimmed.isEmpty ? key : trimmed;
+}
+
+bool pluginSettingHint(dynamic schema, String hint) =>
+    schema is Map && schema[hint] == true;
+
+String pluginSettingValueLabel(dynamic schema, String value) =>
+    _pluginSettingValueText(schema, 'valueLabels', value) ?? value;
+
+String? pluginSettingValueDescription(dynamic schema, String value) =>
+    _pluginSettingValueText(schema, 'valueDescriptions', value);
+
+String? _pluginSettingValueText(dynamic schema, String hint, String value) {
+  if (schema is! Map) return null;
+  final texts = schema[hint];
+  if (texts is! Map) return null;
+  final text = texts[value];
+  if (text is! String || text.trim().isEmpty) return null;
+  return text.trim();
+}
+
+bool isInvalidJsonLikeText(String text) {
+  final trimmed = text.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return false;
+  try {
+    jsonDecode(trimmed);
+    return false;
+  } on FormatException {
+    return true;
+  }
 }
 
 enum PluginDriverType { sensor, scale, grinder }
