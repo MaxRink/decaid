@@ -215,8 +215,9 @@ for every route, not only extension management:
   `Content-Security-Policy: frame-ancestors 'self'`. Plugin pages and surfaces
   (HTML under `/api/v1/plugins/<id>/`) carry no `X-Frame-Options` and
   `frame-ancestors 'self'` plus the device's skin origins (live skin page and
-  docs ports on the requested numeric device address and on loopback), so the
-  active skin can embed them and other sites cannot.
+  docs ports on the requested numeric IPv4 device address, `localhost` and
+  `127.0.0.1`; IPv6 literals are not valid CSP sources and are left out), so
+  the active skin can embed them and other sites cannot.
 
 Requests without an `Origin` (and without `Sec-Fetch-Site`) are not affected:
 Home Assistant, `curl`, MCP clients, native app code and `host.localApi` keep
