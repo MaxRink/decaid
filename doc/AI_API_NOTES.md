@@ -359,6 +359,24 @@ section, or for development and automation from `--extensions-token` or the
   originless or forged-origin LAN client is unaffected, which is why
   originless LAN compatibility and the protected-mode recommendation for shared
   deployments both stay explicit in `doc/Api.md`.
+- `apiBrowserBoundaryMiddleware` runs directly inside the extension-management
+  origin middleware and applies to every route on the API port. It only acts on
+  requests that carry `Origin` or `Sec-Fetch-Site` (browsers), so originless
+  LAN clients are untouched. It first checks `requestedUri.host` (which
+  `shelf_io` builds from `Host`) with `ExtensionManagementBrowserOrigins.isDeviceHost`
+  (loopback names or a numeric address from the same live interface listing),
+  which is the DNS-rebinding guard: a rebound name is never a device host even
+  though it resolves to one. It then classifies `Origin` with the same
+  `classify`; an untrusted origin may only `GET`/`HEAD` without an upgrade, and
+  those responses lose every `access-control-*` header, so the general
+  `corsHeaders` echo effectively becomes an allowlist. Everything else
+  (including preflights and simple `text/plain` POSTs) is refused before the
+  handler. Because untrusted origins never reach a write handler now, the
+  handler-level `requireTrustedBrowserOrigin` checks in the settings, import
+  and sync handlers are defence in depth only. Machine control routes
+  (`machineControlRoutes`) share the extension-management credential gate in
+  `extensionManagementAuthMiddleware`, so they read the protection mode and need
+  `extensions:manage` only while it is ON.
 - A name is still never authority, but a browser that reached a built-in page
   through one would load a page whose every management request is then refused.
   `builtinBrowserCanonicalRedirect` therefore canonicalises the *page entry*

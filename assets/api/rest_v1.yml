@@ -934,6 +934,15 @@ paths:
         answers 409. Quick tare is deliberately not exposed here — use
         the integrated-scale tare path. Returns 404 when the connected
         machine is not a Bengle.
+
+        Machine control route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       requestBody:
         required: true
@@ -942,6 +951,25 @@ paths:
             schema:
               $ref: "#/components/schemas/ScaleCalibrationCommandRequest"
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "202":
           description: Command accepted, returns the new state
           content:
@@ -1030,6 +1058,15 @@ paths:
         raw serial nor device ID is available, defaults are used and no retained entry is
         created. The connect-time
         detection read and firmware handoff remain separate from this override.
+
+        Machine control route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       requestBody:
         required: true
@@ -1038,6 +1075,25 @@ paths:
             schema:
               $ref: "#/components/schemas/De1AdvancedSettingsRequest"
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "202":
           description: Advanced settings update accepted (one grouped serialized device write)
         "400":
@@ -1060,8 +1116,36 @@ paths:
         for the next connection.
         Profile and workflow are not touched. A reset acknowledgement is not evidence
         of factory restoration.
+
+        Machine control route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "202":
           description: Reset accepted (one grouped serialized device write)
         "503":
@@ -1092,6 +1176,15 @@ paths:
         the device ID when no usable serial exists, and is reapplied on the next connection. A
         settings reset preserves this machine's saved override. For DE1 sensor calibration
         (flow/pressure/temperature) see PUT /api/v1/machine/calibration/{target}.
+
+        Machine control route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       requestBody:
         required: true
@@ -1100,6 +1193,25 @@ paths:
             schema:
               $ref: "#/components/schemas/De1CalibrationRequest"
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "202":
           description: Calibration settings updated successfully
         "400":
@@ -1163,6 +1275,15 @@ paths:
         `measuredValue - de1ReportedValue`. To set an absolute value X, first
         read the current calibration C, then write
         `de1ReportedValue: C, measuredValue: X`.
+
+        Machine control route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       parameters:
         - name: target
@@ -1177,6 +1298,25 @@ paths:
             schema:
               $ref: "#/components/schemas/De1SensorCalibrationWriteRequest"
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "202":
           description: Calibration write acknowledged by the machine
         "400":
@@ -1274,6 +1414,15 @@ paths:
         intermediate percentage updates. The stream emits `erasing` when the
         operation starts and remains silent during verification until either
         `done` or `error`.
+
+        Machine control route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       requestBody:
         required: true
@@ -1284,6 +1433,25 @@ paths:
               format: binary
               maxLength: 16777216
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "200":
           description: NDJSON progress stream (see FirmwareProgressEvent)
           content:
@@ -1326,6 +1494,15 @@ paths:
         and must arrive within 10 seconds. Accepts optional `force: true` to
         bypass version-newer policy (never bypasses integrity or compatibility
         checks).
+
+        Machine control route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       requestBody:
         required: true
@@ -1343,6 +1520,25 @@ paths:
                   default: false
                   description: Allow downgrade/reinstall (default false)
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "200":
           description: NDJSON progress stream
           content:

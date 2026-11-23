@@ -99,8 +99,9 @@ void main() {
   final spec = _spec();
   final operations = _operations(spec);
   final protectedRoutes = {
-    for (final route in extensionManagementRoutes)
-      _key(route.method, _specPath(route.path)),
+    for (final route in [...extensionManagementRoutes, ...machineControlRoutes])
+      if (!route.path.startsWith('/ws/'))
+        _key(route.method, _specPath(route.path)),
   };
   final declaringOperations = [
     for (final operation in operations)
