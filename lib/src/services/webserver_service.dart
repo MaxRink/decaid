@@ -300,10 +300,20 @@ Future<ApiListener> startWebServer(
     grindersHandler = GrindersHandler(storage: grinderStorage);
   }
 
+  int? apiListenerPort;
+  String? apiListenerAddress;
+  int? apiDocsListenerPort;
+  final browserOrigins = extensionManagementBrowserOrigins(
+    webUIService,
+    apiListenerPort: () => apiListenerPort,
+    docsListenerPort: () => apiDocsListenerPort,
+  );
+
   final kvStoreHandler = KvStoreHandler(
     isPluginNamespace: (namespace) => pluginService.availablePlugins.any(
       (plugin) => plugin.id.toLowerCase() == namespace.toLowerCase(),
     ),
+    deviceOrigins: browserOrigins,
   );
   await kvStoreHandler.store.initialize();
 
@@ -398,9 +408,6 @@ Future<ApiListener> startWebServer(
     );
   }
 
-  int? apiListenerPort;
-  String? apiListenerAddress;
-  int? apiDocsListenerPort;
   Future<Set<String>> deviceAddresses() =>
       webUIService.currentBrowserOriginAddresses();
   final handler = _init(
@@ -429,11 +436,7 @@ Future<ApiListener> startWebServer(
     proxyTokenService,
     () => accountProxyCorsAllowedOrigins(webUIService),
     () => settingsController.currentRequireExtensionManagementAuthorization(),
-    extensionManagementBrowserOrigins(
-      webUIService,
-      apiListenerPort: () => apiListenerPort,
-      docsListenerPort: () => apiDocsListenerPort,
-    ),
+    browserOrigins,
     BuiltinPageListener(
       listenerPort: () => apiListenerPort,
       deviceAddresses: deviceAddresses,
