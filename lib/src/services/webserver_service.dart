@@ -833,6 +833,7 @@ Handler buildWebServerHandler(
   }
   return pipeline
       .addMiddleware(accountProxyCorsMiddleware(accountProxyAllowedOrigins))
+      .addMiddleware(frameProtectionMiddleware())
       .addMiddleware(logRequestsWithClientIp())
       .addMiddleware(
         corsHeaders(
@@ -859,6 +860,29 @@ Handler buildWebServerHandler(
       .addMiddleware(requestBodyReadMiddleware())
       .addMiddleware(apiAdmissionMiddleware(admissionGate ?? _apiAdmissionGate))
       .addHandler(routes);
+}
+
+const _frameAncestors = "frame-ancestors 'self'";
+
+Middleware frameProtectionMiddleware() {
+  return (Handler inner) {
+    return (Request request) async {
+      final response = await inner(request);
+      final type = response.headers['content-type']?.toLowerCase() ?? '';
+      if (!type.startsWith('text/html')) return response;
+      final policy = response.headers['content-security-policy'];
+      return response.change(
+        headers: {
+          'x-frame-options': 'SAMEORIGIN',
+          'content-security-policy': policy == null
+              ? _frameAncestors
+              : policy.contains('frame-ancestors')
+              ? policy
+              : '$policy; $_frameAncestors',
+        },
+      );
+    };
+  };
 }
 
 const _shelfConnectionInfoKey = 'shelf.io.connection_info';
@@ -997,8 +1021,11 @@ Handler createApiDocsHandler(
     defaultDocument: 'index.html',
     listDirectories: true,
   );
+  final framed = const Pipeline()
+      .addMiddleware(frameProtectionMiddleware())
+      .addHandler(handler);
   final listener = pageListener;
-  if (listener == null) return handler;
+  if (listener == null) return framed;
   return const Pipeline()
       .addMiddleware(
         builtinBrowserCanonicalRedirect(
@@ -1006,7 +1033,7 @@ Handler createApiDocsHandler(
           listener: listener,
         ),
       )
-      .addHandler(handler);
+      .addHandler(framed);
 }
 
 Future<HttpServer?> startApiDocsServer({
