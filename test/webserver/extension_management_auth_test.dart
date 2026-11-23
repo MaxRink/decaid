@@ -128,6 +128,7 @@ void main() {
       'POST /api/v1/plugins/update',
       'POST /api/v1/plugins/<id>/settings',
       'PUT /api/v1/plugins/<id>/source',
+      'PUT /api/v1/plugins/<id>/machine-control',
       'POST /api/v1/plugins/<id>/enable',
       'POST /api/v1/plugins/<id>/disable',
       'POST /api/v1/plugins/<id>/update/approve',

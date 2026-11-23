@@ -104,6 +104,7 @@ in a Token column.
 | POST | `/api/v1/plugins/update` |
 | POST | `/api/v1/plugins/:id/settings` |
 | PUT | `/api/v1/plugins/:id/source` |
+| PUT | `/api/v1/plugins/:id/machine-control` |
 | POST | `/api/v1/plugins/:id/enable` |
 | POST | `/api/v1/plugins/:id/disable` |
 | POST | `/api/v1/plugins/:id/update/approve` |
@@ -235,7 +236,7 @@ and compatibility mode all make no difference to it.
 
 Which requests it refuses:
 
-- The 18 routes in the table above, on every method and path pair.
+- The 19 routes in the table above, on every method and path pair.
 - `POST /api/v1/data/import`, refused whole before the archive is read: whether
   an archive carries a gated settings key is only known after parsing it, so
   the conservative answer applies to every import.
@@ -396,7 +397,7 @@ key-value store, `host.localApi` nor the account proxy can write it. `GET
   silently downgrading security because storage failed.
 - **The current value is resolved per relevant request, once** (and refreshed
   when the app resumes from the background). Only a request whose outcome can
-  depend on the mode reads it: the 18 routes, the machine control routes, a
+  depend on the mode reads it: the 19 routes, the machine control routes, a
   gated settings body, an import,
   and a `settings`-bearing pull or `two_way` sync. Everything else — machine
   state, polling, the account proxy, read-only and plugin-defined routes and
@@ -1007,6 +1008,7 @@ one explicitly requested source rather than running the batch update check.
 | POST | `/api/v1/plugins/:id/disable` | Unload plugin + disable auto-load | | required |
 | DELETE | `/api/v1/plugins/:id` | Remove plugin (unload + delete files) | | required |
 | PUT | `/api/v1/plugins/:id/source` | Create or overwrite `manifest.json` + `plugin.js` | | required |
+| PUT | `/api/v1/plugins/:id/machine-control` | Body `{"granted": true\|false}`: allow or forbid the plugin's `fetch` writes to `/api/v1/machine/*` ([details](Plugins.md#machine-control-grant)) | | required |
 | POST | `/api/v1/plugins/install` | Not supported — returns 501 naming the GitHub endpoints | | required |
 | POST | `/api/v1/plugins/install/github-release` | Install from a GitHub release asset; tag must equal the manifest version | | required |
 | POST | `/api/v1/plugins/install/github-branch` | Install from a GitHub branch; the resolved commit drives updates | | required |

@@ -182,27 +182,35 @@ void main() {
 
     String fetchJs(String method, String path, {String host = '127.0.0.1'}) =>
         'fetch("http://$host:${api.port}$path", { method: "$method" })'
-        '.then((r) => report({ status: r.status }), fail);';
+        '.then((r) => r.json().then((body) => report({ status: r.status, body })), fail);';
 
-    test('machine control writes through fetch are refused', () async {
+    final granted = <String>{};
+    setUp(() {
+      granted.clear();
+      manager.machineControlGranted = granted.contains;
+    });
+
+    test('machine control writes need the user grant', () async {
       for (final (method, path) in [
         ('PUT', '/api/v1/machine/state/espresso'),
-        ('POST', '/api/v1/machine/firmware'),
         ('POST', '/api/v1/machine/calibration'),
         ('POST', '/API/v1/machine/settings/advanced'),
         ('POST', '/api/v1/./machine/settings/advanced'),
       ]) {
+        final id = 'writer.${path.hashCode}.${method.toLowerCase()}';
         final result = await _run(
           manager,
-          id: 'writer.${path.hashCode}.${method.toLowerCase()}',
+          id: id,
           permissions: {PluginPermissions.api},
           jsBody: fetchJs(method, path),
         );
-        expect(
-          (result as Map)['error'],
-          contains('machine control'),
-          reason: '$method $path',
-        );
+        expect(result, {
+          'status': 403,
+          'body': {
+            'error': contains('not allowed to control the machine'),
+            'code': 'machine_control_not_granted',
+          },
+        }, reason: '$method $path');
       }
       for (final host in ['localhost', '0.0.0.0']) {
         final result = await _run(
@@ -211,11 +219,76 @@ void main() {
           permissions: {PluginPermissions.api},
           jsBody: fetchJs('PUT', '/api/v1/machine/state/idle', host: host),
         );
-        expect(
-          (result as Map)['error'],
-          contains('machine control'),
-          reason: host,
+        expect((result as Map)['status'], 403, reason: host);
+      }
+      expect(hits, isEmpty);
+    });
+
+    test('a refused plugin raises a notice asking the user', () async {
+      await _run(
+        manager,
+        id: 'skale.plugin',
+        permissions: {PluginPermissions.api},
+        jsBody: fetchJs('PUT', '/api/v1/machine/state/espresso'),
+      );
+      await manager.notifications.settled;
+      final notice = manager.notifications.value.singleWhere(
+        (notice) => notice.sourceId == 'skale.plugin',
+      );
+      expect(notice.id, machineControlNoticeId);
+      expect(notice.message, contains('control the machine'));
+    });
+
+    test('a granted plugin may change machine state', () async {
+      granted.add('skale.plugin');
+      final start = await _run(
+        manager,
+        id: 'skale.plugin',
+        permissions: {PluginPermissions.api},
+        jsBody: fetchJs('PUT', '/api/v1/machine/state/espresso'),
+      );
+      expect((start as Map)['status'], 200);
+      expect(hits, ['PUT /api/v1/machine/state/espresso']);
+    });
+
+    test('a revoked grant refuses again', () async {
+      granted.add('skale.plugin');
+      await _run(
+        manager,
+        id: 'skale.plugin',
+        permissions: {PluginPermissions.api},
+        jsBody: fetchJs('PUT', '/api/v1/machine/state/espresso'),
+      );
+      granted.remove('skale.plugin');
+      final again = await _run(
+        manager,
+        id: 'skale.again',
+        permissions: {PluginPermissions.api},
+        jsBody: fetchJs('PUT', '/api/v1/machine/state/idle'),
+      );
+      expect((again as Map)['status'], 403);
+      expect(hits, ['PUT /api/v1/machine/state/espresso']);
+    });
+
+    test('firmware stays refused even with the grant', () async {
+      for (final path in [
+        '/api/v1/machine/firmware',
+        '/api/v1/machine/firmware/apply',
+      ]) {
+        granted.add('flasher.${path.length}');
+        final result = await _run(
+          manager,
+          id: 'flasher.${path.length}',
+          permissions: {PluginPermissions.api},
+          jsBody: fetchJs('POST', path),
         );
+        expect(result, {
+          'status': 403,
+          'body': {
+            'error': contains('firmware'),
+            'code': 'machine_control_forbidden',
+          },
+        }, reason: path);
       }
       expect(hits, isEmpty);
     });
@@ -227,18 +300,19 @@ void main() {
         permissions: {PluginPermissions.api},
         jsBody: fetchJs('GET', '/api/v1/machine/info'),
       );
-      expect(read, {'status': 200});
+      expect((read as Map)['status'], 200);
       final other = await _run(
         manager,
         id: 'other.plugin',
         permissions: {PluginPermissions.api},
         jsBody: fetchJs('POST', '/api/v1/workflow'),
       );
-      expect(other, {'status': 200});
+      expect((other as Map)['status'], 200);
       expect(hits, ['GET /api/v1/machine/info', 'POST /api/v1/workflow']);
     });
 
     test('raw machine sockets and raw TCP to the host API are refused', () async {
+      granted.addAll(['ws.plugin', 'tcp.plugin']);
       final ws = await _run(
         manager,
         id: 'ws.plugin',

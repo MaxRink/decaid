@@ -686,10 +686,42 @@ Decaid dispatches a request to the plugin.
 but it does so as an ordinary network client with no authority: the plugin and
 skin management routes answer 401 to it, whatever headers the plugin sets. Use
 [`host.localApi`](#hostlocalapipath-options) with the `manage.extensions`
-permission for those routes. A plugin `fetch` also cannot write to the host's
-own `/api/v1/machine/*` routes (anything but `GET`/`HEAD`); machine reads and the
-rest of the API stay open to `fetch`, as they are to any client on the
-network.
+permission for those routes. Writes to the host's own `/api/v1/machine/*`
+routes need the user's [machine control grant](#machine-control-grant); machine
+reads and the rest of the API stay open to `fetch`, as they are to any client on
+the network.
+
+### Machine control grant
+
+A plugin `fetch` that writes (any method but `GET`/`HEAD`) to the host's own
+`/api/v1/machine/*` routes, for example
+`PUT /api/v1/machine/state/espresso`, reaches the API only after the user has
+allowed that plugin to control the machine. There is no manifest permission for
+it: a stock Decaid rejects unknown permission names, so the grant is a
+host-side, per-plugin setting the user turns on.
+
+- Without the grant the call does not reach the API. `fetch` resolves (it does
+  not reject) with `status` 403 and a JSON body
+  `{"error": "Plugin <id> is not allowed to control the machine; ...",
+  "code": "machine_control_not_granted"}`, and Decaid shows a notice
+  "Allow <plugin name> to control the machine?" under the plugin's name. Handle
+  the 403 by telling the user to allow it; retrying does not help.
+- The user allows or forbids it with the "Allow machine control" switch on the
+  plugin's card in Settings > Plugins (shown for plugins holding `api`), or a
+  client calls `PUT /api/v1/plugins/<id>/machine-control` with
+  `{"granted": true}` or `{"granted": false}` (an extension-management route:
+  `extensions:manage` token while protection is ON). `GET /api/v1/plugins`
+  reports it as `machineControl`.
+- The grant is stored per plugin id. It survives restarts and installed
+  updates, and is cleared when the plugin is removed or a source write changes
+  its `plugin.js`.
+- Firmware (`/api/v1/machine/firmware`, `/api/v1/machine/firmware/apply`) is
+  refused for every plugin, with or without the grant, as 403
+  `{"code": "machine_control_forbidden"}`. `host.transport` still refuses the
+  raw machine socket `/ws/v1/machine/raw` and raw `tcp`/`tls` to the API port
+  for every plugin.
+- The target counts as the host when it resolves to loopback, `0.0.0.0` or an
+  address of this device, on the API port.
 
 ```javascript
 // Basic GET request
@@ -707,6 +739,29 @@ const upload = await fetch("https://api.example.com/upload", {
   body: JSON.stringify(data)
 });
 ```
+
+### Binary responses
+
+`fetch` returns the body as text by default (decoded as UTF-8, with invalid
+sequences replaced). To receive raw bytes, ask for base64:
+
+```javascript
+const response = await fetch("https://192.168.1.40/api/backup", {
+  responseType: "base64",
+  tlsPinSha256: pin // optional, combines with any other option
+});
+const bytes = await response.base64(); // standard base64 of the exact body
+```
+
+- `responseType` is `"base64"` or omitted (`"text"` is accepted as the
+  default); any other value rejects the call before a request is sent.
+- A base64 response has `base64()`, which resolves to the exact body bytes as
+  a standard base64 string, including `0x00` and bytes that are not valid
+  UTF-8. Its `text()` and `json()` reject with a `TypeError` telling you to use
+  `base64()`. A default response has no `base64()`.
+- The response size limit (`maxFetchResponseBytes`, 10 MiB by default) applies
+  to the raw body in both modes; a larger body rejects the call.
+- `status`, `ok` and `headers` are the same in both modes.
 
 ### Certificate pinning
 
@@ -752,7 +807,8 @@ const { handle } = await host.transport.open({
 
 **Note**: The JavaScript environment has limited APIs. Currently available:
 
-- `fetch()` for HTTP requests
+- `fetch()` for HTTP requests (text by default, `responseType: "base64"` for
+  binary bodies)
 - `btoa()` for base64 encoding (polyfilled)
 - Standard JavaScript language features
 
@@ -1753,10 +1809,10 @@ it in Decaid UI.
   ignored otherwise; plugins must not patch or polyfill built-ins.
   `Error.prototype` stays writable so subclasses can set `this.name`
 - `fetch` cannot send a non-`GET`/`HEAD` request to the host's own
-  `/api/v1/machine/*` routes (machine state, profile, settings, calibration,
-  firmware) when the target resolves to this device (loopback, `0.0.0.0` or a
-  local interface address) on the API port; the call rejects. Reads such as
-  `GET /api/v1/machine/info` keep working. `host.transport` likewise refuses a
+  `/api/v1/machine/*` routes unless the user granted the plugin
+  [machine control](#machine-control-grant) (it then resolves with 403), and
+  never to the firmware routes. Reads such as `GET /api/v1/machine/info` keep
+  working. `host.transport` likewise refuses a
   WebSocket to `/ws/v1/machine/raw` on the host API and raw `tcp`/`tls`
   connections to the host API port
 - An `Authorization` header that carries a token Decaid recognises is removed
@@ -1982,6 +2038,7 @@ OFF):
 | POST | `/api/v1/plugins/:id/enable` | yes | Load plugin + enable auto-load on startup |
 | POST | `/api/v1/plugins/:id/disable` | yes | Unload plugin + disable auto-load |
 | PUT | `/api/v1/plugins/:id/source` | yes | Create or overwrite `manifest.json` + `plugin.js` |
+| PUT | `/api/v1/plugins/:id/machine-control` | yes | Allow (`{"granted": true}`) or forbid machine control for the plugin |
 | DELETE | `/api/v1/plugins/:id` | yes | Remove plugin (unload + delete files) |
 | POST | `/api/v1/plugins/install` | yes | Not supported (501); use the GitHub endpoints below |
 | POST | `/api/v1/plugins/install/github-release` | yes | Install from a GitHub release asset |

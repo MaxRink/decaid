@@ -689,6 +689,7 @@ class ExtensionManagementHarness {
       'plugin': probePluginJs(targetId),
     },
     _ when path.endsWith('/skins/default') => {'skinId': recordedSkinId},
+    _ when path.endsWith('/machine-control') => {'granted': true},
     _ when path.contains('/install') => {
       'repo': 'acme/never',
       'url': 'https://example.test/never.zip',

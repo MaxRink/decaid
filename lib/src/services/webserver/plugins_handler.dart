@@ -27,6 +27,9 @@ final class PluginsHandler {
         final source = pluginSourceService.sourceFor(manifest.id);
         json['source'] = source == null ? null : _sourceJson(source);
         json['pendingUpdate'] = source?.pendingUpdate?.toJson();
+        json['machineControl'] = pluginService.machineControlGranted(
+          manifest.id,
+        );
         list.add(json);
       }
       return jsonOk(list);
@@ -70,6 +73,8 @@ final class PluginsHandler {
     app.post('/api/v1/plugins/<id>/settings', _handlePluginSettingsPost);
 
     app.put('/api/v1/plugins/<id>/source', _handlePluginSourceWrite);
+
+    app.put('/api/v1/plugins/<id>/machine-control', _handleMachineControlGrant);
 
     app.post('/api/v1/plugins/<id>/enable', (Request request, String id) async {
       try {
@@ -243,6 +248,35 @@ final class PluginsHandler {
         'error': remoteErrorMessage(e, action: 'install the plugin'),
       });
     }
+  }
+
+  Future<Response> _handleMachineControlGrant(
+    Request request,
+    String id,
+  ) async {
+    final Object? json;
+    try {
+      json = jsonDecode(
+        await readBoundedRequestBodyString(
+          request,
+          maxBytes: smallRequestBodyBytes,
+          timeout: smallRequestBodyTimeout,
+        ),
+      );
+    } on RequestBodyReadException {
+      rethrow;
+    } catch (e) {
+      return jsonBadRequest({'error': 'Invalid JSON body: $e'});
+    }
+    final granted = json is Map ? json['granted'] : null;
+    if (granted is! bool) {
+      return jsonBadRequest({'error': 'granted must be a boolean'});
+    }
+    if (pluginService.getPluginManifest(id) == null) {
+      return jsonNotFound({'error': 'Plugin not found: $id'});
+    }
+    await pluginService.setMachineControlGrant(id, granted);
+    return jsonOk({'id': id, 'machineControl': granted});
   }
 
   Future<Response> _handlePluginSourceWrite(Request request, String id) async {

@@ -33,6 +33,10 @@ import '../services/webserver/extension_management_auth.dart';
 
 enum _PendingOpKind { fetch, pluginHttp, decentProxy, localApi }
 
+const machineControlNoticeId = 'host.machine-control';
+
+bool _noMachineControl(String _) => false;
+
 enum PluginManagerLifecycle { active, disposing, disposed }
 
 class _PendingOp {
@@ -121,6 +125,7 @@ class PluginManager {
   final int maxFetchResponseBytes;
   final Duration pluginHttpTimeout;
   final int hostApiPort;
+  bool Function(String pluginId) machineControlGranted = _noMachineControl;
   final Duration decentProxyTimeout;
   final Duration localApiTimeout;
   final Duration transportCloseTimeout;
@@ -1084,7 +1089,8 @@ class PluginManager {
               method: init.method || "GET",
               headers: init.headers || {},
               body: init.body ?? null,
-              tlsPinSha256: init.tlsPinSha256 ?? null
+              tlsPinSha256: init.tlsPinSha256 ?? null,
+              responseType: init.responseType ?? null
             }));
           });
         };
@@ -1104,14 +1110,24 @@ class PluginManager {
           }
 
           const headers = makeHeaders(msg.headers);
+          const isBase64 = typeof msg.bodyBase64 === "string";
+          const base64Only =
+            "This response was requested with responseType base64; use base64()";
 
           const response = {
             status: msg.status,
             ok: msg.status >= 200 && msg.status < 300,
             headers,
-            text: async () => msg.body ?? "",
-            json: async () => JSON.parse(msg.body ?? "null")
+            text: async () => {
+              if (isBase64) throw new TypeError(base64Only);
+              return msg.body ?? "";
+            },
+            json: async () => {
+              if (isBase64) throw new TypeError(base64Only);
+              return JSON.parse(msg.body ?? "null");
+            }
           };
+          if (isBase64) response.base64 = async () => msg.bodyBase64;
           pending.resolve(response);
         };
 
@@ -3041,6 +3057,53 @@ class PluginManager {
     return counts;
   }
 
+  Map<String, dynamic>? _machineControlRefusal(String pluginId, Uri uri) {
+    final Map<String, String> error;
+    if (_decodedPath(uri).startsWith('/api/v1/machine/firmware')) {
+      error = {
+        'error': 'Plugins cannot update machine firmware',
+        'code': 'machine_control_forbidden',
+      };
+    } else if (machineControlGranted(pluginId)) {
+      return null;
+    } else {
+      _askForMachineControl(pluginId);
+      error = {
+        'error':
+            'Plugin $pluginId is not allowed to control the machine; the user '
+            'can allow it in Settings > Plugins',
+        'code': 'machine_control_not_granted',
+      };
+    }
+    return {
+      'status': 403,
+      'headers': {'content-type': 'application/json'},
+      'body': jsonEncode(error),
+    };
+  }
+
+  void _askForMachineControl(String pluginId) {
+    final name = _plugins[pluginId]?.manifest.name ?? pluginId;
+    unawaited(
+      notifications
+          .publish(
+            NativeNotification(
+              namespace: NotificationNamespace.plugin,
+              sourceId: pluginId,
+              sourceName: name,
+              id: machineControlNoticeId,
+              message:
+                  'Allow $name to control the machine? It tried to change the '
+                  'machine state. Allow it in Settings > Plugins > $name.',
+            ),
+          )
+          .catchError(
+            (Object error) =>
+                _log.fine('Could not ask for machine control: $error'),
+          ),
+    );
+  }
+
   bool _isMachineControlWrite(String method, Uri uri) {
     if (method == 'GET' || method == 'HEAD') return false;
     final path = _decodedPath(uri);
@@ -3645,11 +3708,17 @@ class PluginManager {
     final method = ((msg['method'] as String?) ?? 'GET').toUpperCase();
     final headers = msg['headers'] as Map? ?? {};
     final body = msg['body'];
+    final binary = switch (msg['responseType']) {
+      null || 'text' => false,
+      'base64' => true,
+      _ => throw const FormatException(
+        'responseType must be "base64" or omitted',
+      ),
+    };
     if (_isMachineControlWrite(method, uri) &&
         await _isHostApi(uri.host, uri.port)) {
-      throw StateError(
-        'Plugins cannot call machine control routes on the host API with fetch',
-      );
+      final refusal = _machineControlRefusal(op.pluginId, uri);
+      if (refusal != null) return {'id': int.parse(op.requestId), ...refusal};
     }
     final pin = parseTlsPinSha256(msg[tlsPinOption]);
     requireTlsScheme(pin, uri.scheme == 'https', 'an https:// url');
@@ -3658,7 +3727,7 @@ class PluginManager {
         : (pinnedHttpClient(pin)
             ..connectionTimeout = const Duration(seconds: 10));
     try {
-      return await _sendFetch(op, client, method, uri, headers, body);
+      return await _sendFetch(op, client, method, uri, headers, body, binary);
     } finally {
       if (pin != null) client.close(force: true);
     }
@@ -3671,6 +3740,7 @@ class PluginManager {
     Uri uri,
     Map headers,
     Object? body,
+    bool binary,
   ) async {
     final request = await client.openUrl(method, uri);
     op.request = request;
@@ -3700,7 +3770,10 @@ class PluginManager {
       'id': int.parse(op.requestId),
       'status': response.statusCode,
       'headers': responseHeaders,
-      'body': utf8.decode(bytes, allowMalformed: true),
+      if (binary)
+        'bodyBase64': base64Encode(bytes)
+      else
+        'body': utf8.decode(bytes, allowMalformed: true),
     };
   }
 }
