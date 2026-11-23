@@ -1716,10 +1716,13 @@ it in Decaid UI.
   per-request or per-connection `tlsPinSha256`
   ([Certificate pinning](#certificate-pinning)), which accepts exactly one
   leaf certificate for that request or connection and nothing else
-- Storage is kept per plugin, but it is not private: the key-value store routes
-  (`/api/v1/store/<namespace>/<key>`), which need no token, read and write the
-  same data when the namespace is the plugin id, and backup import and sync
-  restore it. A plugin holding `manage.extensions` must not take instructions,
+- Storage is kept per plugin. The key-value store routes
+  (`/api/v1/store/<namespace>/<key>`) refuse a namespace equal to an installed
+  plugin's id (compared case-insensitively) with 403 unless the request
+  carries an `extensions:manage` credential, so other clients cannot read or
+  overwrite it over REST; the plugin itself uses `host.storage`. It is still
+  not secret: backup export, import and sync include it, and a token holder
+  can read it. A plugin holding `manage.extensions` must not take instructions,
   server addresses or credentials from `host.storage`; keep them in plugin
   settings, whose POST route is gated and whose secure values are never returned
 - No filesystem access beyond the plugin's own directory

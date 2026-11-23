@@ -1128,6 +1128,10 @@ single-owner: no other reader may hold the port while Decaid owns it.
 | POST | `/api/v1/store/:namespace/:key` | Set value | |
 | DELETE | `/api/v1/store/:namespace/:key` | Delete key | |
 
+A namespace equal to an installed plugin's id (case-insensitive) belongs to
+that plugin's `host.storage` and answers 403 on every store route unless the
+request carries an `extensions:manage` bearer.
+
 `GET /api/v1/store/:namespace?full=1` returns the entire namespace as a `{key: value}` map in one request instead of one GET per key. It sends an `ETag`, so a repeat request with `If-None-Match` returns `304 Not Modified` when nothing changed — cheap to poll. Without the flag the endpoint returns just the array of keys.
 
 ### Data Management
