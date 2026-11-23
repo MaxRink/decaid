@@ -47,6 +47,7 @@ class MockSettingsService extends SettingsService {
   String _rememberedDevices = '[]';
   bool _lowBatteryBrightnessLimit = false;
   bool _keepAwake = true;
+  bool _keepServiceRunning = false;
   bool _onboardingCompleted = true;
   bool _onboardingReplayRequested = false;
   int onboardingReplayRequestWrites = 0;
@@ -272,6 +273,11 @@ class MockSettingsService extends SettingsService {
   Future<bool> keepAwake() async => _keepAwake;
   @override
   Future<void> setKeepAwake(bool value) async => _keepAwake = value;
+  @override
+  Future<bool> keepServiceRunning() async => _keepServiceRunning;
+  @override
+  Future<void> setKeepServiceRunning(bool value) async =>
+      _keepServiceRunning = value;
   @override
   Future<bool> onboardingCompleted() async => _onboardingCompleted;
   @override

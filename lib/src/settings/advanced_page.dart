@@ -21,12 +21,19 @@ import 'package:reaprime/src/settings/gateway_mode_info_dialog.dart';
 import 'package:reaprime/src/skin_feature/simulated_webview_device.dart';
 
 class AdvancedPage extends StatelessWidget {
-  const AdvancedPage({super.key, required this.controller, this.credentials});
+  const AdvancedPage({
+    super.key,
+    required this.controller,
+    this.credentials,
+    this.requestBatteryOptimizationExemption =
+        ForegroundTaskService.requestBatteryOptimizationExemption,
+  });
 
   static const routeName = '/advanced';
 
   final SettingsController controller;
   final GithubCredentialProvider? credentials;
+  final Future<void> Function() requestBatteryOptimizationExemption;
 
   @override
   Widget build(BuildContext context) {
@@ -121,6 +128,29 @@ class AdvancedPage extends StatelessWidget {
                         },
                       ),
                     ),
+                  ),
+                ),
+                const SettingsDivider(),
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  child: ShadSwitch(
+                    value: controller.keepServiceRunning,
+                    onChanged: (v) async {
+                      await controller.setKeepServiceRunning(v);
+                      if (v) await requestBatteryOptimizationExemption();
+                    },
+                    label: const Text('Keep Decaid running in the background'),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Text(
+                    'Keeps the API, plugins and integrations available while '
+                    'the machine is off; uses a persistent notification.',
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
                 const SettingsDivider(),

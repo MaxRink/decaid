@@ -8366,6 +8366,9 @@ components:
         keepAwake:
           type: boolean
           description: When enabled, the wake lock stays on while the app is running, preventing the tablet screen from turning off. Default value is true.
+        keepServiceRunning:
+          type: boolean
+          description: Android only. When enabled, the foreground service starts with the app and is never stopped when the machine disconnects, so the REST API, plugins and integrations stay available while the machine sleeps; the persistent notification stays visible. When disabled, the service stops 5 minutes after the machine disconnects (previous behaviour). Persisted on all platforms but has no effect off Android. Not gated by extension management. Default value is false.
         simulatedDevices:
           description: List of simulated device types to enable in scan results
           type: array
@@ -8476,6 +8479,9 @@ components:
         keepAwake:
           type: boolean
           description: When enabled, the wake lock stays on while the app is running, preventing the tablet screen from turning off. Default value is true.
+        keepServiceRunning:
+          type: boolean
+          description: Android only. When enabled, the foreground service starts with the app and is never stopped when the machine disconnects, so the REST API, plugins and integrations stay available while the machine sleeps; the persistent notification stays visible. When disabled, the service stops 5 minutes after the machine disconnects (previous behaviour). Persisted on all platforms but has no effect off Android. Not gated by extension management. Default value is false.
         simulatedDevices:
           description: List of simulated device types currently enabled in scan results
           type: array

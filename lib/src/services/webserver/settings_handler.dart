@@ -66,6 +66,7 @@ class SettingsHandler {
         'nightModeMorningTime': _controller.nightModeMorningTime,
         'lowBatteryBrightnessLimit': _controller.lowBatteryBrightnessLimit,
         'keepAwake': _controller.keepAwake,
+        'keepServiceRunning': _controller.keepServiceRunning,
         'simulatedDevices': _controller.simulatedDevices
             .map((e) => e.name)
             .toList(),
@@ -327,6 +328,16 @@ class SettingsHandler {
           await _controller.setKeepAwake(value);
         } else {
           return jsonBadRequest({'message': 'keepAwake must be a boolean'});
+        }
+      }
+      if (json.containsKey('keepServiceRunning')) {
+        final value = json['keepServiceRunning'];
+        if (value is bool) {
+          await _controller.setKeepServiceRunning(value);
+        } else {
+          return jsonBadRequest({
+            'message': 'keepServiceRunning must be a boolean',
+          });
         }
       }
       if (json.containsKey('simulatedDevices')) {
