@@ -422,8 +422,59 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
                 );
               },
             ),
+            if (plugin.permissions.contains(PluginPermissions.api))
+              _buildMachineControlSwitch(context, plugin),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildMachineControlSwitch(
+    BuildContext context,
+    PluginManifest plugin,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        children: [
+          ShadSwitch(
+            value: widget.pluginLoaderService.machineControlGranted(plugin.id),
+            onChanged: (value) async {
+              try {
+                await widget.pluginLoaderService.setMachineControlGrant(
+                  plugin.id,
+                  value,
+                );
+                if (!context.mounted) return;
+                _showSnackBar(
+                  context,
+                  value
+                      ? '${plugin.name} may now start and stop the machine'
+                      : '${plugin.name} can no longer control the machine',
+                );
+                setState(() {});
+              } catch (e, st) {
+                Logger('PluginsSettingsView')
+                    .warning('Failed to change machine control', e, st);
+                if (context.mounted) {
+                  _showSnackBar(
+                    context,
+                    'Failed to change machine control: $e',
+                    isError: true,
+                  );
+                }
+              }
+            },
+          ),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Text(
+              'Allow machine control (start/stop shots, change machine '
+              'settings and calibration)',
+            ),
+          ),
+        ],
       ),
     );
   }

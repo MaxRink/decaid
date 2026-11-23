@@ -33,6 +33,10 @@ import '../services/webserver/extension_management_auth.dart';
 
 enum _PendingOpKind { fetch, pluginHttp, decentProxy, localApi }
 
+const machineControlNoticeId = 'host.machine-control';
+
+bool _noMachineControl(String _) => false;
+
 enum PluginManagerLifecycle { active, disposing, disposed }
 
 class _PendingOp {
@@ -121,6 +125,7 @@ class PluginManager {
   final int maxFetchResponseBytes;
   final Duration pluginHttpTimeout;
   final int hostApiPort;
+  bool Function(String pluginId) machineControlGranted = _noMachineControl;
   final Duration decentProxyTimeout;
   final Duration localApiTimeout;
   final Duration transportCloseTimeout;
@@ -3041,6 +3046,53 @@ class PluginManager {
     return counts;
   }
 
+  Map<String, dynamic>? _machineControlRefusal(String pluginId, Uri uri) {
+    final Map<String, String> error;
+    if (_decodedPath(uri).startsWith('/api/v1/machine/firmware')) {
+      error = {
+        'error': 'Plugins cannot update machine firmware',
+        'code': 'machine_control_forbidden',
+      };
+    } else if (machineControlGranted(pluginId)) {
+      return null;
+    } else {
+      _askForMachineControl(pluginId);
+      error = {
+        'error':
+            'Plugin $pluginId is not allowed to control the machine; the user '
+            'can allow it in Settings > Plugins',
+        'code': 'machine_control_not_granted',
+      };
+    }
+    return {
+      'status': 403,
+      'headers': {'content-type': 'application/json'},
+      'body': jsonEncode(error),
+    };
+  }
+
+  void _askForMachineControl(String pluginId) {
+    final name = _plugins[pluginId]?.manifest.name ?? pluginId;
+    unawaited(
+      notifications
+          .publish(
+            NativeNotification(
+              namespace: NotificationNamespace.plugin,
+              sourceId: pluginId,
+              sourceName: name,
+              id: machineControlNoticeId,
+              message:
+                  'Allow $name to control the machine? It tried to change the '
+                  'machine state. Allow it in Settings > Plugins > $name.',
+            ),
+          )
+          .catchError(
+            (Object error) =>
+                _log.fine('Could not ask for machine control: $error'),
+          ),
+    );
+  }
+
   bool _isMachineControlWrite(String method, Uri uri) {
     if (method == 'GET' || method == 'HEAD') return false;
     final path = _decodedPath(uri);
@@ -3647,9 +3699,8 @@ class PluginManager {
     final body = msg['body'];
     if (_isMachineControlWrite(method, uri) &&
         await _isHostApi(uri.host, uri.port)) {
-      throw StateError(
-        'Plugins cannot call machine control routes on the host API with fetch',
-      );
+      final refusal = _machineControlRefusal(op.pluginId, uri);
+      if (refusal != null) return {'id': int.parse(op.requestId), ...refusal};
     }
     final pin = parseTlsPinSha256(msg[tlsPinOption]);
     requireTlsScheme(pin, uri.scheme == 'https', 'an https:// url');

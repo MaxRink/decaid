@@ -3755,6 +3755,89 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/v1/plugins/{id}/machine-control:
+    put:
+      summary: Allow or forbid a plugin to control the machine
+      description: >
+        Grants or revokes the plugin's machine-control grant. Without it, a
+        plugin `fetch` that writes (any method but GET/HEAD) to the host's
+        own /api/v1/machine/* routes resolves with status 403 and
+        `{"error": ..., "code": "machine_control_not_granted"}`, and the host
+        posts a notice asking the user to allow it. With it, those writes reach
+        the API. Firmware routes and the raw machine socket stay refused for
+        every plugin (`machine_control_forbidden`). The grant is stored per
+        plugin id, cleared when the plugin is removed or a source write changes
+        its plugin.js, and kept across installed updates. The current value is
+        the `machineControl` field of GET /api/v1/plugins.
+        When protection is ON, this operation needs `Authorization: Bearer
+        <token>` scoped `extensions:manage` (see the extensionsManage
+        security scheme). When protection is OFF (the default), it needs no
+        credential.
+      tags: [Plugins]
+      security:
+        - {}
+        - extensionsManage: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Plugin ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [granted]
+              properties:
+                granted:
+                  type: boolean
+      responses:
+        "200":
+          description: Grant updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  machineControl:
+                    type: boolean
+        "400":
+          description: Invalid JSON body or `granted` is not a boolean
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Plugin not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/v1/plugins/{id}/enable:
     post:
       summary: Enable a plugin
@@ -9098,6 +9181,11 @@ components:
           description: >
             Where the installed copy came from. Null for plugins installed
             before source tracking existed and for bundled plugins.
+        machineControl:
+          type: boolean
+          description: >
+            Whether the user allowed this plugin to write the host's machine
+            control routes (see PUT /api/v1/plugins/{id}/machine-control).
         pendingUpdate:
           allOf:
             - $ref: '#/components/schemas/PluginPendingUpdate'

@@ -119,6 +119,7 @@ class PluginLoaderService {
          deviceService: deviceService,
          bleRegistry: PluginBleRegistry(initiallyReady: false),
        ) {
+    pluginManager.machineControlGranted = machineControlGranted;
     _accountSubscription = decentAccountChanges?.listen((_) {
       if (_lifecycle == PluginLoaderLifecycle.active) {
         pluginManager.broadcastEvent('decentAccountChanged', const {});
@@ -371,6 +372,9 @@ class PluginLoaderService {
             () => _deleteSecureSettings(pluginId),
           );
         }
+        if (previousSource != pluginJs) {
+          await _prefs.remove(_machineControlKey(pluginId));
+        }
         stagedManifest.renameSync(manifestFile.path);
         stagedSource.renameSync(sourceFile.path);
         _availablePluginsCache[pluginId] = manifest;
@@ -510,6 +514,7 @@ class PluginLoaderService {
       await _deleteSecureSettings(pluginId);
       await _prefs.remove('plugin.settings.$pluginId');
       await _prefs.remove('plugin.autoload.$pluginId');
+      await _prefs.remove(_machineControlKey(pluginId));
       await _prefs.remove(_loadFailureKey(pluginId));
       if (_prefs.getString(_loadingPluginKey) == pluginId) {
         await _prefs.remove(_loadingPluginKey);
@@ -688,6 +693,32 @@ class PluginLoaderService {
             key: {'isSet': stored.secure.containsKey(key)},
         };
       });
+
+  String _machineControlKey(String pluginId) =>
+      'plugin.machineControl.$pluginId';
+
+  bool machineControlGranted(String pluginId) =>
+      _initialized && (_prefs.getBool(_machineControlKey(pluginId)) ?? false);
+
+  Future<void> setMachineControlGrant(String pluginId, bool granted) async {
+    _ensureActive();
+    if (!_availablePluginsCache.containsKey(pluginId)) {
+      throw Exception('Plugin not found: $pluginId');
+    }
+    if (granted) {
+      await _prefs.setBool(_machineControlKey(pluginId), true);
+      await pluginManager.notifications.removeSource(
+        NotificationNamespace.plugin,
+        pluginId,
+        machineControlNoticeId,
+      );
+    } else {
+      await _prefs.remove(_machineControlKey(pluginId));
+    }
+    _log.info(
+      'Machine control ${granted ? 'granted to' : 'revoked from'} $pluginId',
+    );
+  }
 
   Future<bool> hasStoredSecureSettings(String pluginId) =>
       _withPluginSettingsLock(
