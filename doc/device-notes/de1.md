@@ -134,6 +134,11 @@ starting an active-GHC machine. Callers such as scale-button handlers must
 check the machine property before requesting a start, while still allowing
 them to request `idle` to stop an active operation.
 
+Decaid still writes a remote `espresso`, `steam`, `hotWater` or `flush`
+request to an active-GHC machine (it arms the group head) and the REST route
+answers 200, but `UnifiedDe1.requestState` logs one INFO line per such request
+saying the start has to happen at the group head.
+
 ## Serial behavior
 
 Exact USB product name `DE1` creates `UnifiedDe1`. Devices admitted through
