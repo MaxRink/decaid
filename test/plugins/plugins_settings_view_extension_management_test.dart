@@ -64,6 +64,7 @@ class _InstallingLoader extends Fake implements PluginLoaderService {
   Future<PluginManifest> installPluginPackage(
     Directory stagedDir, {
     bool allowDowngrade = false,
+    bool authorized = true,
   }) async {
     final manifest = resolvePluginPackage(stagedDir).manifest;
     Directory(getPluginDirectory(manifest.id)).createSync(recursive: true);
@@ -88,6 +89,7 @@ class _LocalReleaseSourceService extends PluginSourceService {
     String? assetName,
     bool includePrerelease = false,
     ExtensionManagementApproval? approveExtensionManagement,
+    bool authorized = true,
   }) => installFromFolder(
     releaseFolder,
     approveExtensionManagement: approveExtensionManagement,

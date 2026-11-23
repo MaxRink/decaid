@@ -230,6 +230,7 @@ class PluginLoaderService {
   Future<PluginManifest> installPluginPackage(
     Directory stagedDir, {
     bool allowDowngrade = false,
+    bool authorized = true,
   }) async {
     final package = resolvePluginPackage(stagedDir);
     final manifest = package.manifest;
@@ -243,10 +244,18 @@ class PluginLoaderService {
       final pluginDir = Directory('${_pluginsDir.path}/$pluginId');
       final backupDir = Directory('${pluginDir.path}$_backupSuffix');
       final previousManifest = _availablePluginsCache[pluginId];
+      if (!authorized) _requireNoAddedPermissions(previousManifest, manifest);
+      final codeChanged =
+          previousManifest != null &&
+          _readSource(File('${pluginDir.path}/plugin.js')) !=
+              _readSource(File('${package.root.path}/plugin.js'));
       final wasLoaded = isPluginLoaded(pluginId);
 
       if (wasLoaded) {
         await _unloadPlugin(pluginId, preserveNotifications: true);
+      }
+      if (!authorized && codeChanged) {
+        await _forgetTrustForChangedCode(pluginId, settingsSnapshot.secure);
       }
 
       if (backupDir.existsSync()) backupDir.deleteSync(recursive: true);
@@ -360,20 +369,12 @@ class PluginLoaderService {
       }
 
       try {
-        if (!authorized &&
-            previousSource != pluginJs &&
-            settingsSnapshot.secure.isNotEmpty) {
-          _log.warning(
-            'Source write changed the code of $pluginId without '
-            'extension-management authorization; clearing its secure settings',
-          );
-          await _withPluginSettingsLock(
-            pluginId,
-            () => _deleteSecureSettings(pluginId),
-          );
-        }
         if (previousSource != pluginJs) {
-          await _prefs.remove(_machineControlKey(pluginId));
+          if (authorized) {
+            await _prefs.remove(_machineControlKey(pluginId));
+          } else {
+            await _forgetTrustForChangedCode(pluginId, settingsSnapshot.secure);
+          }
         }
         stagedManifest.renameSync(manifestFile.path);
         stagedSource.renameSync(sourceFile.path);
@@ -472,6 +473,25 @@ class PluginLoaderService {
     throw PluginDowngradeException(
       'Plugin ${manifest.id} ${installed.version} is installed; '
       'remove it before installing ${manifest.version}',
+    );
+  }
+
+  String? _readSource(File file) =>
+      file.existsSync() ? file.readAsStringSync() : null;
+
+  Future<void> _forgetTrustForChangedCode(
+    String pluginId,
+    Map<String, dynamic> secure,
+  ) async {
+    _log.warning(
+      'Code of $pluginId changed without extension-management '
+      'authorization; clearing its secure settings and machine-control grant',
+    );
+    await _prefs.remove(_machineControlKey(pluginId));
+    if (secure.isEmpty) return;
+    await _withPluginSettingsLock(
+      pluginId,
+      () => _deleteSecureSettings(pluginId),
     );
   }
 

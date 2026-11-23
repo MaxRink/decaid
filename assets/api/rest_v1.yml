@@ -4232,6 +4232,11 @@ paths:
         Malformed downloaded data and package manifests return HTTP 400 with
         plain-language validation errors, without parser diagnostics or source snippets.
         This includes missing or incorrectly typed release fields and asset entries.
+        Installing over an already installed plugin id without an
+        `extensions:manage` credential follows the source-write rules: a
+        package that adds permissions is refused with 409, and a package whose
+        plugin.js differs clears the plugin's stored secure settings and its
+        machine-control grant.
         When protection is ON, this operation needs `Authorization: Bearer
         <token>` scoped `extensions:manage` (see the extensionsManage
         security scheme). When protection is OFF (the default), it needs no
@@ -4290,7 +4295,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: The release is older than the installed version
+          description: >
+            The release is older than the installed version, or it adds
+            permissions to an installed plugin and the request carries no
+            `extensions:manage` credential
           content:
             application/json:
               schema:
@@ -4314,6 +4322,11 @@ paths:
         transport exceptions.
         Invalid GitHub commit response structures return HTTP 400 with
         plain-language validation guidance and no response-body snippets.
+        Installing over an already installed plugin id without an
+        `extensions:manage` credential follows the source-write rules: a
+        package that adds permissions is refused with 409, and a package whose
+        plugin.js differs clears the plugin's stored secure settings and its
+        machine-control grant.
         When protection is ON, this operation needs `Authorization: Bearer
         <token>` scoped `extensions:manage` (see the extensionsManage
         security scheme). When protection is OFF (the default), it needs no
@@ -4461,7 +4474,10 @@ paths:
         Installs the exact candidate recorded in pendingUpdate - the stored
         release tag or commit - accepting its added permissions. If the source
         moved since detection, the fetched candidate is refused, recorded as
-        the new pendingUpdate and has to be approved again.
+        the new pendingUpdate and has to be approved again. When the plugin
+        has stored secure settings, approval needs an `extensions:manage`
+        credential in both modes (or the native Plugins screen); without one
+        the request is refused with 403 before anything is downloaded.
         When protection is ON, this operation needs `Authorization: Bearer
         <token>` scoped `extensions:manage` (see the extensionsManage
         security scheme). When protection is OFF (the default), it needs no

@@ -99,6 +99,7 @@ class PluginSourceService {
     String? assetName,
     bool includePrerelease = false,
     ExtensionManagementApproval? approveExtensionManagement,
+    bool authorized = true,
   }) async {
     final release = await fetchLatestGitHubRelease(
       repo,
@@ -128,6 +129,7 @@ class PluginSourceService {
           lastChecked: now,
         ),
         approveExtensionManagement: approveExtensionManagement,
+        authorized: authorized,
       );
     });
   }
@@ -136,6 +138,7 @@ class PluginSourceService {
     String repo, {
     String branch = 'main',
     ExtensionManagementApproval? approveExtensionManagement,
+    bool authorized = true,
   }) async {
     final commit = await fetchGitHubBranchCommit(
       repo,
@@ -163,6 +166,7 @@ class PluginSourceService {
           lastChecked: now,
         ),
         approveExtensionManagement: approveExtensionManagement,
+        authorized: authorized,
       );
     });
   }
@@ -205,6 +209,7 @@ class PluginSourceService {
     PluginPackage package,
     PluginSource source, {
     ExtensionManagementApproval? approveExtensionManagement,
+    bool authorized = true,
   }) async {
     final candidate = package.manifest;
     final installed = _loader.getPluginManifest(candidate.id);
@@ -217,7 +222,10 @@ class PluginSourceService {
         !await approveExtensionManagement(candidate)) {
       throw PluginInstallDeclinedException(candidate.id);
     }
-    final manifest = await _loader.installPluginPackage(package.root);
+    final manifest = await _loader.installPluginPackage(
+      package.root,
+      authorized: authorized,
+    );
     _writeSource(manifest.id, source);
     return manifest;
   }
