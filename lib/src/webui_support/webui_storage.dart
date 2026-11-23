@@ -341,6 +341,16 @@ class WebUIStorage {
     _initialized = true;
   }
 
+  bool containsSkinPath(String path) {
+    try {
+      final rootPath = _webUIDir.resolveSymbolicLinksSync();
+      final target = Directory(path).resolveSymbolicLinksSync();
+      return p.isWithin(rootPath, target);
+    } on FileSystemException {
+      return false;
+    }
+  }
+
   static List<String> get _bundledAssetPaths =>
       diagnosticsSkinEnabled ? ['assets/ble-reconnect-diagnostics/'] : [];
 

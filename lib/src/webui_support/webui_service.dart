@@ -416,7 +416,7 @@ class WebUIService implements SkinServingSelectionSource {
         path,
         defaultDocument: 'index.html',
         serveFilesOutsidePath: false,
-        listDirectories: true,
+        listDirectories: false,
       );
       if (version != _lifecycleVersion) {
         if (_servingVersion == version) _servingVersion = null;

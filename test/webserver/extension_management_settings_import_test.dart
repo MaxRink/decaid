@@ -87,6 +87,10 @@ class _RecordingWebUIStorage extends Fake implements WebUIStorage {
   final List<String> calls = [];
 
   @override
+  bool containsSkinPath(String path) =>
+      path.startsWith('/tmp/') && !path.startsWith('/tmp/outside');
+
+  @override
   Future<void> setDefaultSkin(String skinId) async {
     calls.add('setDefaultSkin $skinId');
   }
@@ -397,6 +401,22 @@ void main() {
       expect(settings.gatewayMode, GatewayMode.full);
       expect(storage.calls, ['setDefaultSkin $_otherSkinId']);
       expect(webUi.calls, ['serveFolderAtPath /tmp/skin']);
+    });
+
+    test('webUiPath outside the skin storage is refused before any key '
+        'applies, even with a token', () async {
+      final before = settingsState();
+      for (final path in ['/tmp/outside/secrets', '/', '/etc']) {
+        final reply = await send(
+          'POST',
+          '/api/v1/settings',
+          authorization: 'Bearer $managerToken',
+          json: {'gatewayMode': 'full', 'webUiPath': path},
+        );
+        expect(reply.status, 400, reason: '$path -> $reply');
+      }
+      expect(settingsState(), before);
+      expect(webUi.calls, isEmpty);
     });
 
     test('an authorized body is still validated by the handler', () async {

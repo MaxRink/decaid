@@ -1672,7 +1672,7 @@ GET /api/v1/settings
 
 **Settings Fields:**
 - `gatewayMode`: Gateway operation mode (`disabled`, `full`, `tracking`)
-- `webUiPath`: Path to custom WebUI folder on filesystem
+- `webUiPath`: Folder to serve as the WebUI. On `POST` it must be a skin folder inside Decaid's skin storage (an installed skin); any other path, or a symlink out of the storage, answers 400 and applies nothing. Directory listings are not served. Serving an arbitrary local folder for development stays available from the native skin selector
 - `logLevel`: Log verbosity level
 - `weightFlowMultiplier`: Multiplier for projected weight calculation (default: 1.0)
 - `volumeFlowMultiplier`: Multiplier for projected volume calculation (default: 0.3)

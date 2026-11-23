@@ -1970,7 +1970,7 @@ paths:
         "200":
           description: Decent settings updated successfully
         "400":
-          description: Invalid setting value, including an unsupported or absent session-only scale ID that cannot be saved as a durable preference
+          description: Invalid setting value, including an unsupported or absent session-only scale ID that cannot be saved as a durable preference, or a webUiPath outside the skin storage
           content:
             application/json:
               schema:
@@ -8128,7 +8128,7 @@ components:
           enum: ["disabled", "full", "tracking"]
           nullable: true
         webUiPath:
-          description: Set a path on local filesystem, from which REA will serve the webUI. Any value is gated only while extension management protection is ON, and then requires a bearer token scoped extensions:manage (see POST /api/v1/settings). When protection is OFF (the default), no token is needed.
+          description: Set a skin folder inside the skin storage directory (an installed skin), from which REA will serve the webUI; any other path, including one that resolves outside the storage through a symlink, is refused with 400 before any key of the body is applied. Directory listings are never served. Any value is gated only while extension management protection is ON, and then requires a bearer token scoped extensions:manage (see POST /api/v1/settings). When protection is OFF (the default), no token is needed.
           type: string
           nullable: true
         logLevel:
