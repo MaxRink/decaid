@@ -19,6 +19,7 @@ import 'plugin_decent_proxy_bridge.dart';
 import 'plugin_device_service.dart';
 import 'plugin_local_api_bridge.dart';
 import 'plugin_runtime.dart';
+import 'plugin_tls_pin.dart';
 import 'plugin_transport_service.dart';
 import 'plugin_types.dart';
 import '../services/storage/kv_store_service.dart';
@@ -1076,7 +1077,8 @@ class PluginManager {
               url: String(input),
               method: init.method || "GET",
               headers: init.headers || {},
-              body: init.body ?? null
+              body: init.body ?? null,
+              tlsPinSha256: init.tlsPinSha256 ?? null
             }));
           });
         };
@@ -3541,8 +3543,28 @@ class PluginManager {
     final method = ((msg['method'] as String?) ?? 'GET').toUpperCase();
     final headers = msg['headers'] as Map? ?? {};
     final body = msg['body'];
+    final pin = parseTlsPinSha256(msg[tlsPinOption]);
+    requireTlsScheme(pin, uri.scheme == 'https', 'an https:// url');
+    final client = pin == null
+        ? _getHttpClient()
+        : (pinnedHttpClient(pin)
+            ..connectionTimeout = const Duration(seconds: 10));
+    try {
+      return await _sendFetch(op, client, method, uri, headers, body);
+    } finally {
+      if (pin != null) client.close(force: true);
+    }
+  }
 
-    final request = await _getHttpClient().openUrl(method, uri);
+  Future<Map<String, dynamic>> _sendFetch(
+    _PendingOp op,
+    HttpClient client,
+    String method,
+    Uri uri,
+    Map headers,
+    Object? body,
+  ) async {
+    final request = await client.openUrl(method, uri);
     op.request = request;
     headers.forEach((k, v) {
       request.headers.set(k.toString(), v.toString());

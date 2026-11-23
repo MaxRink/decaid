@@ -5,6 +5,8 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'plugin_tls_pin.dart';
+
 enum PluginTransportKind { websocket, tcp, tls }
 
 class PluginTransportException implements Exception {
@@ -100,6 +102,7 @@ class PluginTransportService {
       'tls' => PluginTransportKind.tls,
       _ => throw const PluginTransportException('Unknown transport kind'),
     };
+    final pin = _tlsPinOption(options, kind);
     if (deviceRegistrationHandle != null &&
         deviceInvocationId != null &&
         _retiredDeviceConnects.contains((
@@ -122,9 +125,9 @@ class PluginTransportService {
     _records[record.handle] = record;
     try {
       final result = await switch (kind) {
-        PluginTransportKind.websocket => _openWebSocket(record, options),
+        PluginTransportKind.websocket => _openWebSocket(record, options, pin),
         PluginTransportKind.tcp => _openTcp(record, options),
-        PluginTransportKind.tls => _openTls(record, options),
+        PluginTransportKind.tls => _openTls(record, options, pin),
       };
       if (record.terminal) {
         throw const PluginTransportException('Plugin device connect retired');
@@ -318,9 +321,35 @@ class PluginTransportService {
 
   final Set<(String, int, String, String)> _retiredDeviceConnects = {};
 
+  String? _tlsPinOption(
+    Map<String, dynamic> options,
+    PluginTransportKind kind,
+  ) {
+    try {
+      final pin = parseTlsPinSha256(options[tlsPinOption]);
+      switch (kind) {
+        case PluginTransportKind.websocket:
+          final url = options['url'];
+          requireTlsScheme(
+            pin,
+            url is String && url.startsWith('wss://'),
+            'a wss:// url',
+          );
+        case PluginTransportKind.tcp:
+          requireTlsScheme(pin, false, 'kind "tls" or a wss:// url');
+        case PluginTransportKind.tls:
+          break;
+      }
+      return pin;
+    } on FormatException catch (e) {
+      throw PluginTransportException(e.message);
+    }
+  }
+
   Future<TransportOpenResult> _openWebSocket(
     _TransportRecord record,
     Map<String, dynamic> options,
+    String? pin,
   ) async {
     final url = options['url'];
     if (url is! String ||
@@ -339,7 +368,9 @@ class PluginTransportService {
       }
       protocols = rawProtocols.cast<String>();
     }
-    final ws = await connectWebSocket(url, protocols: protocols);
+    final ws = pin == null
+        ? await connectWebSocket(url, protocols: protocols)
+        : await _connectPinnedWebSocket(url, protocols, pin);
     if (record.terminal) {
       unawaited(ws.close(1000).timeout(closeTimeout).catchError((Object _) {}));
       throw const PluginTransportException('Plugin unloaded during connect');
@@ -372,10 +403,19 @@ class PluginTransportService {
   Future<TransportOpenResult> _openTls(
     _TransportRecord record,
     Map<String, dynamic> options,
+    String? pin,
   ) async {
     final host = _hostOption(options);
     final port = _portOption(options);
-    final socket = await connectSecureSocket(host, port);
+    final socket = pin == null
+        ? await connectSecureSocket(host, port)
+        : await SecureSocket.connect(
+            host,
+            port,
+            context: SecurityContext(withTrustedRoots: true),
+            onBadCertificate: (certificate) =>
+                certificateMatchesPin(certificate, pin),
+          );
     if (record.terminal) {
       socket.destroy();
       throw const PluginTransportException('Plugin unloaded during connect');
@@ -676,6 +716,23 @@ Future<WebSocket> _connectWebSocket(
   String url, {
   Iterable<String>? protocols,
 }) => WebSocket.connect(url, protocols: protocols);
+
+Future<WebSocket> _connectPinnedWebSocket(
+  String url,
+  Iterable<String>? protocols,
+  String pin,
+) async {
+  final client = pinnedHttpClient(pin);
+  try {
+    return await WebSocket.connect(
+      url,
+      protocols: protocols,
+      customClient: client,
+    );
+  } finally {
+    client.close();
+  }
+}
 
 Future<Socket> _connectSocket(String host, int port) =>
     Socket.connect(host, port);
