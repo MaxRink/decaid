@@ -519,7 +519,14 @@ paths:
   /api/v1/machine/state/{newState}:
     put:
       summary: Request Machine State Change
-      description: Requests a state change for the espresso machine.
+      description: >
+        Requests a state change for the espresso machine. A 200 means the
+        request was written to the machine, not that the machine entered the
+        state. On a DE1 whose `GET /api/v1/machine/info` reports `GHC: true`
+        (an active group head controller), the firmware ignores a remote start
+        of `espresso`, `steam`, `hotWater` or `flush`: it only arms the group
+        head and the user must start the operation there. Such a request is
+        still sent and answers 200; stopping with `idle` works remotely.
       tags: [Machine]
       parameters:
         - name: newState

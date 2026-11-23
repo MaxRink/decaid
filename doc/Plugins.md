@@ -782,6 +782,15 @@ host-side, per-plugin setting the user turns on.
   for every plugin.
 - The target counts as the host when it resolves to loopback, `0.0.0.0` or an
   address of this device, on the API port.
+- The grant does not let a plugin start a machine that requires starts at the
+  group head. When `GET /api/v1/machine/info` reports `"GHC": true` (an active
+  group head controller), DE1 firmware ignores a remote start of `espresso`,
+  `steam`, `hotWater` or `flush`: the request only arms the group head (white
+  indication) and the user must start the operation there. The host still sends
+  the request and answers 200, so a 200 does not mean the shot started; follow
+  `/ws/v1/machine/snapshot` for the real state and tell the user to press the
+  group head. Stopping (`PUT /api/v1/machine/state/idle`) works remotely. See
+  [the DE1 device note](device-notes/de1.md#group-head-controller-start-restriction).
 
 ```javascript
 // Basic GET request

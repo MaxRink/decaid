@@ -651,8 +651,22 @@ class UnifiedDe1 implements De1Interface, CanonicalDeviceIdentity {
     tankTemperature: 0,
   );
 
+  static const _groupHeadStartStates = {
+    MachineState.espresso,
+    MachineState.steam,
+    MachineState.hotWater,
+    MachineState.flush,
+  };
+
   @override
   Future<void> requestState(MachineState newState) async {
+    if (machineInfo.groupHeadControllerPresent &&
+        _groupHeadStartStates.contains(newState)) {
+      _log.info(
+        'Remote ${newState.name} request on a machine with an active group '
+        'head controller: the DE1 only arms the group head; start it there',
+      );
+    }
     await _prepareColdMaintenanceWorkaround(newState);
     final Uint8List data = Uint8List(1);
     data[0] = De1StateEnum.fromMachineState(newState).hexValue;
