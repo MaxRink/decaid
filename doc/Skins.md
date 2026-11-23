@@ -3725,6 +3725,13 @@ static const List<Map<String, dynamic>> _remoteWebUISources = [
 - For branches/URLs: uses HTTP ETag/Last-Modified headers
 - Only re-download if remote version has changed
 - Mark these skins as "bundled" (users cannot remove them)
+- If a GitHub release source starts publishing a different skin id (for
+  example `NilsBruch/NSX` moving from `NSX-skin` to `Nova-skin`), install the
+  new id and track the source there from then on. The previously tracked skin
+  stays installed, no longer receives updates and becomes removable. One
+  warning is logged when this happens. A release may not take over a skin id
+  that another source tracks; that update fails with "different skin id".
+  Updates of user-installed skins still refuse any id change.
 
 ### In-App Skin Management (Settings UI)
 
