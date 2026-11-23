@@ -8,9 +8,11 @@ import 'package:saf_stream/saf_stream.dart';
 import 'package:saf_util/saf_util.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:reaprime/src/account/account_page.dart';
+import 'package:reaprime/src/notifications/notification_center.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
 import 'package:reaprime/src/plugins/plugin_device_surface_authority.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
+import 'package:reaprime/src/plugins/plugin_notifications.dart';
 import 'package:reaprime/src/plugins/plugin_source.dart';
 import 'package:reaprime/src/plugins/plugin_source_service.dart';
 import 'package:reaprime/src/services/account/decent_account_service.dart';
@@ -110,6 +112,7 @@ class PluginsSettingsView extends StatefulWidget {
     this.decentAccountService,
     this.allowInstall = true,
     this.surfaceLauncher,
+    this.notifications,
   });
 
   static const routeName = '/plugins';
@@ -119,6 +122,7 @@ class PluginsSettingsView extends StatefulWidget {
   final DecentAccountService? decentAccountService;
   final bool allowInstall;
   final PluginSurfaceLauncher? surfaceLauncher;
+  final NotificationCenter? notifications;
 
   @override
   State<PluginsSettingsView> createState() => _PluginsSettingsViewState();
@@ -141,11 +145,17 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
   @override
   void initState() {
     super.initState();
+    widget.notifications?.addListener(_onNoticesChanged);
     _loadPlugins();
+  }
+
+  void _onNoticesChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    widget.notifications?.removeListener(_onNoticesChanged);
     _repoController.dispose();
     _detailController.dispose();
     super.dispose();
@@ -345,6 +355,7 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
                 ),
               ],
             ),
+            _buildSetupBadge(context, plugin),
             if (isLoaded) _buildSurfaceButtons(context, plugin),
             const SizedBox(height: 12),
             if (plugin.permissions.isNotEmpty)
@@ -431,6 +442,34 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
               _buildMachineControlSwitch(context, plugin),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildSetupBadge(BuildContext context, PluginManifest plugin) {
+    final notices = widget.notifications?.value;
+    final reason = notices == null ? null : pluginSetupReason(plugin, notices);
+    if (reason == null) return const SizedBox.shrink();
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: colors.tertiaryContainer,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              'Needs setup',
+              style: TextStyle(color: colors.onTertiaryContainer),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(child: Text(reason)),
+        ],
       ),
     );
   }

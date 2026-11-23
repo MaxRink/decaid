@@ -106,6 +106,53 @@ function createPlugin(host) {
     ]);
   });
 
+  group('needsSetup', () {
+    const setupSurface = [
+      {'id': 'setup', 'role': 'setup', 'endpoint': 'setup'},
+    ];
+    const notify =
+        'host.notify({ id: "setup", message: "Enter the grinder address", '
+        'action: { id: "open", label: "Set up", type: "openPluginSurface", '
+        'surfaceId: "setup" } });';
+
+    Future<void> settle() async {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await service.pluginManager.notifications.settled;
+    }
+
+    test('a setup notice marks the plugin as needing setup', () async {
+      await install('setup.reaplugin', surfaces: setupSurface, onLoad: notify);
+      await service.loadPlugin('setup.reaplugin');
+      await settle();
+
+      final plugin = await listed('setup.reaplugin');
+
+      expect(plugin['needsSetup'], isTrue);
+      expect(plugin['setupReason'], 'Enter the grinder address');
+    });
+
+    test('dismissing the notice clears needsSetup', () async {
+      await install(
+        'done.reaplugin',
+        surfaces: setupSurface,
+        onLoad: '$notify host.dismissNotification("setup");',
+      );
+      await service.loadPlugin('done.reaplugin');
+      await settle();
+
+      final plugin = await listed('done.reaplugin');
+
+      expect(plugin['needsSetup'], isFalse);
+      expect(plugin.containsKey('setupReason'), isFalse);
+    });
+
+    test('a plugin without a setup surface never needs setup', () async {
+      await install('plain.reaplugin');
+
+      expect((await listed('plain.reaplugin'))['needsSetup'], isFalse);
+    });
+  });
+
   test('omits surfaces when none are declared', () async {
     await install('plain.reaplugin');
 

@@ -88,3 +88,26 @@ String resolvePluginSurfaceAction(PluginManifest manifest, Map action) {
     surfaces: [surface],
   ).resolve(notificationText(deviceId, 256)).single['href']!;
 }
+
+String? pluginSetupReason(
+  PluginManifest manifest,
+  Iterable<NativeNotification> notices,
+) {
+  final setup = manifest.surfaces.firstWhereOrNull(
+    (surface) => surface.role == 'setup',
+  );
+  if (setup == null) return null;
+  final href = pluginSurfaceHref(manifest.id, setup);
+  return notices
+      .firstWhereOrNull(
+        (notice) =>
+            notice.namespace == NotificationNamespace.plugin &&
+            notice.sourceId == manifest.id &&
+            notice.actions.any(
+              (action) =>
+                  action.type == NotificationActionType.openPluginSurface &&
+                  action.href == href,
+            ),
+      )
+      ?.message;
+}

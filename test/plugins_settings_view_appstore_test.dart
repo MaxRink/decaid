@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reaprime/src/account/account_page.dart';
+import 'package:reaprime/src/notifications/native_notification.dart';
+import 'package:reaprime/src/notifications/notification_center.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
 import 'package:reaprime/src/services/account/decent_account_service.dart';
@@ -823,6 +825,7 @@ void main() {
     Future<List<Uri>> pumpSurfaces(
       WidgetTester tester, {
       required bool loaded,
+      NotificationCenter? notifications,
     }) async {
       final opened = <Uri>[];
       fakePluginLoaderService = FakePluginLoaderService(
@@ -835,6 +838,7 @@ void main() {
           home: PluginsSettingsView(
             pluginLoaderService: fakePluginLoaderService,
             allowInstall: false,
+            notifications: notifications,
             surfaceLauncher: (uri) async {
               opened.add(uri);
               return true;
@@ -868,6 +872,49 @@ void main() {
 
       expect(find.widgetWithText(ShadButton, 'Set up'), findsNothing);
       expect(find.widgetWithText(ShadButton, 'Diagnostics'), findsNothing);
+    });
+
+    testWidgets('a setup notice shows a Needs setup badge with its reason', (
+      tester,
+    ) async {
+      final center = NotificationCenter();
+      addTearDown(center.dispose);
+      await pumpSurfaces(tester, loaded: false, notifications: center);
+      expect(find.text('Needs setup'), findsNothing);
+
+      await tester.runAsync(
+        () => center.publish(
+          NativeNotification(
+            namespace: NotificationNamespace.plugin,
+            sourceId: 'e64.reaplugin',
+            sourceName: 'E64',
+            id: 'setup',
+            message: 'Enter the grinder address',
+            actions: const [
+              NotificationAction(
+                id: 'open',
+                label: 'Set up',
+                type: NotificationActionType.openPluginSurface,
+                href: '/api/v1/plugins/e64.reaplugin/setup?ui=1&surface=setup',
+              ),
+            ],
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(find.text('Needs setup'), findsOneWidget);
+      expect(find.text('Enter the grinder address'), findsOneWidget);
+
+      await tester.runAsync(
+        () => center.removeSource(
+          NotificationNamespace.plugin,
+          'e64.reaplugin',
+          'setup',
+        ),
+      );
+      await tester.pump();
+      expect(find.text('Needs setup'), findsNothing);
     });
   });
 }

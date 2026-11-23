@@ -581,6 +581,10 @@ class _MyAppState extends State<MyApp> {
                         pluginLoaderService: widget.pluginLoaderService,
                         pluginSourceService: widget.pluginSourceService,
                         decentAccountService: widget.decentAccountService,
+                        notifications: widget
+                            .pluginLoaderService
+                            .pluginManager
+                            .notifications,
                       );
                     case DeviceManagementPage.routeName:
                       return DeviceManagementPage(
