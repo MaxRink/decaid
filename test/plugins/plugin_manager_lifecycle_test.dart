@@ -183,9 +183,7 @@ void main() {
 
     expect(manager.loadedPlugins, isEmpty);
     expect(
-      manager.js
-          .evaluate('typeof globalThis.__plugins__["throwing.plugin"]')
-          .stringResult,
+      manager.js.evaluate('typeof globalThis.__plugins__').stringResult,
       'undefined',
     );
   });
