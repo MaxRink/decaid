@@ -265,6 +265,13 @@ final class ExtensionManagementAuthorization {
     return label == null ? caller.id : '${caller.id} ${jsonEncode(label)}';
   }
 
+  bool get holdsCredential {
+    final grant = _grant;
+    if (grant != null) return grant.isActive;
+    return _caller?.scopes.contains(ProxyTokenService.scopeExtensionsManage) ??
+        false;
+  }
+
   Future<Response?> denial() async {
     final grant = _grant;
     if (grant != null) {
@@ -506,6 +513,12 @@ Future<bool> mayManageExtensions(Request request) async {
   final authorization = request.context[_authorizationContextKey];
   if (authorization is! ExtensionManagementAuthorization) return false;
   return await authorization.denial() == null;
+}
+
+bool holdsExtensionManagementCredential(Request request) {
+  final authorization = request.context[_authorizationContextKey];
+  return authorization is ExtensionManagementAuthorization &&
+      authorization.holdsCredential;
 }
 
 Future<Response?> _authorize(

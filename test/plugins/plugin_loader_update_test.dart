@@ -253,5 +253,119 @@ function createPlugin() {
       expect(service.getPluginManifest(id)?.version, '1.1.0');
       expect(service.isPluginLoaded(id), await service.shouldAutoLoad(id));
     });
+    group('source writes and stored secrets', () {
+      const id = 'secret.reaplugin';
+
+      Map<String, dynamic> secretManifest({
+        String version = '1.0.0',
+        List<String> permissions = const [],
+      }) => {
+        ...manifestJson(id, version: version),
+        'permissions': permissions,
+        'settings': {
+          'token': {'type': 'string', 'secure': true},
+          'name': {'type': 'string'},
+        },
+      };
+
+      Future<void> installWithSecret() async {
+        final dir = Directory('${tempDir.path}/source_secret')
+          ..createSync(recursive: true);
+        File('${dir.path}/manifest.json')
+            .writeAsStringSync(jsonEncode(secretManifest()));
+        File('${dir.path}/plugin.js').writeAsStringSync(pluginJs(id));
+        await service.addPlugin(dir.path);
+        await service.savePluginSettings(id, {
+          'token': 's3cret',
+          'name': 'kept',
+        });
+      }
+
+      test('an unauthorized code change clears the stored secrets', () async {
+        await installWithSecret();
+
+        await service.updatePluginSource(
+          id,
+          manifestJson: secretManifest(version: '1.0.1'),
+          pluginJs: '// changed\n${pluginJs(id)}',
+        );
+
+        final settings = await service.pluginSettings(id);
+        expect(settings['token'], {'isSet': false});
+        expect(settings['name'], 'kept');
+      });
+
+      test('an authorized code change keeps the stored secrets', () async {
+        await installWithSecret();
+
+        await service.updatePluginSource(
+          id,
+          manifestJson: secretManifest(version: '1.0.1'),
+          pluginJs: '// changed\n${pluginJs(id)}',
+          authorized: true,
+        );
+
+        expect((await service.pluginSettings(id))['token'], {'isSet': true});
+      });
+
+      test('a manifest-only write keeps the stored secrets', () async {
+        await installWithSecret();
+
+        await service.updatePluginSource(
+          id,
+          manifestJson: secretManifest(version: '1.0.1'),
+          pluginJs: pluginJs(id),
+        );
+
+        expect((await service.pluginSettings(id))['token'], {'isSet': true});
+      });
+
+      test('an unauthorized write cannot add permissions', () async {
+        await installWithSecret();
+
+        await expectLater(
+          service.updatePluginSource(
+            id,
+            manifestJson: secretManifest(
+              version: '1.0.1',
+              permissions: ['api'],
+            ),
+            pluginJs: pluginJs(id),
+          ),
+          throwsA(isA<PluginPermissionApprovalRequiredException>()),
+        );
+        expect(service.getPluginManifest(id)?.version, '1.0.0');
+        expect((await service.pluginSettings(id))['token'], {'isSet': true});
+      });
+
+      test(
+        'an unauthorized write may create a plugin with permissions',
+        () async {
+          await service.updatePluginSource(
+            'fresh.reaplugin',
+            manifestJson: {
+              ...manifestJson('fresh.reaplugin'),
+              'permissions': ['api'],
+            },
+            pluginJs: pluginJs('fresh.reaplugin'),
+          );
+
+          expect(service.getPluginManifest('fresh.reaplugin'), isNotNull);
+        },
+      );
+
+      test('an authorized write may add permissions', () async {
+        await installWithSecret();
+
+        await service.updatePluginSource(
+          id,
+          manifestJson: secretManifest(version: '1.0.1', permissions: ['api']),
+          pluginJs: pluginJs(id),
+          authorized: true,
+        );
+
+        expect(service.getPluginManifest(id)?.version, '1.0.1');
+      });
+    });
   });
 }
