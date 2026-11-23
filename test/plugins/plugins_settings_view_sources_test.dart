@@ -39,6 +39,16 @@ class _FakeLoader extends Fake implements PluginLoaderService {
   Future<void>? initialization;
   int initializeCalls = 0;
   int autoLoadChanges = 0;
+  final Set<String> machineControl = {};
+
+  @override
+  bool machineControlGranted(String pluginId) =>
+      machineControl.contains(pluginId);
+
+  @override
+  Future<void> setMachineControlGrant(String pluginId, bool granted) async {
+    granted ? machineControl.add(pluginId) : machineControl.remove(pluginId);
+  }
 
   @override
   Future<void> initialize() async {
@@ -155,12 +165,13 @@ void main() {
     WidgetTester tester, {
     required _FakeSourceService sourceService,
     List<PluginManifest> plugins = const [],
+    _FakeLoader? loader,
   }) async {
     await tester.pumpWidget(
       ShadApp(
         home: ScaffoldMessenger(
           child: PluginsSettingsView(
-            pluginLoaderService: _FakeLoader(plugins),
+            pluginLoaderService: loader ?? _FakeLoader(plugins),
             pluginSourceService: sourceService,
           ),
         ),
@@ -236,6 +247,47 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('private'), findsNothing);
+  });
+
+  testWidgets('an api plugin can be allowed and forbidden machine control', (
+    tester,
+  ) async {
+    final loader = _FakeLoader([
+      manifest(permissions: {PluginPermissions.api}),
+    ]);
+    await pumpView(
+      tester,
+      sourceService: _FakeSourceService(loader),
+      loader: loader,
+    );
+    final toggle = find.ancestor(
+      of: find.textContaining('Allow machine control'),
+      matching: find.byType(Row),
+    );
+    expect(toggle, findsWidgets);
+
+    await tester.tap(
+      find.descendant(of: toggle.first, matching: find.byType(ShadSwitch)),
+    );
+    await tester.pumpAndSettle();
+    expect(loader.machineControl, {'source.reaplugin'});
+
+    await tester.tap(
+      find.descendant(of: toggle.first, matching: find.byType(ShadSwitch)),
+    );
+    await tester.pumpAndSettle();
+    expect(loader.machineControl, isEmpty);
+  });
+
+  testWidgets('a plugin without api offers no machine control switch', (
+    tester,
+  ) async {
+    await pumpView(
+      tester,
+      sourceService: _FakeSourceService(_FakeLoader(const [])),
+      plugins: [manifest()],
+    );
+    expect(find.textContaining('Allow machine control'), findsNothing);
   });
 
   testWidgets('plugin removal failure hides filesystem diagnostics', (

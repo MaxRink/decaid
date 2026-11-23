@@ -339,6 +339,7 @@ Object? _bodyFor(ExtensionManagementRoute route) {
     };
   }
   if (path.endsWith('/skins/default')) return {'skinId': _otherSkinId};
+  if (path.endsWith('/machine-control')) return {'granted': true};
   if (path.contains('/install')) {
     return {'repo': 'acme/plugin', 'url': 'https://example.test/skin.zip'};
   }
@@ -1190,6 +1191,46 @@ void main() {
     String freshId(String name) => '$name-${++fresh}.reaplugin';
 
     final probes = <String, _RouteProbe>{
+      'PUT /api/v1/plugins/<id>/machine-control': (caller) async {
+        final granted = await send(
+          'PUT',
+          '/api/v1/plugins/$_echoId/machine-control',
+          authorization: caller.authorization,
+          body: {'granted': true},
+        );
+        expect(granted.status, 200, reason: '${caller.name}: $granted');
+        expect(granted.json, {'id': _echoId, 'machineControl': true});
+        expect(service.machineControlGranted(_echoId), isTrue);
+        final listed = await send('GET', '/api/v1/plugins');
+        expect(
+          (listed.json as List).singleWhere(
+            (plugin) => plugin['id'] == _echoId,
+          )['machineControl'],
+          isTrue,
+        );
+        final invalid = await send(
+          'PUT',
+          '/api/v1/plugins/$_echoId/machine-control',
+          authorization: caller.authorization,
+          body: {'granted': 'yes'},
+        );
+        expect(invalid.status, 400, reason: caller.name);
+        final missing = await send(
+          'PUT',
+          '/api/v1/plugins/missing.reaplugin/machine-control',
+          authorization: caller.authorization,
+          body: {'granted': true},
+        );
+        expect(missing.status, 404, reason: caller.name);
+        final revoked = await send(
+          'PUT',
+          '/api/v1/plugins/$_echoId/machine-control',
+          authorization: caller.authorization,
+          body: {'granted': false},
+        );
+        expect(revoked.json, {'id': _echoId, 'machineControl': false});
+        expect(service.machineControlGranted(_echoId), isFalse);
+      },
       'POST /api/v1/plugins/install': (caller) async {
         final reply = await send(
           'POST',

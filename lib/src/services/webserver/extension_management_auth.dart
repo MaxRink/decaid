@@ -180,6 +180,7 @@ const extensionManagementRoutes = <ExtensionManagementRoute>[
   ExtensionManagementRoute('POST', '/api/v1/plugins/update'),
   ExtensionManagementRoute('POST', '/api/v1/plugins/<id>/settings'),
   ExtensionManagementRoute('PUT', '/api/v1/plugins/<id>/source'),
+  ExtensionManagementRoute('PUT', '/api/v1/plugins/<id>/machine-control'),
   ExtensionManagementRoute('POST', '/api/v1/plugins/<id>/enable'),
   ExtensionManagementRoute('POST', '/api/v1/plugins/<id>/disable'),
   ExtensionManagementRoute('POST', '/api/v1/plugins/<id>/update/approve'),

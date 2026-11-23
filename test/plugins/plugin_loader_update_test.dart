@@ -367,5 +367,68 @@ function createPlugin() {
         expect(service.getPluginManifest(id)?.version, '1.0.1');
       });
     });
+    group('machine control grant', () {
+      const id = 'skale.reaplugin';
+
+      test('a grant persists and can be revoked', () async {
+        await install(id);
+        expect(service.machineControlGranted(id), isFalse);
+
+        await service.setMachineControlGrant(id, true);
+        expect(service.machineControlGranted(id), isTrue);
+        expect(service.pluginManager.machineControlGranted(id), isTrue);
+
+        await service.setMachineControlGrant(id, false);
+        expect(service.machineControlGranted(id), isFalse);
+      });
+
+      test('a source write that changes the code clears the grant', () async {
+        await install(id);
+        await service.setMachineControlGrant(id, true);
+
+        await service.updatePluginSource(
+          id,
+          manifestJson: manifestJson(id, version: '1.0.1'),
+          pluginJs: pluginJs(id),
+          authorized: true,
+        );
+        expect(service.machineControlGranted(id), isTrue);
+
+        await service.updatePluginSource(
+          id,
+          manifestJson: manifestJson(id, version: '1.0.2'),
+          pluginJs: '// changed\n${pluginJs(id)}',
+          authorized: true,
+        );
+        expect(service.machineControlGranted(id), isFalse);
+      });
+
+      test('an installed update keeps the grant', () async {
+        await install(id);
+        await service.setMachineControlGrant(id, true);
+
+        await install(id, version: '1.1.0');
+
+        expect(service.getPluginManifest(id)?.version, '1.1.0');
+        expect(service.machineControlGranted(id), isTrue);
+      });
+
+      test('removing the plugin clears the grant', () async {
+        await install(id);
+        await service.setMachineControlGrant(id, true);
+
+        await service.removePlugin(id);
+        await install(id);
+
+        expect(service.machineControlGranted(id), isFalse);
+      });
+
+      test('an unknown plugin cannot be granted', () async {
+        await expectLater(
+          service.setMachineControlGrant('missing.reaplugin', true),
+          throwsA(isA<Exception>()),
+        );
+      });
+    });
   });
 }
