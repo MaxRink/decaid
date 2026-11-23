@@ -1571,7 +1571,7 @@ paths:
   /api/v1/scale/info:
     get:
       summary: Get connected scale information
-      description: Returns metadata for the currently connected scale.
+      description: Returns metadata for the currently connected scale, plus declared plugin surfaces (for example a per-device settings page) when the scale is plugin-backed and its plugin runtime is active.
       tags: [Scale]
       responses:
         "200":
@@ -7119,6 +7119,11 @@ components:
           nullable: true
           minimum: 0
           maximum: 100
+        surfaces:
+          type: array
+          description: Pre-authorized surfaces declared by the owning plugin driver of a plugin-backed scale (same `PluginDeviceSurfaceAuthority` resolution as native device management, including the display-only `deviceName` query). Not filtered by session availability. Omitted for native scales, for plugin scales without declared surfaces, and while the owning plugin runtime is not active.
+          items:
+            $ref: '#/components/schemas/PluginDeviceSurface'
     GrinderCommandError:
       type: object
       required: [error]

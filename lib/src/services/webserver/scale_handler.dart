@@ -5,6 +5,7 @@ class ScaleHandler {
   final De1Controller _de1Controller;
   final SettingsController _settingsController;
   final AuxiliaryScaleRegistry _auxiliaryScaleRegistry;
+  final bool Function(String pluginId)? _isPluginRuntimeActive;
 
   final Logger _log = Logger("Scale handler");
 
@@ -13,6 +14,7 @@ class ScaleHandler {
     required this._de1Controller,
     required this._settingsController,
     required this._auxiliaryScaleRegistry,
+    this._isPluginRuntimeActive,
   });
 
   void addRoutes(RouterPlus app) {
@@ -22,14 +24,13 @@ class ScaleHandler {
       }
       try {
         final scale = _controller.connectedScale();
-        if (scale is! DeviceInformationCapable) return jsonOk({});
-        final information =
-            (scale as DeviceInformationCapable).currentDeviceInformation;
-        final firmwareVersion = information?.firmwareVersion;
-        final batteryLevel = information?.batteryLevel;
+        final information = scale is DeviceInformationCapable
+            ? (scale as DeviceInformationCapable).currentDeviceInformation
+            : null;
         return jsonOk({
-          'firmwareVersion': ?firmwareVersion,
-          'batteryLevel': ?batteryLevel,
+          'firmwareVersion': ?information?.firmwareVersion,
+          'batteryLevel': ?information?.batteryLevel,
+          'surfaces': ?_surfaces(scale),
         });
       } on DeviceNotConnectedException {
         return jsonServiceUnavailable({'error': 'No scale connected'});
@@ -88,6 +89,20 @@ class ScaleHandler {
     app.get('/ws/v1/scale/snapshot', admittedWebSocketHandler(_handleSnapshot));
     app.put('/api/v1/scales/<id>/tare', _handleAddressedTare);
     app.get('/ws/v1/scales/<id>/snapshot', _handleAddressedSnapshot);
+  }
+
+  /// Same-plugin surfaces of a plugin-backed scale, resolved like the native
+  /// device-management page; null for native scales, plugins without
+  /// surfaces, or while the owning plugin runtime is not active.
+  List<Map<String, String>>? _surfaces(Scale scale) {
+    if (scale is! PluginDeviceAdapter) return null;
+    final authority = (scale as PluginDeviceAdapter).surfaceAuthority;
+    if (authority == null ||
+        authority.declaredSurfaces.isEmpty ||
+        _isPluginRuntimeActive?.call(authority.pluginId) != true) {
+      return null;
+    }
+    return authority.resolve(scale.deviceId, deviceName: scale.name);
   }
 
   Future<Response> _handleAddressedTare(Request request, String rawId) async {
