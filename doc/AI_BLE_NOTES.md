@@ -642,6 +642,14 @@ decisions, and queued observation work. Watch stop and adapter recovery are
 generation boundaries too; otherwise fresh Apple quick-connect system evidence
 is rejected by the previous cache generation.
 
+Because a watch stop empties the evidence cache, plugin candidate admission
+falls back to the evidence captured when the candidate was created and still
+re-decides ownership against the current registry. `ScaleWatch` stops the
+watch before it connects a sighted preferred scale; without the fallback a
+plugin scale was refused with `stale_session: BLE ownership changed` on every
+watch-driven reconnect until a full scan refilled the cache. Native candidates
+already fall back to system evidence in `_nativeEligible`.
+
 Real-JS integration fixtures are in `test/plugins/plugin_manager_ble_test.dart`,
 `plugin_ble_native_bridge_test.dart`, and `plugin_ble_sensor_api_test.dart`. The
 last drives actual HTTP/WebSocket clients through DeviceController, SensorController,
