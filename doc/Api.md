@@ -544,7 +544,7 @@ For browser clients on a different origin, `ETag` is exposed via `Access-Control
 
 | Method | Path | Description | Handler |
 |--------|------|-------------|---------|
-| GET | `/api/v1/machine/info` | Machine model, firmware, features | `de1handler.dart` |
+| GET | `/api/v1/machine/info` | Machine model, firmware, features; `503` `{"error": "No machine connected"}` while no machine is connected | `de1handler.dart` |
 | GET | `/api/v1/machine/state` | Current machine state + substate. The steam substates `pausedSteam` and `puffing` report as themselves; a stopped refill kit reports `needsWater`/`refillStopped` rather than `needsWater`/`idle` | |
 | PUT | `/api/v1/machine/state/{newState}` | Request state change (`idle`, `sleep`, `espresso`, …) | |
 | GET | `/api/v1/machine/settings` | DE1 machine settings (temps, flows) | |
