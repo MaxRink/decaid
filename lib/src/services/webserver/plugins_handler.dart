@@ -110,6 +110,14 @@ final class PluginsHandler {
       if (pluginService.getPluginManifest(id) == null) {
         return jsonNotFound({'error': 'Plugin not found: $id'});
       }
+      if (!holdsExtensionManagementCredential(request) &&
+          await pluginService.hasStoredSecureSettings(id)) {
+        return jsonForbidden({
+          'error':
+              'Approving an update of a plugin with stored secrets needs the '
+              'native Plugins screen or an extensions:manage token',
+        });
+      }
       try {
         final manifest = await pluginSourceService.approvePendingUpdate(id);
         return jsonOk({
@@ -189,6 +197,7 @@ final class PluginsHandler {
         repo,
         assetName: assetName as String?,
         includePrerelease: (includePrerelease as bool?) ?? false,
+        authorized: holdsExtensionManagementCredential(request),
       ),
     );
   }
@@ -222,6 +231,7 @@ final class PluginsHandler {
       () => pluginSourceService.installFromGitHubBranch(
         repo,
         branch: (branch as String?) ?? 'main',
+        authorized: holdsExtensionManagementCredential(request),
       ),
     );
   }
@@ -236,6 +246,8 @@ final class PluginsHandler {
         'loaded': pluginService.isPluginLoaded(manifest.id),
       });
     } on PluginDowngradeException catch (e) {
+      return jsonConflict({'error': e.message});
+    } on PluginPermissionApprovalRequiredException catch (e) {
       return jsonConflict({'error': e.message});
     } on FormatException catch (e, st) {
       _log.warning('Invalid plugin installation', e, st);

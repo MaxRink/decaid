@@ -1976,6 +1976,15 @@ or `POST /api/v1/plugins/update`:
 - it skips plugins installed from a GitHub branch entirely. A branch has no
   release to review, so branch installs only move on a manual check.
 
+A REST install (`POST /api/v1/plugins/install/github-release` or
+`/github-branch`) whose package carries the id of an already installed plugin
+is treated like a source write when the request has no `extensions:manage`
+credential: added permissions are refused with 409, and a changed `plugin.js`
+clears the plugin's stored secure settings and its
+[machine control grant](#machine-control-grant). Approving a pending update of
+a plugin that has stored secure settings needs the native Plugins screen or an
+`extensions:manage` credential in both modes; a request without one gets 403.
+
 A pending update can be approved by:
 
 - the user, in the Plugins settings screen;
