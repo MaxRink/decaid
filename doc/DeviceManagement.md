@@ -1790,9 +1790,13 @@ Machine, Scale, and Grinder auto-connect preferences remain independent; other
 devices with settings or diagnostics surfaces appear in a neutral listing.
 
 The action resolves the authority-built relative `href` against
-`http://localhost:8080` and opens it in the platform in-app browser. Its query is
+`http://localhost:8080` and opens it in the native plugin surface sheet: a
+themed bottom sheet hosting a WebView, with the device name as title, a close
+button and an **Open in browser** button. On Linux, where the WebView is a
+no-op, it opens in the platform browser instead. Its query is
 `ui=1`, the exact runtime `deviceId`, plus an optional display-only `deviceName`,
-encoded once by the authority. Native device management supplies the device name;
+encoded once by the authority; the sheet adds `embed=1`, `theme` and `lang` as
+described in `doc/Plugins.md` ("Native surface sheet"). Native device management supplies the device name;
 it is not identity. Retired, replaced, or unloaded device instances cannot
 launch settings, even if a replacement reuses the same ID. A failed launch shows
 `Unable to open device settings.` The plugin validates identity and owns
