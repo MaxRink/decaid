@@ -52,6 +52,7 @@ void main() {
       PluginPermissions.pluginStorage,
       PluginPermissions.eventsShots,
       PluginPermissions.eventsWorkflow,
+      PluginPermissions.notifications,
     },
     'skale.reaplugin': {
       PluginPermissions.transportBle,
