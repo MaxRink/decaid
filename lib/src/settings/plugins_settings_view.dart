@@ -9,11 +9,13 @@ import 'package:saf_util/saf_util.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:reaprime/src/account/account_page.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
+import 'package:reaprime/src/plugins/plugin_device_surface_authority.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
 import 'package:reaprime/src/plugins/plugin_source.dart';
 import 'package:reaprime/src/plugins/plugin_source_service.dart';
 import 'package:reaprime/src/services/account/decent_account_service.dart';
 import 'package:reaprime/src/services/security_scoped_file.dart';
+import 'package:reaprime/src/settings/plugin_surface_sheet.dart';
 import 'package:reaprime/src/widgets/page_action_menu.dart';
 import 'package:reaprime/src/widgets/remote_error_snack_bar.dart';
 import 'package:reaprime/src/util/user_facing_exception.dart';
@@ -107,6 +109,7 @@ class PluginsSettingsView extends StatefulWidget {
     this.pluginSourceService,
     this.decentAccountService,
     this.allowInstall = true,
+    this.surfaceLauncher,
   });
 
   static const routeName = '/plugins';
@@ -115,6 +118,7 @@ class PluginsSettingsView extends StatefulWidget {
   final PluginSourceService? pluginSourceService;
   final DecentAccountService? decentAccountService;
   final bool allowInstall;
+  final PluginSurfaceLauncher? surfaceLauncher;
 
   @override
   State<PluginsSettingsView> createState() => _PluginsSettingsViewState();
@@ -341,6 +345,7 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
                 ),
               ],
             ),
+            if (isLoaded) _buildSurfaceButtons(context, plugin),
             const SizedBox(height: 12),
             if (plugin.permissions.isNotEmpty)
               Column(
@@ -428,6 +433,51 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
         ),
       ),
     );
+  }
+
+  static const _surfaceRoleLabels = {
+    'setup': 'Set up',
+    'settings': 'Settings',
+    'diagnostics': 'Diagnostics',
+  };
+
+  Widget _buildSurfaceButtons(BuildContext context, PluginManifest plugin) {
+    final links = pluginSurfaceLinks(plugin);
+    if (links.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Wrap(
+        spacing: 12,
+        runSpacing: 8,
+        children: [
+          for (final role in _surfaceRoleLabels.keys)
+            for (final link in links.where((link) => link['role'] == role))
+              (role == 'setup' ? ShadButton.new : ShadButton.outline)(
+                onPressed: () => _openPluginSurface(context, plugin, link),
+                child: Text(_surfaceRoleLabels[role]!),
+              ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openPluginSurface(
+    BuildContext context,
+    PluginManifest plugin,
+    Map<String, String> link,
+  ) async {
+    final uri = Uri.parse(pluginSurfaceOrigin).resolve(link['href']!);
+    var opened = false;
+    try {
+      opened =
+          await (widget.surfaceLauncher?.call(uri) ??
+              showPluginSurface(context, uri, title: plugin.name));
+    } catch (e, st) {
+      Logger('PluginsSettingsView').warning('Failed to open surface', e, st);
+    }
+    if (!opened && context.mounted) {
+      _showSnackBar(context, 'Unable to open ${plugin.name}', isError: true);
+    }
   }
 
   Widget _buildMachineControlSwitch(

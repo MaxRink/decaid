@@ -14,7 +14,10 @@ class FakePluginLoaderService extends Fake implements PluginLoaderService {
     List<PluginManifest> plugins = const [],
     this.settings = const {},
     this.initialization,
+    this.loaded = false,
   }) : plugins = List.of(plugins);
+
+  final bool loaded;
 
   final List<PluginManifest> plugins;
   final Map<String, dynamic> settings;
@@ -33,7 +36,10 @@ class FakePluginLoaderService extends Fake implements PluginLoaderService {
   List<PluginManifest> get availablePlugins => plugins;
 
   @override
-  bool isPluginLoaded(String pluginId) => false;
+  bool isPluginLoaded(String pluginId) => loaded;
+
+  @override
+  bool machineControlGranted(String pluginId) => false;
 
   @override
   Future<bool> shouldAutoLoad(String pluginId) async => false;
@@ -790,6 +796,78 @@ void main() {
       expect(fakePluginLoaderService.savedSettings, {
         'Instances': '[{"host": "a"}]',
       });
+    });
+  });
+
+  group('plugin-level surfaces', () {
+    PluginManifest surfacesManifest() => PluginManifest.fromJson({
+      'id': 'e64.reaplugin',
+      'name': 'E64',
+      'author': 'Test',
+      'description': 'Test plugin',
+      'version': '1.0.0',
+      'apiVersion': 1,
+      'permissions': ['api'],
+      'settings': <String, dynamic>{},
+      'api': [
+        for (final id in ['setup', 'prefs', 'diag'])
+          {'id': id, 'type': 'http', 'data': <String, dynamic>{}},
+      ],
+      'surfaces': [
+        {'id': 'setup', 'role': 'setup', 'endpoint': 'setup'},
+        {'id': 'settings', 'role': 'settings', 'endpoint': 'prefs'},
+        {'id': 'diagnostics', 'role': 'diagnostics', 'endpoint': 'diag'},
+      ],
+    });
+
+    Future<List<Uri>> pumpSurfaces(
+      WidgetTester tester, {
+      required bool loaded,
+    }) async {
+      final opened = <Uri>[];
+      fakePluginLoaderService = FakePluginLoaderService(
+        plugins: [surfacesManifest()],
+        loaded: loaded,
+      );
+      await tester.pumpWidget(
+        ShadApp(
+          builder: (_, child) => ScaffoldMessenger(child: child!),
+          home: PluginsSettingsView(
+            pluginLoaderService: fakePluginLoaderService,
+            allowInstall: false,
+            surfaceLauncher: (uri) async {
+              opened.add(uri);
+              return true;
+            },
+          ),
+        ),
+      );
+      await tester.pump();
+      return opened;
+    }
+
+    testWidgets('a loaded plugin offers Set up, Settings and Diagnostics', (
+      tester,
+    ) async {
+      final opened = await pumpSurfaces(tester, loaded: true);
+
+      for (final label in ['Set up', 'Settings', 'Diagnostics']) {
+        await tester.tap(find.widgetWithText(ShadButton, label));
+        await tester.pump();
+      }
+
+      expect(opened.map((uri) => uri.toString()), [
+        'http://localhost:8080/api/v1/plugins/e64.reaplugin/setup?ui=1&surface=setup',
+        'http://localhost:8080/api/v1/plugins/e64.reaplugin/prefs?ui=1&surface=settings',
+        'http://localhost:8080/api/v1/plugins/e64.reaplugin/diag?ui=1&surface=diagnostics',
+      ]);
+    });
+
+    testWidgets('an unloaded plugin offers no surface buttons', (tester) async {
+      await pumpSurfaces(tester, loaded: false);
+
+      expect(find.widgetWithText(ShadButton, 'Set up'), findsNothing);
+      expect(find.widgetWithText(ShadButton, 'Diagnostics'), findsNothing);
     });
   });
 }
