@@ -83,8 +83,10 @@ same operations: each then needs `Authorization: Bearer <token>` with the scope
 `host.localApi` in process. There is no loopback, update-check or
 `automaticUpdateCheck` exception in either mode.
 
-The rest of the API is unchanged (general API authentication is tracked in
-#1135); this setting covers extension management only. Both modes run the same
+While protection is ON the same token is also required for the
+[machine control routes](#machine-control-routes) (raw machine access,
+firmware, calibration and advanced machine settings). The rest of the API is
+unchanged (general API authentication is tracked in #1135). Both modes run the same
 handlers with the same validation, manifest checks, pending-update rules,
 rollback and secure-value handling, so the setting changes authorization only.
 
@@ -114,6 +116,31 @@ in a Token column.
 | DELETE | `/api/v1/webui/skins/:id` |
 | POST | `/api/v1/webui/server/start` |
 | POST | `/api/v1/webui/server/stop` |
+
+### Machine control routes
+
+These routes can rewrite machine firmware, calibration or low-level settings, or
+send arbitrary bytes to the machine. While protection is ON each needs the same
+`extensions:manage` bearer as the routes above and answers 401/403 like them;
+while protection is OFF they need no credential, so existing LAN clients keep
+working:
+
+| Method | Route |
+|---|---|
+| GET (WebSocket upgrade) | `/ws/v1/machine/raw` |
+| POST | `/api/v1/machine/firmware` |
+| POST | `/api/v1/machine/firmware/apply` |
+| POST | `/api/v1/machine/calibration` |
+| PUT | `/api/v1/machine/calibration/:target` |
+| PUT | `/api/v1/machine/scaleCalibration` |
+| POST | `/api/v1/machine/settings/advanced` |
+| DELETE | `/api/v1/machine/settings/reset` |
+
+A skin page has no `extensions:manage` token, so with protection ON a skin's
+calibration, advanced-settings and firmware screens answer 401; use the native
+settings or a client holding a token. Browsers cannot send a bearer on a
+WebSocket upgrade, so with protection ON the raw socket is for native clients
+only.
 
 Two more routes are gated by what the body contains, and only while protection
 is ON:
@@ -155,6 +182,47 @@ token cannot use `/api/v1/account/proxy/`, and an `account:proxy` token
 protection is ON. The account proxy keeps its own scopes in both modes.
 
 ### Browser origins
+
+Every request a browser sends to the API port is checked, in both modes and
+for every route, not only extension management:
+
+- **Writes and WebSocket upgrades.** A request with an `Origin` that is not one
+  of the device's own origins (table below) is refused with `403` and
+  `{"error":"This API does not accept requests from this browser origin"}`
+  before any handler runs, if its method is anything other than `GET` or `HEAD`
+  or it is a WebSocket upgrade. That covers "simple" cross-site requests that
+  a browser sends without a preflight (`text/plain` or form bodies), so a web
+  page elsewhere cannot start a shot, write calibration, upload firmware or
+  open `/ws/v1/machine/raw`.
+- **Preflights.** An `OPTIONS` preflight from a foreign origin is refused the
+  same way, with no `access-control-*` header.
+- **Reads.** A `GET` or `HEAD` from a foreign origin is answered, but without
+  any `access-control-*` header, so the browser does not let that page read the
+  response. `Access-Control-Allow-Origin` and
+  `Access-Control-Allow-Credentials` are only sent to the device's own origins.
+- **Host names (DNS rebinding).** A request that carries an `Origin` or a
+  `Sec-Fetch-Site` header (that is, one sent by a browser) is refused with `403`
+  and `{"error":"This API only answers browsers on the device address"}` unless
+  its `Host` is `localhost`, a loopback address or a numeric address currently
+  assigned to the device. Open the API, plugin pages and skins by numeric
+  address or `localhost`; a browser that reaches them through a DNS name (a
+  `/etc/hosts` entry, a router name, a reverse proxy) is refused. Non-browser
+  clients (no `Origin`, no `Sec-Fetch-*`) may use any host name.
+
+- **Framing.** HTML from the host itself (the bundled settings page, the docs
+  viewer, any non-plugin page) carries `X-Frame-Options: SAMEORIGIN` and
+  `Content-Security-Policy: frame-ancestors 'self'`. Plugin pages and surfaces
+  (HTML under `/api/v1/plugins/<id>/`) carry no `X-Frame-Options` and
+  `frame-ancestors 'self'` plus the device's skin origins (live skin page and
+  docs ports on the requested numeric device address and on loopback), so the
+  active skin can embed them and other sites cannot.
+
+Requests without an `Origin` (and without `Sec-Fetch-Site`) are not affected:
+Home Assistant, `curl`, MCP clients, native app code and `host.localApi` keep
+working, in both modes.
+
+Extension management additionally keeps its own, older browser-origin check,
+described next.
 
 A browser page is also checked against its `Origin`, in both modes and
 independently of any credential. The check runs ahead of the general CORS
@@ -302,6 +370,7 @@ for a shared or commercial deployment.
 | Approved `manage.extensions` plugin via `host.localApi` | Allowed | Allowed |
 | Trusted native Flutter controls | Allowed | Allowed |
 | Decent account proxy | Existing account scopes | Same account scopes |
+| [Machine control routes](#machine-control-routes) | No credential | Needs `extensions:manage` |
 | Other REST/WS APIs | Existing behaviour, no new gate | Existing behaviour, not protected by this setting |
 
 The rows assume a request that carries no untrusted browser `Origin`; the
@@ -327,7 +396,8 @@ key-value store, `host.localApi` nor the account proxy can write it. `GET
   silently downgrading security because storage failed.
 - **The current value is resolved per relevant request, once** (and refreshed
   when the app resumes from the background). Only a request whose outcome can
-  depend on the mode reads it: the 18 routes, a gated settings body, an import,
+  depend on the mode reads it: the 18 routes, the machine control routes, a
+  gated settings body, an import,
   and a `settings`-bearing pull or `two_way` sync. Everything else — machine
   state, polling, the account proxy, read-only and plugin-defined routes and
   ordinary settings bodies — never reads it. A change applies to the next
@@ -340,14 +410,12 @@ key-value store, `host.localApi` nor the account proxy can write it. `GET
   port 8080, so a bearer token can be observed on a hostile LAN. HTTPS is
   proposed in #925; #1135 remains the separate, optional full REST/WS
   authentication. Use a trusted network until then.
-- **The origin check does not tighten CORS in general.** Apart from the
-  refusals above, responses keep the pre-existing permissive echo of the request
-  `Origin` in both modes, `OPTIONS` keeps its pre-existing preflight answer on
-  unrelated and read-only paths, and the account proxy keeps its own restrictive
-  rule on top. So a browser page on any origin that can reach the device can
-  still read other API responses. The origin check is a browser boundary for
-  extension management, not authentication, and the setting still changes who is
-  authorized rather than what a browser may read.
+- **CORS is limited to the device's own origins.** Responses carry
+  `Access-Control-Allow-Origin` only for the device's own origins, foreign
+  preflights are refused, and foreign writes and WebSocket upgrades are refused
+  before any handler runs (see [Browser origins](#browser-origins)). This is a
+  browser boundary, not authentication: a non-browser LAN client can still call
+  every route that protection does not cover.
 - **A preflight for a body-gated path is refused before its body exists.** A
   preflight carries no body, so an untrusted `Origin` is refused for `OPTIONS
   /api/v1/settings`, `OPTIONS /api/v1/data/import` and `OPTIONS
@@ -1063,6 +1131,10 @@ single-owner: no other reader may hold the port while Decaid owns it.
 | POST | `/api/v1/store/:namespace/:key` | Set value | |
 | DELETE | `/api/v1/store/:namespace/:key` | Delete key | |
 
+A namespace equal to an installed plugin's id (case-insensitive) belongs to
+that plugin's `host.storage` and answers 403 on every store route unless the
+request carries an `extensions:manage` bearer.
+
 `GET /api/v1/store/:namespace?full=1` returns the entire namespace as a `{key: value}` map in one request instead of one GET per key. It sends an `ETag`, so a repeat request with `If-None-Match` returns `304 Not Modified` when nothing changed — cheap to poll. Without the flag the endpoint returns just the array of keys.
 
 ### Data Management
@@ -1164,7 +1236,7 @@ archive is also bounded by the 2 GiB import request limit.
 | POST | `/api/v1/account/proxy/<path>` | Auth-enriching write proxy (relays body) | `account_proxy_handler.dart` |
 | PUT | `/api/v1/account/proxy/<path>` | Auth-enriching write proxy (relays body) | `account_proxy_handler.dart` |
 
-Linking/unlinking a Decent account is **native-only** — there are no network login/logout routes. Apart from the account proxy and extension management, the webserver is unauthenticated, and it echoes `Access-Control-Allow-Origin` for whatever origin a request presents (extension management additionally refuses untrusted browser origins, see [Browser origins](#browser-origins)), so exposing credential operations would let any LAN client or browser origin store attacker credentials or unlink the account. The status response omits the linked email (PII).
+Linking/unlinking a Decent account is **native-only** — there are no network login/logout routes. Apart from the account proxy, extension management and (in protected mode) the machine control routes, the webserver is unauthenticated to non-browser LAN clients (browsers on other origins are refused, see [Browser origins](#browser-origins)), so exposing credential operations would let any LAN client or browser origin store attacker credentials or unlink the account. The status response omits the linked email (PII).
 
 The **proxy** lets clients *use* the account without ever seeing the credentials: it attaches the linked account's Basic auth server-side, forwards to `decentespresso.com`, and relays the upstream status + body verbatim. It requires `Authorization: Bearer <token>`. The account proxy's scopes are independent of [extension management](#extension-management-authorization), which is the other surface with a scope of its own (and needs it only while extension management protection is ON): an `extensions:manage` token cannot use the proxy, and an account-proxy token cannot manage extensions. `GET` requires `account:proxy` (including the skin token injected into served skin pages); `POST`/`PUT` require the stronger `account:proxy:write` scope, so the read-only skin token cannot write. Forwarding is restricted to the `support/api/` prefix. The OpenAPI spec documents the generated-client-safe `/support/api/{endpoint}` form; use this raw catch-all route when a Decent backend path contains additional slashes. Each served skin generation gets a fresh token bound to that skin's immutable consent key; switching or stopping the skin server revokes the previous token. The skin's origin normally remains stable across restarts, with a temporary fallback if its assigned port is occupied; see [Skin Origins and Browser Storage](Skins.md#skin-origins-and-browser-storage). The stable port 3000 entry point redirects without caching to the active origin and is the address to bookmark. The first request from each skin, plugin, or named API client pauses for native approval on the Decaid device. Explicit allow and deny decisions are remembered; a 30-second timeout denies only that request. Responses: 401 (missing/invalid token or no linked account), 403 (token unscoped, path not allowed, or account access not granted). Write-scoped tokens are minted from the account page's API-token UI by enabling "Allow write access". Headless operators can grant session-only access with `--trust-consent=<caller-key>` or `--trust-all-consent`.
 

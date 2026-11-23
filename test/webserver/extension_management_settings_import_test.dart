@@ -30,8 +30,6 @@ const _trustedPagePort = 25707;
 const _trustedDeviceAddress = '192.168.12.64';
 const _trustedOrigin = 'http://localhost:$_trustedPagePort';
 const _untrustedOrigin = 'https://evil.example';
-const _originRefused =
-    'Extension management is not allowed from this browser origin';
 const _skinWarning =
     'defaultSkinId was not imported: changing the default skin requires '
     'extensions:manage authorization.';
@@ -87,6 +85,10 @@ class _PausableSettingsService extends MockSettingsService {
 
 class _RecordingWebUIStorage extends Fake implements WebUIStorage {
   final List<String> calls = [];
+
+  @override
+  bool containsSkinPath(String path) =>
+      path.startsWith('/tmp/') && !path.startsWith('/tmp/outside');
 
   @override
   Future<void> setDefaultSkin(String skinId) async {
@@ -399,6 +401,22 @@ void main() {
       expect(settings.gatewayMode, GatewayMode.full);
       expect(storage.calls, ['setDefaultSkin $_otherSkinId']);
       expect(webUi.calls, ['serveFolderAtPath /tmp/skin']);
+    });
+
+    test('webUiPath outside the skin storage is refused before any key '
+        'applies, even with a token', () async {
+      final before = settingsState();
+      for (final path in ['/tmp/outside/secrets', '/', '/etc']) {
+        final reply = await send(
+          'POST',
+          '/api/v1/settings',
+          authorization: 'Bearer $managerToken',
+          json: {'gatewayMode': 'full', 'webUiPath': path},
+        );
+        expect(reply.status, 400, reason: '$path -> $reply');
+      }
+      expect(settingsState(), before);
+      expect(webUi.calls, isEmpty);
     });
 
     test('an authorized body is still validated by the handler', () async {
@@ -1027,7 +1045,7 @@ void main() {
               origin: _untrustedOrigin,
             );
             expect(reply.status, 403, reason: '$body -> $reply');
-            expect(reply.json, {'error': _originRefused});
+            expect(reply.json, {'error': crossOriginRequestError});
             expect(settingsState(), before, reason: '$body');
           }
           expect(settings.automaticUpdateCheck, isFalse);
@@ -1035,81 +1053,25 @@ void main() {
           expect(webUi.calls, isEmpty);
         });
 
-        test('safe settings from an untrusted origin still apply', () async {
-          final ordinary = await send(
-            'POST',
-            '/api/v1/settings',
-            json: {'gatewayMode': 'full', 'weightFlowMultiplier': 2.5},
-            origin: _untrustedOrigin,
-          );
-          expect(ordinary.status, 200, reason: '$ordinary');
-          expect(settings.gatewayMode, GatewayMode.full);
-          expect(settings.weightFlowMultiplier, 2.5);
-
-          await settings.setAutomaticUpdateCheck(true);
-          final turningOff = await send(
-            'POST',
-            '/api/v1/settings',
-            json: {'automaticUpdateCheck': false},
-            origin: _untrustedOrigin,
-          );
-          expect(turningOff.status, 200, reason: '$turningOff');
-          expect(settings.automaticUpdateCheck, isFalse);
-
-          final unchangedSkin = await send(
-            'POST',
-            '/api/v1/settings',
-            json: {'defaultSkinId': _currentSkinId},
-            origin: _untrustedOrigin,
-          );
-          expect(unchangedSkin.status, 200, reason: '$unchangedSkin');
-          expect(settings.defaultSkinId, _currentSkinId);
-        });
-
-        test('an unchanged skin from an untrusted origin is not written back '
-            'when the state moves during the request', () async {
-          final gatewayWriteStarted = settingsService.pauseNextGatewayWrite();
-          final pending = send(
-            'POST',
-            '/api/v1/settings',
-            authorization: protect ? 'Bearer $managerToken' : null,
-            json: {'gatewayMode': 'full', 'defaultSkinId': _currentSkinId},
-            origin: _untrustedOrigin,
-          );
-          await gatewayWriteStarted;
-
-          await settings.setDefaultSkinId(_otherSkinId);
-          settingsService.resumeGatewayWrite();
-
-          final reply = await pending;
-          expect(reply.status, 200, reason: '$reply');
-          expect(settings.gatewayMode, GatewayMode.full);
-          expect(settings.defaultSkinId, _otherSkinId);
-          expect(storage.calls, isEmpty);
-        });
-
         test(
-          'an already-on automatic update check from an untrusted origin '
-          'is not written back when the state moves during the request',
+          'safe settings from an untrusted origin are refused too',
           () async {
-            await settings.setAutomaticUpdateCheck(true);
-            final gatewayWriteStarted = settingsService.pauseNextGatewayWrite();
-            final pending = send(
-              'POST',
-              '/api/v1/settings',
-              authorization: protect ? 'Bearer $managerToken' : null,
-              json: {'gatewayMode': 'full', 'automaticUpdateCheck': true},
-              origin: _untrustedOrigin,
-            );
-            await gatewayWriteStarted;
-
-            await settings.setAutomaticUpdateCheck(false);
-            settingsService.resumeGatewayWrite();
-
-            final reply = await pending;
-            expect(reply.status, 200, reason: '$reply');
-            expect(settings.gatewayMode, GatewayMode.full);
-            expect(settings.automaticUpdateCheck, isFalse);
+            final before = settingsState();
+            for (final body in <Map<String, Object?>>[
+              {'gatewayMode': 'full', 'weightFlowMultiplier': 2.5},
+              {'automaticUpdateCheck': false},
+              {'defaultSkinId': _currentSkinId},
+            ]) {
+              final reply = await send(
+                'POST',
+                '/api/v1/settings',
+                json: body,
+                origin: _untrustedOrigin,
+              );
+              expect(reply.status, 403, reason: '$body -> $reply');
+              expect(reply.json, {'error': crossOriginRequestError});
+            }
+            expect(settingsState(), before);
           },
         );
 
@@ -1144,7 +1106,7 @@ void main() {
             origin: _untrustedOrigin,
           );
           expect(reply.status, 403, reason: '$reply');
-          expect(reply.json, {'error': _originRefused});
+          expect(reply.json, {'error': crossOriginRequestError});
           expect(settingsState(), before);
           expect(storage.calls, isEmpty);
         });
@@ -1191,7 +1153,7 @@ void main() {
                 origin: _untrustedOrigin,
               );
               expect(reply.status, 403, reason: '$body -> $reply');
-              expect(reply.json, {'error': _originRefused});
+              expect(reply.json, {'error': crossOriginRequestError});
             }
             expect(pullRequests, isEmpty);
             expect(pushedBodies, isEmpty);
@@ -1199,20 +1161,19 @@ void main() {
           });
         }
 
-        test('a push from an untrusted origin still works', () async {
+        test('a push from an untrusted origin is refused', () async {
           final reply = await send(
             'POST',
             '/api/v1/data/sync',
             json: {'target': 'http://192.168.1.50:8080', 'mode': 'push'},
             origin: _untrustedOrigin,
           );
-          expect(reply.status, 200, reason: '$reply');
-          expect(pushedBodies, hasLength(1));
+          expect(reply.status, 403, reason: '$reply');
+          expect(pushedBodies, isEmpty);
           expect(pullRequests, isEmpty);
         });
 
-        test('handler-level origin refusals carry no affirmative CORS '
-            'headers', () async {
+        test('origin refusals carry no affirmative CORS headers', () async {
           await settings.setAutomaticUpdateCheck(false);
           pullArchive = _settingsArchive({'gatewayMode': 'full'});
           final refusals = <_Reply>[
@@ -1240,7 +1201,9 @@ void main() {
           ];
           for (final reply in refusals) {
             expect(reply.status, 403, reason: '$reply');
-            expect(reply.json, {'error': _originRefused}, reason: '$reply');
+            expect(reply.json, {
+              'error': crossOriginRequestError,
+            }, reason: '$reply');
             expect(
               reply.headers.keys.where(
                 (name) => name.startsWith('access-control-'),
@@ -1259,12 +1222,12 @@ void main() {
             json: {'gatewayMode': 'full'},
             origin: _untrustedOrigin,
           );
-          expect(safe.status, 200, reason: '$safe');
-          expect(settings.gatewayMode, GatewayMode.full);
+          expect(safe.status, 403, reason: '$safe');
+          expect(settings.gatewayMode, GatewayMode.disabled);
           expect(
             safe.headers['access-control-allow-origin'],
-            _untrustedOrigin,
-            reason: 'safe writes keep their pre-existing CORS: $safe',
+            isNull,
+            reason: '$safe',
           );
 
           final trusted = await send(

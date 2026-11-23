@@ -1652,7 +1652,7 @@ GET /api/v1/settings
 
 **Settings Fields:**
 - `gatewayMode`: Gateway operation mode (`disabled`, `full`, `tracking`)
-- `webUiPath`: Path to custom WebUI folder on filesystem
+- `webUiPath`: Folder to serve as the WebUI. On `POST` it must be a skin folder inside Decaid's skin storage (an installed skin); any other path, or a symlink out of the storage, answers 400 and applies nothing. Directory listings are not served. Serving an arbitrary local folder for development stays available from the native skin selector
 - `logLevel`: Log verbosity level
 - `weightFlowMultiplier`: Multiplier for projected weight calculation (default: 1.0)
 - `volumeFlowMultiplier`: Multiplier for projected volume calculation (default: 0.3)
@@ -4222,8 +4222,15 @@ Check asset paths are relative:
 ### WebSocket Connection Fails
 
 During development with skin on `localhost:3000` and gateway on `192.168.1.100:8080`:
-- Ensure CORS is enabled on gateway (it is by default)
-- Use explicit gateway IP in `NEXT_PUBLIC_WS_URL`
+- The gateway only accepts browser writes and WebSocket upgrades from its own
+  origins and only grants CORS to them (see
+  [Browser origins](Api.md#browser-origins)), so a dev server on your computer
+  is refused with 403. Proxy the API through the dev server instead, so the
+  browser talks to its own origin, and drop the `Origin` header on the proxied
+  request (Vite: `server.proxy` with a `configure` hook that calls
+  `proxyReq.removeHeader('origin')`, plus `ws: true` for WebSockets), or
+  install the build on the device and test it there
+- Use explicit gateway IP in `NEXT_PUBLIC_WS_URL` only for that proxy target
 - Check browser console for connection errors
 
 ### Skin Not Appearing in Decaid

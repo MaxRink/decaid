@@ -275,6 +275,7 @@ final class PluginsHandler {
         id,
         manifestJson: manifestJson,
         pluginJs: pluginJs,
+        authorized: holdsExtensionManagementCredential(request),
       );
       return jsonOk({
         'message': 'Plugin source updated',
@@ -283,6 +284,8 @@ final class PluginsHandler {
         'loaded': pluginService.isPluginLoaded(id),
       });
     } on PluginDowngradeException catch (e) {
+      return jsonConflict({'error': e.message});
+    } on PluginPermissionApprovalRequiredException catch (e) {
       return jsonConflict({'error': e.message});
     } on FormatException catch (e) {
       return jsonBadRequest({'error': e.message});

@@ -152,6 +152,7 @@ function createPlugin() {
         dye2Id,
         manifestJson: manifestJson(dye2Id, version: version),
         pluginJs: pluginJs(dye2Id),
+        authorized: true,
       );
 
       Future<void> installBundledCopy({

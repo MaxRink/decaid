@@ -1396,7 +1396,7 @@ void main() {
     );
 
     test(
-      'an untrusted origin keeps the account proxy rule unchanged',
+      'an untrusted origin cannot use the account proxy even with a token',
       () => withProtected((harness) async {
         final proxied = await harness.externalRequest(
           'POST',
@@ -1405,8 +1405,8 @@ void main() {
           headers: const {'origin': untrustedOrigin},
           body: const {'ping': 1},
         );
-        expect(proxied.status, 200, reason: proxied.body);
-        expect(harness.accountProxyHits, hasLength(1));
+        expect(proxied.status, 403, reason: proxied.body);
+        expect(harness.accountProxyHits, isEmpty);
         expect(proxied.headers['access-control-allow-origin'], isNull);
       }),
     );

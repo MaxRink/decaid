@@ -33,6 +33,7 @@ import 'package:reaprime/src/plugins/plugin_manifest.dart';
 import 'package:reaprime/src/plugins/plugin_source.dart';
 import 'package:reaprime/src/plugins/plugin_source_service.dart';
 import 'package:reaprime/src/services/storage/hive_store_service.dart';
+import 'package:reaprime/src/services/storage/kv_store_service.dart';
 import 'package:reaprime/src/services/webserver/json_response.dart';
 import 'package:reaprime/src/services/webserver/opaque_path_component.dart';
 import 'package:reaprime/src/services/webserver/bounded_request_body.dart';
@@ -294,7 +295,11 @@ Future<void> startWebServer(
     grindersHandler = GrindersHandler(storage: grinderStorage);
   }
 
-  final kvStoreHandler = KvStoreHandler();
+  final kvStoreHandler = KvStoreHandler(
+    isPluginNamespace: (namespace) => pluginService.availablePlugins.any(
+      (plugin) => plugin.id.toLowerCase() == namespace.toLowerCase(),
+    ),
+  );
   await kvStoreHandler.store.initialize();
 
   final dataExportHandler = DataExportHandler(
@@ -429,7 +434,7 @@ Future<void> startWebServer(
     updateHandler,
   );
   pluginService.pluginManager.attachLocalApi(handler);
-  final server = await serveOrReportPortInUse(handler, '0.0.0.0', 8080);
+  final server = await serveApiHandler(handler, '0.0.0.0', 8080);
   apiListenerPort = server.port;
   apiListenerAddress = server.address.address;
   log.info('API Web server running on ${server.address.host}:${server.port}');
@@ -821,12 +826,13 @@ Handler buildWebServerHandler(
   }
   final origins = browserOrigins;
   if (origins != null) {
-    pipeline = pipeline.addMiddleware(
-      extensionManagementBrowserOriginMiddleware(origins),
-    );
+    pipeline = pipeline
+        .addMiddleware(extensionManagementBrowserOriginMiddleware(origins))
+        .addMiddleware(apiBrowserBoundaryMiddleware(origins));
   }
   return pipeline
       .addMiddleware(accountProxyCorsMiddleware(accountProxyAllowedOrigins))
+      .addMiddleware(frameProtectionMiddleware(skinPorts: origins?.pagePorts))
       .addMiddleware(logRequestsWithClientIp())
       .addMiddleware(
         corsHeaders(
@@ -853,6 +859,69 @@ Handler buildWebServerHandler(
       .addMiddleware(requestBodyReadMiddleware())
       .addMiddleware(apiAdmissionMiddleware(admissionGate ?? _apiAdmissionGate))
       .addHandler(routes);
+}
+
+const _frameAncestors = "frame-ancestors 'self'";
+
+Future<HttpServer> serveApiHandler(
+  Handler handler,
+  Object address,
+  int port,
+) async {
+  final server = await serveOrReportPortInUse(handler, address, port);
+  server.defaultResponseHeaders.removeAll('x-frame-options');
+  return server;
+}
+
+Middleware frameProtectionMiddleware({Set<int> Function()? skinPorts}) {
+  return (Handler inner) {
+    return (Request request) async {
+      final response = await inner(request);
+      final type = response.headers['content-type']?.toLowerCase() ?? '';
+      if (!type.startsWith('text/html')) return response;
+      final pluginPage = _isPluginPage(request);
+      final ancestors = pluginPage
+          ? [
+              _frameAncestors,
+              ..._skinFrameSources(request, skinPorts?.call()),
+            ].join(' ')
+          : _frameAncestors;
+      final policy = response.headers['content-security-policy'];
+      return response.change(
+        headers: {
+          'x-frame-options': pluginPage ? null : 'SAMEORIGIN',
+          'content-security-policy': policy == null
+              ? ancestors
+              : policy.contains('frame-ancestors')
+              ? policy
+              : '$policy; $ancestors',
+        },
+      );
+    };
+  };
+}
+
+bool _isPluginPage(Request request) {
+  final path = _pageRequestPath(request.url);
+  return path.startsWith('/api/v1/plugins/') && path != builtinSettingsPagePath;
+}
+
+Iterable<String> _skinFrameSources(Request request, Set<int>? ports) sync* {
+  if (ports == null || ports.isEmpty) return;
+  final hosts = <String>{'localhost', '127.0.0.1', '[::1]'};
+  final requested = InternetAddress.tryParse(request.requestedUri.host);
+  if (requested != null && !requested.address.contains('%')) {
+    hosts.add(
+      requested.type == InternetAddressType.IPv6
+          ? '[${requested.address}]'
+          : requested.address,
+    );
+  }
+  for (final port in ports) {
+    for (final host in hosts) {
+      yield 'http://$host:$port';
+    }
+  }
 }
 
 const _shelfConnectionInfoKey = 'shelf.io.connection_info';
@@ -991,8 +1060,11 @@ Handler createApiDocsHandler(
     defaultDocument: 'index.html',
     listDirectories: true,
   );
+  final framed = const Pipeline()
+      .addMiddleware(frameProtectionMiddleware())
+      .addHandler(handler);
   final listener = pageListener;
-  if (listener == null) return handler;
+  if (listener == null) return framed;
   return const Pipeline()
       .addMiddleware(
         builtinBrowserCanonicalRedirect(
@@ -1000,7 +1072,7 @@ Handler createApiDocsHandler(
           listener: listener,
         ),
       )
-      .addHandler(handler);
+      .addHandler(framed);
 }
 
 Future<HttpServer?> startApiDocsServer({

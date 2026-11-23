@@ -105,6 +105,12 @@ class SettingsHandler {
       final freezeUntrustedExtensionSettings = isUntrustedBrowserOrigin(
         request,
       );
+      if (json.containsKey('webUiPath') &&
+          !_webUIStorage.containsSkinPath(json['webUiPath'].toString())) {
+        return jsonBadRequest({
+          'error': 'webUiPath must be a skin folder inside the skin storage',
+        });
+      }
       if (json.containsKey('gatewayMode')) {
         final GatewayMode? gatewayMode = GatewayModeFromString.fromString(
           json['gatewayMode'],
@@ -117,9 +123,7 @@ class SettingsHandler {
         await _controller.updateGatewayMode(gatewayMode);
       }
       if (json.containsKey('webUiPath')) {
-        final webUiPath = json['webUiPath'].toString();
-        final _ = File.fromUri(Uri.file(webUiPath));
-        await _webUIService.serveFolderAtPath(webUiPath);
+        await _webUIService.serveFolderAtPath(json['webUiPath'].toString());
       }
       if (json.containsKey('logLevel')) {
         await _controller.updateLogLevel(json['logLevel']);

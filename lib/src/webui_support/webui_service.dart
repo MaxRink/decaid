@@ -374,7 +374,7 @@ class WebUIService {
         path,
         defaultDocument: 'index.html',
         serveFilesOutsidePath: false,
-        listDirectories: true,
+        listDirectories: false,
       );
       if (version != _lifecycleVersion) return;
       final identityProvider = skinIdentityProvider;

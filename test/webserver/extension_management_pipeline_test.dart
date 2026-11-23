@@ -918,6 +918,45 @@ void main() {
         expect(invalid.error, 'manifest object is required');
       });
 
+      test('PUT source adds permissions only with a manager token', () async {
+        const id = 'growing.reaplugin';
+        final created = await send(
+          'PUT',
+          '/api/v1/plugins/$id/source',
+          authorization: bearer(),
+          body: {
+            'manifest': _manifestJson(id, permissions: ['log']),
+            'plugin': _echoPluginJs(id),
+          },
+        );
+        expect(created.status, 200, reason: '$created');
+
+        if (!required) {
+          final tokenless = await send(
+            'PUT',
+            '/api/v1/plugins/$id/source',
+            body: {
+              'manifest': _manifestJson(id, version: '1.0.1'),
+              'plugin': _echoPluginJs(id),
+            },
+          );
+          expect(tokenless.status, 409, reason: '$tokenless');
+          expect(service.getPluginManifest(id)?.version, '1.0.0');
+        }
+
+        final withToken = await send(
+          'PUT',
+          '/api/v1/plugins/$id/source',
+          authorization: 'Bearer $managerToken',
+          body: {
+            'manifest': _manifestJson(id, version: '1.0.1'),
+            'plugin': _echoPluginJs(id),
+          },
+        );
+        expect(withToken.status, 200, reason: '$withToken');
+        expect(service.getPluginManifest(id)?.version, '1.0.1');
+      });
+
       test(
         'enable, disable, settings and delete apply; unknown ids are 404',
         () async {
@@ -1302,6 +1341,7 @@ void main() {
           id,
           manifestJson: _manifestJson(id),
           pluginJs: _echoPluginJs(id),
+          authorized: true,
         );
         final reply = await send(
           'DELETE',
@@ -2009,7 +2049,7 @@ void main() {
       });
 
       test('an untrusted preflight for a read-only method on a shared '
-          'management path keeps the general CORS contract', () async {
+          'management path gets no CORS grant', () async {
         final before = await snapshot();
         for (final path in [
           '/api/v1/plugins',
@@ -2032,21 +2072,11 @@ void main() {
                 'access-control-request-method': 'GET',
               },
             );
-            expect(reply.status, 200, reason: '$path $origin');
-            expect(reply.body, isEmpty, reason: '$path $origin');
+            expect(reply.status, 403, reason: '$path $origin');
+            expect(reply.error, crossOriginRequestError);
             expect(
               reply.headers.value('access-control-allow-origin'),
-              origin,
-              reason: '$path $origin',
-            );
-            expect(
-              reply.headers.value('access-control-allow-methods'),
-              isNotNull,
-              reason: '$path $origin',
-            );
-            expect(
-              reply.headers.value('access-control-max-age'),
-              isNotNull,
+              isNull,
               reason: '$path $origin',
             );
           }
@@ -2094,8 +2124,8 @@ void main() {
         expect(await snapshot(), before);
       });
 
-      test('an untrusted preflight for a plugin-defined route keeps the '
-          'general CORS contract', () async {
+      test('an untrusted preflight for a plugin-defined route is '
+          'is refused without a CORS grant', () async {
         for (final (method, path) in [
           ('POST', '/api/v1/plugins/$_echoId/echo'),
           ('GET', '/api/v1/plugins/$_echoId/status'),
@@ -2108,10 +2138,10 @@ void main() {
               'access-control-request-method': method,
             },
           );
-          expect(reply.status, 200, reason: '$method $path');
+          expect(reply.status, 403, reason: '$method $path');
           expect(
             reply.headers.value('access-control-allow-origin'),
-            _untrustedOrigin,
+            isNull,
             reason: '$method $path',
           );
         }
@@ -2170,13 +2200,12 @@ void main() {
         }
       });
 
-      test('an untrusted origin keeps read-only, plugin-defined and '
-          'unrelated routes unchanged', () async {
+      test('an untrusted origin may still send reads but gets no CORS '
+          'grant, and cannot send writes', () async {
         for (final (method, path) in [
           ('GET', '/api/v1/plugins'),
           ('GET', '/api/v1/plugins/$_echoId/echo'),
           ('GET', '/api/v1/webui/server/status'),
-          ('POST', '/api/v1/plugins/$_echoId/echo'),
         ]) {
           final reply = await send(
             method,
@@ -2188,7 +2217,15 @@ void main() {
             isNot(anyOf(401, 403)),
             reason: '$method $path -> $reply',
           );
+          expect(reply.headers.value('access-control-allow-origin'), isNull);
         }
+        final write = await send(
+          'POST',
+          '/api/v1/plugins/$_echoId/echo',
+          headers: {'origin': _untrustedOrigin},
+        );
+        expect(write.status, 403, reason: '$write');
+        expect(write.error, crossOriginRequestError);
       });
     });
   }
@@ -2416,6 +2453,7 @@ void main() {
         id,
         manifestJson: visualizerManifest(),
         pluginJs: _echoPluginJs(id),
+        authorized: true,
       );
     });
 

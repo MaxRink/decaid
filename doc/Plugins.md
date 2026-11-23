@@ -686,8 +686,10 @@ Decaid dispatches a request to the plugin.
 but it does so as an ordinary network client with no authority: the plugin and
 skin management routes answer 401 to it, whatever headers the plugin sets. Use
 [`host.localApi`](#hostlocalapipath-options) with the `manage.extensions`
-permission for those routes. The rest of the API stays open to `fetch`, as it is
-to any client on the network.
+permission for those routes. A plugin `fetch` also cannot write to the host's
+own `/api/v1/machine/*` routes (anything but `GET`/`HEAD`); machine reads and the
+rest of the API stay open to `fetch`, as they are to any client on the
+network.
 
 ```javascript
 // Basic GET request
@@ -1468,6 +1470,16 @@ const shotId = new URLSearchParams(location.search).get("shotId");
 Prefer this for a page that fetches its data over the REST API; it keeps the
 value out of the generated HTML.
 
+A plugin page or surface response (HTML under `/api/v1/plugins/<id>/`) carries
+`Content-Security-Policy: frame-ancestors 'self'` plus the device's own skin
+origins: `http` on the live skin page port (and the API docs port), on the
+numeric device address the request used and on `localhost`, `127.0.0.1` and
+`[::1]`. It is appended to a `Content-Security-Policy` the plugin sets itself
+and sends no `X-Frame-Options`, which cannot name a second origin. So the
+active skin may show a plugin page in an `<iframe>` (for example a popup), and
+any other site may not. The bundled settings page and the host's other HTML
+stay `frame-ancestors 'self'` with `X-Frame-Options: SAMEORIGIN`.
+
 Skins are served from a different browser origin than plugin pages, so a skin
 cannot write a plugin page's `sessionStorage` or `localStorage`. A query
 parameter on a top-level navigation is how a skin hands a plugin page its
@@ -1710,22 +1722,43 @@ it in Decaid UI.
   per-request or per-connection `tlsPinSha256`
   ([Certificate pinning](#certificate-pinning)), which accepts exactly one
   leaf certificate for that request or connection and nothing else
-- Storage is kept per plugin, but it is not private: the key-value store routes
-  (`/api/v1/store/<namespace>/<key>`), which need no token, read and write the
-  same data when the namespace is the plugin id, and backup import and sync
-  restore it. A plugin holding `manage.extensions` must not take instructions,
+- Storage is kept per plugin. The key-value store routes
+  (`/api/v1/store/<namespace>/<key>`) refuse a namespace equal to an installed
+  plugin's id (compared case-insensitively) with 403 unless the request
+  carries an `extensions:manage` credential, so other clients cannot read or
+  overwrite it over REST; the plugin itself uses `host.storage`. It is still
+  not secret: backup export, import and sync include it, and a token holder
+  can read it. A plugin holding `manage.extensions` must not take instructions,
   server addresses or credentials from `host.storage`; keep them in plugin
   settings, whose POST route is gated and whose secure values are never returned
 - No filesystem access beyond the plugin's own directory
-- `fetch` and `host.transport` are not limited by destination, so they can
-  reach Decaid's own API like any client on the network. They carry no
+- Apart from the machine control limits below, `fetch` and `host.transport`
+  are not limited by destination, so they can reach Decaid's own API like any
+  client on the network. They carry no
   authority: the plugin and skin management routes answer 401 to them. Only
   `host.localApi`, with the `manage.extensions` permission, carries that
   authority, and only for the plugin's current loaded generation
 - All loaded plugins share one JavaScript runtime and are not isolated from each
   other. A plugin's permissions, `manage.extensions` included, should be treated
   as available to every plugin loaded beside it, so grant `manage.extensions`
-  only on a device whose other plugins you trust as well
+  only on a device whose other plugins you trust as well. As a partial
+  mitigation, before the first plugin is evaluated the host freezes the shared
+  built-ins (`Object`, `Function`, `Array`, `JSON`, `Promise`, `Map`, `Set`,
+  `WeakMap`, `WeakSet`, `String`, `Number`, `Boolean`, `Symbol`, `Reflect`,
+  `Math`, `Date`, `RegExp` and their prototypes, plus the `Error` and
+  `TypeError` constructors) and makes the host's own globals (`host`, `fetch`,
+  `sendMessage` and every `__`-prefixed host function) read-only, so one
+  plugin cannot hook another plugin's `JSON.stringify`, promise callbacks or
+  fetch responses. Assigning to a frozen built-in throws in strict code and is
+  ignored otherwise; plugins must not patch or polyfill built-ins.
+  `Error.prototype` stays writable so subclasses can set `this.name`
+- `fetch` cannot send a non-`GET`/`HEAD` request to the host's own
+  `/api/v1/machine/*` routes (machine state, profile, settings, calibration,
+  firmware) when the target resolves to this device (loopback, `0.0.0.0` or a
+  local interface address) on the API port; the call rejects. Reads such as
+  `GET /api/v1/machine/info` keep working. `host.transport` likewise refuses a
+  WebSocket to `/ws/v1/machine/raw` on the host API and raw `tcp`/`tls`
+  connections to the host API port
 - An `Authorization` header that carries a token Decaid recognises is removed
   from a request before it reaches a plugin-defined endpoint, so a client that
   sends its token to a plugin endpoint does not hand that token to the plugin
@@ -1875,6 +1908,17 @@ screen and in `GET /api/v1/plugins`, and installed only after explicit approval:
 curl -X POST http://tablet:8080/api/v1/plugins/my.reaplugin/update/approve \
   -H "Authorization: Bearer $TOKEN"
 ```
+
+The background update check (the scheduled one that runs while automatic
+update checks are on) is stricter than a manual check from the Plugins screen
+or `POST /api/v1/plugins/update`:
+
+- it records a `pendingUpdate` instead of installing whenever the plugin has
+  stored secure settings (passwords, tokens), even if no permission is added,
+  so new code never receives those secrets without review. Such a pending
+  update has an empty `addedPermissions`;
+- it skips plugins installed from a GitHub branch entirely. A branch has no
+  release to review, so branch installs only move on a manual check.
 
 A pending update can be approved by:
 
@@ -2054,6 +2098,18 @@ Rules:
 - The update is partial. Only `manifest.json` and `plugin.js` are written; any
   other file in the plugin directory survives. Plugins that need new extra
   files still have to be installed from a directory.
+- Without an `extensions:manage` credential (a bearer with that scope, or a
+  `manage.extensions` plugin calling `host.localApi`), a write whose manifest
+  adds permissions to an installed plugin is rejected with 409: give the plugin new permissions
+  with a token, from the native Plugins screen, or through an install or
+  update that goes through approval. This applies in both modes: in
+  compatibility mode no token is needed for the route itself, but one is
+  still needed to add permissions.
+- Without that credential, a write whose `plugin.js` differs from the installed
+  one also clears the plugin's stored secure settings (passwords, tokens), so
+  replacement code never receives secrets the user entered for the old code;
+  the plugin has to be configured again. Ordinary settings are kept, and a
+  manifest-only write keeps secure settings too.
 - Downgrades are rejected with 409. The submitted version must be greater than
   or equal to the installed version; installing an older version requires
   removing the plugin first. Versions compare as semantic versions, so
