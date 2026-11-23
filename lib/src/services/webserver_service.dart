@@ -838,7 +838,7 @@ Handler buildWebServerHandler(
   }
   return pipeline
       .addMiddleware(accountProxyCorsMiddleware(accountProxyAllowedOrigins))
-      .addMiddleware(frameProtectionMiddleware())
+      .addMiddleware(frameProtectionMiddleware(skinPorts: origins?.pagePorts))
       .addMiddleware(logRequestsWithClientIp())
       .addMiddleware(
         corsHeaders(
@@ -869,25 +869,65 @@ Handler buildWebServerHandler(
 
 const _frameAncestors = "frame-ancestors 'self'";
 
-Middleware frameProtectionMiddleware() {
+Future<HttpServer> serveApiHandler(
+  Handler handler,
+  Object address,
+  int port,
+) async {
+  final server = await serveOrReportPortInUse(handler, address, port);
+  server.defaultResponseHeaders.removeAll('x-frame-options');
+  return server;
+}
+
+Middleware frameProtectionMiddleware({Set<int> Function()? skinPorts}) {
   return (Handler inner) {
     return (Request request) async {
       final response = await inner(request);
       final type = response.headers['content-type']?.toLowerCase() ?? '';
       if (!type.startsWith('text/html')) return response;
+      final pluginPage = _isPluginPage(request);
+      final ancestors = pluginPage
+          ? [
+              _frameAncestors,
+              ..._skinFrameSources(request, skinPorts?.call()),
+            ].join(' ')
+          : _frameAncestors;
       final policy = response.headers['content-security-policy'];
       return response.change(
         headers: {
-          'x-frame-options': 'SAMEORIGIN',
+          'x-frame-options': pluginPage ? null : 'SAMEORIGIN',
           'content-security-policy': policy == null
-              ? _frameAncestors
+              ? ancestors
               : policy.contains('frame-ancestors')
               ? policy
-              : '$policy; $_frameAncestors',
+              : '$policy; $ancestors',
         },
       );
     };
   };
+}
+
+bool _isPluginPage(Request request) {
+  final path = _pageRequestPath(request.url);
+  return path.startsWith('/api/v1/plugins/') && path != builtinSettingsPagePath;
+}
+
+Iterable<String> _skinFrameSources(Request request, Set<int>? ports) sync* {
+  if (ports == null || ports.isEmpty) return;
+  final hosts = <String>{'localhost', '127.0.0.1', '[::1]'};
+  final requested = InternetAddress.tryParse(request.requestedUri.host);
+  if (requested != null && !requested.address.contains('%')) {
+    hosts.add(
+      requested.type == InternetAddressType.IPv6
+          ? '[${requested.address}]'
+          : requested.address,
+    );
+  }
+  for (final port in ports) {
+    for (final host in hosts) {
+      yield 'http://$host:$port';
+    }
+  }
 }
 
 const _shelfConnectionInfoKey = 'shelf.io.connection_info';

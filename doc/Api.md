@@ -209,10 +209,13 @@ for every route, not only extension management:
   `/etc/hosts` entry, a router name, a reverse proxy) is refused. Non-browser
   clients (no `Origin`, no `Sec-Fetch-*`) may use any host name.
 
-- **Framing.** Every HTML response on the API port and the API docs port
-  (plugin pages, the bundled settings page, the docs viewer) carries
-  `X-Frame-Options: SAMEORIGIN` and `Content-Security-Policy: frame-ancestors
-  'self'`, so another site cannot frame them for clickjacking.
+- **Framing.** HTML from the host itself (the bundled settings page, the docs
+  viewer, any non-plugin page) carries `X-Frame-Options: SAMEORIGIN` and
+  `Content-Security-Policy: frame-ancestors 'self'`. Plugin pages and surfaces
+  (HTML under `/api/v1/plugins/<id>/`) carry no `X-Frame-Options` and
+  `frame-ancestors 'self'` plus the device's skin origins (live skin page and
+  docs ports on the requested numeric device address and on loopback), so the
+  active skin can embed them and other sites cannot.
 
 Requests without an `Origin` (and without `Sec-Fetch-Site`) are not affected:
 Home Assistant, `curl`, MCP clients, native app code and `host.localApi` keep

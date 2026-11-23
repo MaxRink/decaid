@@ -73,6 +73,7 @@ class ApiListener {
     }
 
     final server = await serveOrReportPortInUse(boundHandler, address, _port);
+    server.defaultResponseHeaders.removeAll('x-frame-options');
     final barrier = bindBarrier;
     if (barrier != null) await barrier();
     if (version != _lifecycleVersion ||

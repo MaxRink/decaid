@@ -1470,11 +1470,15 @@ const shotId = new URLSearchParams(location.search).get("shotId");
 Prefer this for a page that fetches its data over the REST API; it keeps the
 value out of the generated HTML.
 
-Every HTML response on the API port, plugin pages included, carries
-`X-Frame-Options: SAMEORIGIN` and `Content-Security-Policy: frame-ancestors
-'self'` (appended to a `Content-Security-Policy` the plugin sets itself), so a
-plugin page can only be framed by another page on the API origin, never by a
-skin or a foreign site. Open a plugin page with a top-level navigation.
+A plugin page or surface response (HTML under `/api/v1/plugins/<id>/`) carries
+`Content-Security-Policy: frame-ancestors 'self'` plus the device's own skin
+origins: `http` on the live skin page port (and the API docs port), on the
+numeric device address the request used and on `localhost`, `127.0.0.1` and
+`[::1]`. It is appended to a `Content-Security-Policy` the plugin sets itself
+and sends no `X-Frame-Options`, which cannot name a second origin. So the
+active skin may show a plugin page in an `<iframe>` (for example a popup), and
+any other site may not. The bundled settings page and the host's other HTML
+stay `frame-ancestors 'self'` with `X-Frame-Options: SAMEORIGIN`.
 
 Skins are served from a different browser origin than plugin pages, so a skin
 cannot write a plugin page's `sessionStorage` or `localStorage`. A query
