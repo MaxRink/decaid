@@ -902,8 +902,11 @@ REST/WebSocket lifecycle. `GrinderController` owns one selected runtime
 Replacement disconnects the old instance and generation-fences late
 publications. `ConnectionManager.connectGrinder()` connects
 `preferredGrinderDeviceId` only when the device appears in a normal scan after
-machine and primary-scale selection resolves. Grinder failures do not change
-machine or scale connection status.
+machine and primary-scale selection resolves, and again when that device leaves
+the device list and returns outside a scan (a plugin reload, for example after a
+plugin settings save, unregisters and re-registers its grinder). A first
+sighting is left to the scan. Grinder failures do not change machine or scale
+connection status.
 
 Runtime grinder identity is not equipment metadata. Persisted `Grinder.id` is a
 UUID used by `/api/v1/grinders` and workflow records; `GrinderDevice.deviceId`

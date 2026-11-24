@@ -471,6 +471,9 @@ class ConnectionManager {
   late final ScaleWatch _scaleWatch;
 
   StreamSubscription<AdapterState>? _adapterSub;
+  StreamSubscription<List<Device>>? _grinderReturnSub;
+  bool _preferredGrinderPresent = false;
+  bool _preferredGrinderLeft = false;
   AttachReconnectCoordinator? _attachReconnectCoordinator;
 
   bool _usbAttachLatched = false;
@@ -631,6 +634,7 @@ class ConnectionManager {
       isScaleConnected: () => _scaleConnected,
     );
     _listenForAdapter();
+    _listenForReturningGrinder();
     final attachNotifier = deviceScanner is DeviceAttachNotifier
         ? deviceScanner as DeviceAttachNotifier
         : null;
@@ -927,6 +931,26 @@ class ConnectionManager {
       _machineRecoveryActive = true;
     }
     _maybeScheduleMachineReconnect();
+  }
+
+  void _listenForReturningGrinder() {
+    _grinderReturnSub = deviceScanner.deviceStream.listen((devices) {
+      if (_shuttingDown) return;
+      final preferredId = settingsController.preferredGrinderDeviceId;
+      final grinder = devices.whereType<GrinderDevice>().firstWhereOrNull(
+        (device) => device.deviceId == preferredId,
+      );
+      if (grinder == null) {
+        if (_preferredGrinderPresent) _preferredGrinderLeft = true;
+        _preferredGrinderPresent = false;
+        return;
+      }
+      _preferredGrinderPresent = true;
+      if (!_preferredGrinderLeft || deviceScanner.isScanning) return;
+      _preferredGrinderLeft = false;
+      _log.info('Preferred grinder ${grinder.deviceId} returned; reconnecting');
+      unawaited(_connectPreferredGrinder([grinder]));
+    });
   }
 
   void _listenForAdapter() {
@@ -2955,6 +2979,7 @@ class ConnectionManager {
     }
     try {
       await _adapterSub?.cancel();
+      await _grinderReturnSub?.cancel();
     } catch (error, stackTrace) {
       _log.warning('Adapter subscription shutdown failed', error, stackTrace);
     }

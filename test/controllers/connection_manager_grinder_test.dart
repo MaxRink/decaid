@@ -352,6 +352,43 @@ void main() {
   );
 
   test(
+    'a preferred grinder that leaves and returns outside a scan is reconnected',
+    () async {
+      grinderGate.complete();
+      final other = TestGrinder(deviceId: 'other');
+      addTearDown(other.dispose);
+      scanner.addDevice(grinder);
+      scanner.addDevice(other);
+      await pumpEventQueue();
+      expect(
+        grinder.onConnectCalls,
+        0,
+        reason: 'a first sighting is the scan\'s',
+      );
+
+      scanner.removeDevice(grinder.deviceId);
+      scanner.removeDevice(other.deviceId);
+      await pumpEventQueue();
+      final returned = TestGrinder(deviceId: 'grinder');
+      addTearDown(returned.dispose);
+      scanner.addDevice(returned);
+      scanner.addDevice(other);
+      await pumpEventQueue();
+
+      expect(returned.onConnectCalls, 1);
+      expect(other.onConnectCalls, 0, reason: 'only the preferred grinder');
+      scanner.removeDevice(other.deviceId);
+      scanner.addDevice(other);
+      await pumpEventQueue();
+      expect(
+        returned.onConnectCalls,
+        1,
+        reason: 'still present, not reconnected',
+      );
+    },
+  );
+
+  test(
     'cancelled selection does not retain a preferred grinder attempt',
     () async {
       final alternative = TestDe1(deviceId: 'alternative');
