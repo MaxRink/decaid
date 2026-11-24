@@ -473,28 +473,28 @@ function createPlugin(host) {
 
     log(`Importing profile from share code: ${code}`);
 
-    // Step 1: Fetch shot metadata from share code
-    const sharedUrl = `${apiUrl()}/shots/shared?code=${encodeURIComponent(code)}`;
-    log(`Fetching from: ${sharedUrl}`);
-
-    const sharedResponse = await fetch(sharedUrl, {
-      method: 'GET',
-      headers: {
-        'Authorization': getAuthHeader(),
-        'Content-Type': 'application/json'
+    // Step 1: look the code up on the configured server, then on the public
+    // one. Share codes and profiles are public on Visualizer, so the public
+    // fallback is asked without credentials.
+    const servers = state.serverUrl === DEFAULT_SERVER_URL ? [state.serverUrl] : [state.serverUrl, DEFAULT_SERVER_URL];
+    let server = null;
+    let sharedData = null;
+    for (const candidate of servers) {
+      const headers = candidate === state.serverUrl && hasCredentials(state) ? { 'Authorization': getAuthHeader() } : {};
+      const sharedResponse = await fetch(`${candidate}/api/shots/shared?code=${encodeURIComponent(code)}`, { method: 'GET', headers });
+      if (sharedResponse.status === 404 && candidate !== servers[servers.length - 1]) {
+        log(`Share code not found on ${candidate}, trying ${servers[servers.length - 1]}`);
+        continue;
       }
-    });
-
-    if (!sharedResponse.ok) {
-      const statusCode = sharedResponse.status;
-      if (statusCode === 401) {
-        throw new Error("Invalid Visualizer credentials");
+      if (!sharedResponse.ok) {
+        if (sharedResponse.status === 401) throw new Error("Invalid Visualizer credentials");
+        throw new Error(`Failed to fetch share code: HTTP ${sharedResponse.status} ${sharedResponse.statusText}`);
       }
-      throw new Error(`Failed to fetch share code: HTTP ${statusCode} ${sharedResponse.statusText}`);
+      server = candidate;
+      sharedData = await sharedResponse.json();
+      break;
     }
-
-    const sharedData = await sharedResponse.json();
-    log(`Share code response: ${JSON.stringify(sharedData).slice(0, 200)}`);
+    log(`Share code found on ${server}`);
 
     // Handle both array and object responses
     let shotId;
@@ -511,18 +511,10 @@ function createPlugin(host) {
       throw new Error("Share code response missing shot ID");
     }
 
-    log(`Got shot ID: ${shotId}, fetching profile...`);
-
-    // Step 2: Fetch profile data using shot ID
-    const profileUrl = `${apiUrl()}/shots/${encodeURIComponent(shotId)}/profile?format=json`;
-    log(`Fetching profile from: ${profileUrl}`);
-
-    const profileResponse = await fetch(profileUrl, {
+    // Step 2: Fetch profile data from the server that knew the code
+    const profileResponse = await fetch(`${server}/api/shots/${encodeURIComponent(shotId)}/profile?format=json`, {
       method: 'GET',
-      headers: {
-        'Authorization': getAuthHeader(),
-        'Content-Type': 'application/json'
-      }
+      headers: server === state.serverUrl && hasCredentials(state) ? { 'Authorization': getAuthHeader() } : {}
     });
 
     if (!profileResponse.ok) {
@@ -1305,7 +1297,7 @@ function createPlugin(host) {
   // Return the plugin object
   return {
     id: "visualizer.reaplugin",
-    version: "1.5.12",
+    version: "1.5.13",
 
     onLoad(settings) {
       state.username = settings.Username;
