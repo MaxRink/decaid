@@ -10,6 +10,8 @@ import 'package:reaprime/src/services/account/decent_account_service.dart'
 import 'package:reaprime/src/services/storage/kv_store_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'plugins/plugin_test_helpers.dart';
+
 class _ControllableCredentialStore implements CredentialStore {
   String? _pausedKey;
   Completer<void>? _pauseEntered;
@@ -127,6 +129,9 @@ void main() {
       kvStore: _FakeKvStore(),
       credentialStore: credentialStore,
     );
+    // The bundled plugins register drivers of their own (Skale claims a BLE
+    // driver), which this suite asserts around rather than about.
+    await disableBundledPluginAutoLoad();
     await service.initialize();
     await service.addPlugin(sourceDir.path);
     await service.setPluginAutoLoad(pluginId, true);
