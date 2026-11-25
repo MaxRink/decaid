@@ -35,6 +35,42 @@ visible rather than reported as a timeout:
 ( flutter test > /tmp/flutter-test.log 2>&1; echo $? > /tmp/flutter-test.exit ) &
 ```
 
+## Non-Loopback Socket Tests Fail on Some Hosts (`errno 22`)
+
+Two suites open real sockets to a **non-loopback** address because the peer address is the subject:
+`test/plugins/plugin_extension_management_bypass_test.dart` (5 tests) and
+`test/webserver/extension_management_pipeline_test.dart` (6 tests). On a host whose TCP stack refuses
+`setsockopt(TCP_NODELAY)` on those accepted connections, all 11 fail like this:
+
+```
+OS Error: Invalid argument, errno = 22
+dart:_http                                       _HttpServer.listen
+package:shelf/shelf_io.dart 92:14                serveRequests.<fn>
+```
+
+Loopback is unaffected. Reproduce it outside the repo — plain `dart:io`, no test framework:
+
+```dart
+final server = await ServerSocket.bind(InternetAddress.anyIPv4, 0);
+server.listen((socket) {
+  try {
+    socket.setOption(SocketOption.tcpNoDelay, true);
+    print('setsockopt OK');
+  } catch (error) {
+    print('setsockopt FAIL: $error');
+  }
+  socket.destroy();
+});
+final client = await Socket.connect('192.168.178.125', server.port); // a local en0 address
+// prints: setsockopt FAIL: OS Error: Invalid argument, errno = 22
+// connecting to 127.0.0.1 instead prints: setsockopt OK
+```
+
+Observed on macOS arm64 with `en0` `192.168.178.125` and `bridge100` `192.168.139.3`; the same
+suites pass on GitHub's `ubuntu-latest`. This is the host, not the code under test: leave the tests
+alone. Do not skip them and do not point them at loopback — they must fail loudly on a host that
+cannot complete a LAN connection and pass on one that can.
+
 ## Test Tiers
 
 | Tier | What | Mock boundary |
