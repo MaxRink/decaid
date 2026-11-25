@@ -71,6 +71,12 @@ suites pass on GitHub's `ubuntu-latest`. This is the host, not the code under te
 alone. Do not skip them and do not point them at loopback — they must fail loudly on a host that
 cannot complete a LAN connection and pass on one that can.
 
+**This working copy is shared, so a checked-out branch proves nothing about Decaid.** Verify any
+claim about host behaviour against a ref the repo pins (`.github/workflows/pr-checks.yml`, Flutter
+`3.47.9`) or `origin/main` before repeating it — never against whatever branch happens to be checked
+out. The `errno 22` finding above was once read off an unmerged `fix/*` branch that a previous
+session had left checked out here, and the claim built on it had to be retracted.
+
 ## Test Tiers
 
 | Tier | What | Mock boundary |
