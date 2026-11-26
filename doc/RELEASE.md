@@ -124,19 +124,34 @@ in-place updates for everyone who already installed the previous build.
 The counter may be set ahead of the minimum (headroom) when a change will stay
 unmerged for a while, so that builds of `main` produced by the previous
 git-count-based formula cannot overtake it. The only rule CI enforces is that the
-committed value is **strictly greater than the last published release APK**.
+committed value is **strictly greater than the highest versionCode among the
+published release APKs**, pre-releases included — a beta is an APK someone has
+installed, and Android compares against the device, not against a release channel.
 
-`scripts/check_version_code_bump.sh` enforces that rule on every PR to `main`. It
-reads the versionCode of the newest stable release APK in
+`scripts/check_version_code_bump.sh` enforces that rule in two places: the
+`version-code-guard` job of `pr-checks.yml`, which runs on **every** PR (the
+workflow is deliberately not filtered by base branch), and a pre-build step of
+`release.yml`, which runs before the keystore is decoded and the APK is built. It
+reads the versionCode of the newest published release APKs of
 `decentespresso/decaid` with `aapt2 dump badging` and fails with both numbers when
-the committed counter is not greater. Run it before tagging:
+the committed counter is not greater.
+
+It fails closed. If `gh`, `aapt2`, the token or the network is missing, or a
+release carries no `decaid-android-<version>.apk`, the step fails instead of
+reporting success without a reference. The one case it cannot decide — a
+repository that publishes no releases at all — fails too, unless skipping is
+explicitly opted into with `--allow-skip` or `VERSION_CODE_GUARD_ALLOW_SKIP=1`.
+It reads the newest 5 releases by default (`VERSION_CODE_GUARD_SCAN`). Run it
+before tagging:
 
 ```bash
 ./scripts/check_version_code_bump.sh
 ```
 
 (The offline unit test for the guard is
-`./scripts/test_check_version_code_bump.sh`; CI runs both.)
+`./scripts/test_check_version_code_bump.sh`; CI runs both. Its stub `gh`/`aapt2`
+cases cover the fail-closed paths, so a guard that skips on a missing tool fails
+the test suite.)
 
 ## Update Channels
 
