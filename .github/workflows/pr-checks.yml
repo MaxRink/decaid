@@ -1,8 +1,11 @@
 name: PR checks
 
 on:
+  # Deliberately not filtered by base branch: version-code-guard must run for
+  # every PR that could land, including those targeting release/feature
+  # branches. No job here reads the base branch, so the filter had no purpose
+  # beyond preventing checks from running.
   pull_request:
-    branches: [main]
 
 concurrency:
   group: pr-checks-${{ github.workflow }}-${{ github.ref }}
