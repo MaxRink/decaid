@@ -1,8 +1,12 @@
 name: PR checks
 
 on:
+  # Deliberately not filtered by base branch, matching the equivalent change on
+  # feature/skale-sdk-parity (7899450e, #29). No job here reads the base branch,
+  # so the filter had no purpose beyond preventing checks from running: it
+  # silently skipped every pull request whose base was not main, which left
+  # stacked work (a branch and the fix based on it) with no CI at all.
   pull_request:
-    branches: [main]
 
 concurrency:
   group: pr-checks-${{ github.workflow }}-${{ github.ref }}
