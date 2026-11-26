@@ -38,6 +38,22 @@ flutter run --dart-define=simulate=1
 
 See [`CLAUDE.md`](CLAUDE.md) for the full command reference.
 
+### Android versionCode
+
+`versionCode` comes from the committed counter in [`android/version.properties`](android/version.properties),
+not from git history, so the same commit produces the same versionCode in every
+clone — full clone, `git clone --depth 1` CI checkout, or an exported source tree.
+Bump it once per release, in the release commit, by incrementing the integer and
+committing the file; never decrease or reuse a value, because Android refuses to
+install an APK whose versionCode is lower than the installed one.
+
+```
+versionCode=3296
+```
+
+`flutter_with_commit.sh` passes the same value as `--build-number`, so the number
+reported inside the app matches the APK's versionCode.
+
 ## Branching & PRs
 
 - Branch from `main`. Push to your fork, open a PR against `decentespresso/decaid:main`.
