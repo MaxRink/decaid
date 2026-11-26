@@ -10,9 +10,10 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-// Reads the committed Android versionCode counter. See android/version.properties
-// for how and when to bump it. Kept in version control so that a full clone, a
-// `git clone --depth 1` CI checkout and an exported source tree all agree.
+// Reads the committed Android versionCode counter. Kept in version control so a
+// full clone, a `git clone --depth 1` CI checkout and an exported source tree all
+// agree on one number. Bump procedure and CI guard: doc/RELEASE.md, section
+// "Android versionCode".
 val committedVersionCode: Int = rootProject.file("version.properties").let { counterFile ->
     require(counterFile.isFile) {
         "Missing ${counterFile.path}. It must contain a single 'versionCode=<integer>' entry."

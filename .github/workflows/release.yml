@@ -64,6 +64,13 @@ jobs:
       - name: Install Android SDK 35
         uses: android-actions/setup-android@v4
 
+      - name: Install build-tools (aapt2 for the versionCode guard)
+        run: sdkmanager --install "build-tools;35.0.0"
+
+      # Never tag a release Android will refuse to install over the previous one.
+      - name: Committed versionCode must exceed the last published release
+        run: ./scripts/check_version_code_bump.sh
+
       - name: Decode Android keystore
         run: |
           echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 --decode > android/app/debug.keystore
