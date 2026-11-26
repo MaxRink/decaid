@@ -1286,10 +1286,22 @@ class PluginManager {
             }
             for (const name of [...hostGlobalNames, ...intrinsicNames]) {
               const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
-              if (!descriptor || !descriptor.configurable) continue;
-              Object.defineProperty(globalThis, name, "value" in descriptor
-                ? { writable: false, configurable: false }
-                : { configurable: false });
+              if (!descriptor) continue;
+              if (descriptor.configurable) {
+                Object.defineProperty(globalThis, name, "value" in descriptor
+                  ? { writable: false, configurable: false }
+                  : { configurable: false });
+                continue;
+              }
+              // A non-configurable data property cannot be redefined, but a
+              // writable one can still be made non-writable, and that is the
+              // whole point of this pass. Engines that ship btoa/atob as
+              // non-configurable globals used to fall through the branch above
+              // and stay writable, so a plugin could replace the helper another
+              // plugin calls and read its arguments.
+              if ("value" in descriptor && descriptor.writable) {
+                Object.defineProperty(globalThis, name, { writable: false });
+              }
             }
           },
           writable: false,
