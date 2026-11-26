@@ -1,3 +1,9 @@
+# TODO(android): /gradlew, /gradlew.bat and gradle-wrapper.jar below are ignored,
+# so they are not tracked and `cd android && ./gradlew ...` fails in a fresh
+# clone until Flutter regenerates the wrapper (`flutter build apk` does). Nothing
+# in the release flow depends on that, because Flutter injects its own wrapper.
+# Track this trio instead of ignoring it -- it is a known follow-up of PR #29,
+# recorded here so it does not survive only in that PR description.
 gradle-wrapper.jar
 /.gradle
 /captures/
