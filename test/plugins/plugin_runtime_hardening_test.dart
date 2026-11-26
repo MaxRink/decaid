@@ -47,6 +47,23 @@ Future<Object?> _run(
   return jsonDecode(payload as String);
 }
 
+/// Reshapes `btoa`/`atob` into the non-configurable, still-writable data
+/// properties some engines expose natively, so the freeze pass is exercised
+/// against that shape on every host instead of only where the engine ships it.
+Future<void> _forceNonConfigurableBase64Helpers(PluginManager manager) async {
+  manager.js.evaluate('''
+    (function () {
+      for (const name of ["btoa", "atob"]) {
+        const real = globalThis[name];
+        delete globalThis[name];
+        Object.defineProperty(globalThis, name, {
+          value: real, writable: true, configurable: false, enumerable: false
+        });
+      }
+    })();
+  ''');
+}
+
 void main() {
   group('shared runtime intrinsics', () {
     late PluginManager manager;
@@ -151,6 +168,127 @@ void main() {
         manager.js.evaluate('JSON.stringify(globalThis.__stolen)').stringResult,
         '[]',
       );
+    });
+
+    // The suite above only covers whichever shape the host engine ships. Some
+    // engines (notably the Linux QuickJS build) expose `btoa`/`atob` as
+    // non-configurable *writable* data properties instead of the configurable
+    // ones the polyfill at the top of the runtime installs. The freeze pass used
+    // to skip every non-configurable property, which left those helpers
+    // writable and let one plugin replace `btoa` to read another plugin's
+    // arguments. Force that shape so this branch is covered on every host.
+    test('base64 helpers stay unrewritable when the engine defines them '
+        'non-configurably', () async {
+      await _forceNonConfigurableBase64Helpers(manager);
+
+      // Same call loadPlugin makes before any plugin body runs.
+      manager.js.evaluate('globalThis.__lockPluginHostBridge();');
+
+      // End to end first: this is the consequence that matters, so it is the
+      // assertion a reverted fix trips. A plugin that tries the hook must not
+      // observe anything the next plugin hands to the helper.
+      await _run(
+        manager,
+        id: 'sniffer.plugin',
+        jsBody: '''
+          globalThis.__stolen = [];
+          const steal = (value) => { globalThis.__stolen.push(String(value)); };
+          const attempt = (fn) => { try { fn(); } catch (e) {} };
+          const realBtoa = globalThis.btoa;
+          attempt(() => { globalThis.btoa = (v) => { steal(v); return realBtoa(v); }; });
+          attempt(() => {
+            Object.defineProperty(globalThis, "btoa", {
+              value: (v) => { steal(v); return realBtoa(v); }, writable: true, configurable: true
+            });
+          });
+          attempt(() => { globalThis.atob = (v) => { steal(v); return ""; }; });
+          host.emit("result", JSON.stringify(true));
+        ''',
+      );
+
+      final victim = await _run(
+        manager,
+        id: 'credentials.plugin',
+        jsBody: '''
+          const auth = btoa("user:pass");
+          report({ auth, decoded: atob(auth) });
+        ''',
+      );
+      expect(
+        manager.js.evaluate('JSON.stringify(globalThis.__stolen)').stringResult,
+        '[]',
+      );
+      expect(victim, {'auth': 'dXNlcjpwYXNz', 'decoded': 'user:pass'});
+
+      // Then the mechanism, so a failure above can be read against the state
+      // that allowed it.
+      final afterSetup = manager.js.evaluate('''
+        (function () {
+          const btoaBefore = globalThis.btoa;
+          const atobBefore = globalThis.atob;
+          try { globalThis.btoa = function () { return "hooked"; }; } catch (_) {}
+          try { globalThis.atob = function () { return "hooked"; }; } catch (_) {}
+          try {
+            Object.defineProperty(globalThis, "btoa", {
+              value: function () { return "redefined"; }, writable: true, configurable: true
+            });
+          } catch (_) {}
+          const btoaAfter = Object.getOwnPropertyDescriptor(globalThis, "btoa");
+          return JSON.stringify({
+            btoaKept: globalThis.btoa === btoaBefore,
+            atobKept: globalThis.atob === atobBefore,
+            btoaWritable: btoaAfter.writable,
+            encoded: btoaBefore("user:pass"),
+          });
+        })();
+      ''').stringResult;
+      expect(jsonDecode(afterSetup), {
+        'btoaKept': true,
+        'atobKept': true,
+        'btoaWritable': false,
+        'encoded': 'dXNlcjpwYXNz',
+      });
+    });
+
+    // Covers whichever shape this host's engine actually ships. This is the
+    // assertion that fails on the Linux engine, and the reason it fails carries
+    // the descriptors so the shape is visible from CI output.
+    test('base64 helpers stay unrewritable on the host engine', () async {
+      String describe(String name) => manager.js.evaluate('''
+        (function () {
+          const d = Object.getOwnPropertyDescriptor(globalThis, "$name");
+          return JSON.stringify({
+            typeofValue: typeof globalThis["$name"],
+            own: Object.prototype.hasOwnProperty.call(globalThis, "$name"),
+            descriptor: d ? Object.keys(d).sort() : null,
+            writable: d ? d.writable : null,
+            configurable: d ? d.configurable : null,
+            enumerable: d ? d.enumerable : null,
+            hasValue: d ? ("value" in d) : null,
+            extensible: Object.isExtensible(globalThis),
+          });
+        })();
+      ''').stringResult;
+
+      final before = describe('btoa');
+      manager.js.evaluate('globalThis.__lockPluginHostBridge();');
+      final after = describe('btoa');
+
+      final applied = manager.js.evaluate('''
+        (function () {
+          const original = globalThis.btoa;
+          try { globalThis.btoa = function () { return "hooked"; }; } catch (_) {}
+          return JSON.stringify({
+            replaced: globalThis.btoa !== original,
+            value: String(globalThis.btoa("user:pass")),
+          });
+        })();
+      ''').stringResult;
+
+      expect(jsonDecode(applied), {
+        'replaced': false,
+        'value': 'dXNlcjpwYXNz',
+      }, reason: 'btoa before lock: $before | after lock: $after');
     });
 
     test(
