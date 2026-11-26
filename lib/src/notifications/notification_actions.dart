@@ -10,6 +10,8 @@ class NotificationActions extends ChangeNotifier with WidgetsBindingObserver {
   NotificationActions({
     required this.center,
     required this.onOpenAccount,
+    this.onOpenPluginSurface,
+    this.onReviewMachineControl,
     this.updateCheckService,
     Future<bool> Function(Uri)? launch,
   }) : _launch =
@@ -20,6 +22,10 @@ class NotificationActions extends ChangeNotifier with WidgetsBindingObserver {
 
   final NotificationCenter center;
   final VoidCallback onOpenAccount;
+  final Future<bool> Function(NativeNotification notice, String href)?
+  onOpenPluginSurface;
+  final Future<void> Function(NativeNotification notice)?
+  onReviewMachineControl;
   final UpdateCheckService? updateCheckService;
   final Future<bool> Function(Uri) _launch;
   List<(NotificationActivation, NotificationAction)> _pendingReturns = const [];
@@ -60,7 +66,7 @@ class NotificationActions extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> activate(
     NativeNotification notice,
     NotificationAction action, {
-    Future<void> Function()? beforeDownload,
+    Future<void> Function()? beforeOpenUpdate,
   }) async {
     final activation = center.activation(notice);
     if (_disposed ||
@@ -76,10 +82,21 @@ class NotificationActions extends ChangeNotifier with WidgetsBindingObserver {
       if (action.type == NotificationActionType.openDecentAccount) {
         onOpenAccount();
         center.reportAction(activation, action, 'activated');
-      } else if (action.type == NotificationActionType.downloadUpdate ||
+      } else if (action.type == NotificationActionType.openPluginSurface) {
+        final open = onOpenPluginSurface;
+        if (open == null) throw StateError('Plugin pages are unavailable');
+        center.reportAction(activation, action, 'activated');
+        if (!await open(notice, action.href!)) {
+          throw StateError('Plugin page could not be opened');
+        }
+      } else if (action.type == NotificationActionType.reviewMachineControl) {
+        await onReviewMachineControl?.call(notice);
+      } else if (action.type == NotificationActionType.viewUpdate ||
+          action.type == NotificationActionType.downloadUpdate ||
           action.type == NotificationActionType.skipUpdate) {
-        if (action.type == NotificationActionType.downloadUpdate) {
-          await beforeDownload?.call();
+        if (action.type == NotificationActionType.viewUpdate ||
+            action.type == NotificationActionType.downloadUpdate) {
+          await beforeOpenUpdate?.call();
         }
         if (_disposed || !center.isCurrent(activation)) return;
         await activation.binding?.onActivate?.call(action);

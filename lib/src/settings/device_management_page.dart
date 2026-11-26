@@ -3,12 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:reaprime/src/controllers/device_controller.dart';
 import 'package:reaprime/src/models/device/device.dart';
+import 'package:reaprime/src/models/device/scale_preference.dart';
 import 'package:reaprime/src/plugins/plugin_device_contract.dart';
 import 'package:reaprime/src/settings/settings_controller.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
-import 'package:url_launcher/url_launcher.dart';
-
-const _appOrigin = 'http://localhost:8080';
+import 'package:reaprime/src/settings/plugin_surface_sheet.dart';
 
 typedef DeviceSettingsLauncher = Future<bool> Function(Uri uri);
 
@@ -77,7 +76,7 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
             d.type != DeviceType.machine &&
             d.type != DeviceType.scale &&
             d.type != DeviceType.grinder &&
-            _settingsHref(d) != null,
+            _surfaceHrefs(d).isNotEmpty,
       )
       .toList();
 
@@ -116,7 +115,16 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
                     emptyLabel: 'scales',
                     onSelected: (id) async {
                       await widget.settingsController.setPreferredScaleId(id);
-                      if (mounted) _showSavedSnackbar();
+                      if (!context.mounted) return;
+                      if (widget.settingsController.preferredScaleId == id) {
+                        _showSavedSnackbar();
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Unable to save scale preference.'),
+                          ),
+                        );
+                      }
                     },
                   ),
                   _buildSection(
@@ -186,6 +194,16 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
               isSelected: selectedId == null,
               onTap: () => onSelected(null),
             ),
+          if (selectedId == usbHdsScalePreference ||
+              devices.any(
+                (device) => scalePreferenceId(device) == usbHdsScalePreference,
+              ))
+            _buildDeviceRadio(
+              name: 'Half Decent Scale (USB)',
+              subtitle: 'No USB serial number',
+              isSelected: selectedId == usbHdsScalePreference,
+              onTap: () => onSelected(usbHdsScalePreference),
+            ),
           if (devices.isEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
@@ -196,16 +214,23 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
               ),
             )
           else
-            ...devices.map(
-              (device) => _buildDeviceRadio(
-                name: device.name,
-                subtitle: _deviceSubtitle(device),
-                isSelected: selectable && selectedId == device.deviceId,
-                onTap: selectable ? () => onSelected(device.deviceId) : null,
-                showSelection: selectable,
-                trailing: _settingsButton(device),
-              ),
-            ),
+            ...devices
+                .where(
+                  (device) =>
+                      scalePreferenceId(device) != usbHdsScalePreference,
+                )
+                .map(
+                  (device) => _buildDeviceRadio(
+                    name: device.name,
+                    subtitle: _deviceSubtitle(device),
+                    isSelected: selectable && selectedId == device.deviceId,
+                    onTap: selectable
+                        ? () => onSelected(device.deviceId)
+                        : null,
+                    showSelection: selectable,
+                    trailing: _surfaceButtons(device),
+                  ),
+                ),
         ],
       ),
     );
@@ -290,35 +315,44 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
     );
   }
 
-  String? _settingsHref(Device device) {
-    if (device is! PluginDeviceAdapter) return null;
+  /// First declared href per supported surface role, gated on the owning
+  /// plugin runtime being active.
+  Map<String, String> _surfaceHrefs(Device device) {
+    if (device is! PluginDeviceAdapter) return const {};
     final authority = device.surfaceAuthority;
     if (authority == null ||
         !widget.isPluginRuntimeActive(authority.pluginId)) {
-      return null;
+      return const {};
     }
-    final surfaces = authority.resolve(
+    final hrefs = <String, String>{};
+    for (final surface in authority.resolve(
       device.deviceId,
       deviceName: device.name,
-    );
-    for (final surface in surfaces) {
-      if (surface['role'] == 'settings') return surface['href'];
+    )) {
+      hrefs.putIfAbsent(surface['role']!, () => surface['href']!);
     }
-    return null;
+    return hrefs;
   }
 
-  Widget? _settingsButton(Device device) {
-    if (_settingsHref(device) == null) {
-      return null;
-    }
-    return IconButton(
-      tooltip: 'Device settings',
-      icon: const Icon(Icons.settings_outlined),
-      onPressed: () => _openDeviceSettings(device),
-    );
+  Widget? _surfaceButtons(Device device) {
+    final hrefs = _surfaceHrefs(device);
+    final buttons = [
+      for (final (role, tooltip, icon) in const [
+        ('settings', 'Device settings', Icons.settings_outlined),
+        ('diagnostics', 'Device diagnostics', Icons.monitor_heart_outlined),
+      ])
+        if (hrefs.containsKey(role))
+          IconButton(
+            tooltip: tooltip,
+            icon: Icon(icon),
+            onPressed: () => _openDeviceSurface(device, role),
+          ),
+    ];
+    if (buttons.isEmpty) return null;
+    return Row(mainAxisSize: MainAxisSize.min, children: buttons);
   }
 
-  Future<void> _openDeviceSettings(Device device) async {
+  Future<void> _openDeviceSurface(Device device, String role) async {
     if (!widget.deviceController.devices.any(
       (current) => identical(current, device),
     )) {
@@ -327,15 +361,15 @@ class _DeviceManagementPageState extends State<DeviceManagementPage> {
     }
     bool launched = false;
     try {
-      final href = _settingsHref(device);
+      final href = _surfaceHrefs(device)[role];
       if (href == null) {
         _showSettingsError();
         return;
       }
-      final uri = Uri.parse(_appOrigin).resolve(href);
+      final uri = Uri.parse(pluginSurfaceOrigin).resolve(href);
       launched =
           await (widget.settingsLauncher?.call(uri) ??
-              launchUrl(uri, mode: LaunchMode.inAppBrowserView));
+              showPluginSurface(context, uri, title: device.name));
     } catch (_) {
       launched = false;
     }

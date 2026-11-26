@@ -1138,8 +1138,7 @@ class UniversalBleDiscoveryService extends BleDiscoveryService
                       _adapterStateSubject.value != AdapterState.poweredOn) {
                     return false;
                   }
-                  final current = _bleEvidence.get(deviceId);
-                  if (current == null) return false;
+                  final current = _bleEvidence.get(deviceId) ?? evidence;
                   final owner = plugins.registry.decide(current);
                   return owner.kind == PluginBleOwnership.plugin &&
                       identical(owner.drivers.single, decision.drivers.single);

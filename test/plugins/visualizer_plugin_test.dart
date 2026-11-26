@@ -1851,4 +1851,118 @@ void main() {
 
     expect(sourceVersion, _manifest.version);
   });
+
+  test('an upload key authenticates uploads to a self-hosted server', () async {
+    final shot = _shot();
+    final manager = await _loadPlugin(
+      '''
+      globalThis.__auth = [];
+      globalThis.fetch = async (url, init = {}) => {
+        if (url.startsWith('http://localhost:8080')) {
+          if (url.endsWith('/shots/latest')) {
+            return { ok: true, json: async () => ({ id: 'shot-1' }) };
+          }
+          if (url.endsWith('/shots/shot-1') && (!init.method || init.method === 'GET')) {
+            return { ok: true, json: async () => (${jsonEncode(shot)}) };
+          }
+          return { ok: true, json: async () => ({}) };
+        }
+        if (!url.startsWith('https://viz.example.test/api/')) {
+          throw new Error('Unexpected URL: ' + url);
+        }
+        globalThis.__auth = [...globalThis.__auth, init.headers?.Authorization];
+        if (url.endsWith('/shots/upload')) {
+          globalThis.__uploaded = url;
+          return { ok: true, json: async () => ({ id: 'visualizer-1' }) };
+        }
+        if (url.endsWith('?essentials=1')) {
+          return { ok: true, json: async () => ({ id: 'visualizer-1', tags: [] }) };
+        }
+        return { ok: true, json: async () => ({ id: 'visualizer-1', updated_at: 1 }) };
+      };
+    ''',
+      settings: {
+        'Username': null,
+        'Password': null,
+        'ServerUrl': 'https://viz.example.test/',
+        'UploadKey': ' vzu_test-key ',
+      },
+    );
+
+    _startAutoUpload(manager);
+    expect(
+      await _waitForJs(manager, 'globalThis.__uploaded'),
+      'https://viz.example.test/api/shots/upload',
+    );
+    final auth = await _waitForJs(manager, 'globalThis.__auth') as List;
+    expect(auth.toSet(), {'Bearer vzu_test-key'});
+  });
+
+  test(
+    'verifyCredentials takes an upload key and ignores a non-https server',
+    () async {
+      final manager = await _loadPlugin(
+        '''
+      globalThis.fetch = async (url, init = {}) => {
+        globalThis.__checked = url;
+        return { ok: init.headers?.Authorization === 'Bearer vzu_good' };
+      };
+    ''',
+        settings: {'ServerUrl': 'http://insecure.example.test'},
+      );
+
+      final good = await _callApi(manager, 'verifyCredentials', {
+        'uploadKey': 'vzu_good',
+      });
+      expect(jsonDecode(good['body'] as String), {'valid': true});
+      expect(
+        await _waitForJs(manager, 'globalThis.__checked'),
+        'https://visualizer.coffee/api/me',
+      );
+    },
+  );
+
+  test('a share code missing on the self-hosted server is looked up on the public one without credentials', () async {
+    final manager = await _loadPlugin(
+      '''
+      globalThis.__calls = [];
+      globalThis.fetch = async (url, init = {}) => {
+        globalThis.__calls = [...globalThis.__calls, [url, init.headers?.Authorization ?? null]];
+        if (url.startsWith('https://viz.example.test/api/shots/shared')) {
+          return { ok: false, status: 404, statusText: 'Not Found' };
+        }
+        if (url.startsWith('https://visualizer.coffee/api/shots/shared')) {
+          return { ok: true, status: 200, json: async () => ({ id: 'public-shot' }) };
+        }
+        if (url === 'https://visualizer.coffee/api/shots/public-shot/profile?format=json') {
+          return { ok: true, status: 200, json: async () => ({ id: 'p1', title: 'Shared' }) };
+        }
+        if (url === 'http://localhost:8080/api/v1/profiles') {
+          return { ok: true, status: 201, json: async () => ({ id: 'local-profile' }) };
+        }
+        throw new Error('Unexpected URL: ' + url);
+      };
+    ''',
+      settings: {
+        'ServerUrl': 'https://viz.example.test',
+        'UploadKey': 'vzu_private',
+      },
+    );
+
+    final result = await _callApi(manager, 'import', {'shareCode': 'abcd'});
+    expect(result['status'], 200, reason: result['body'] as String?);
+    final calls = await _waitForJs(manager, 'globalThis.__calls') as List;
+    expect(calls.map((c) => (c as List)[0]), [
+      'https://viz.example.test/api/shots/shared?code=abcd',
+      'https://visualizer.coffee/api/shots/shared?code=abcd',
+      'https://visualizer.coffee/api/shots/public-shot/profile?format=json',
+      'http://localhost:8080/api/v1/profiles',
+    ]);
+    expect(calls.map((c) => (c as List)[1]), [
+      'Bearer vzu_private',
+      null,
+      null,
+      null,
+    ]);
+  });
 }

@@ -21,16 +21,22 @@ import 'package:reaprime/src/models/data/shot_state_event.dart';
 import 'package:reaprime/src/models/data/utils.dart';
 import 'package:reaprime/src/models/device/device.dart';
 import 'package:reaprime/src/models/device/device_identity.dart';
+import 'package:reaprime/src/models/device/device_scanner.dart';
 import 'package:reaprime/src/models/device/grinder_device.dart';
 import 'package:reaprime/src/models/device/scale.dart';
 import 'package:reaprime/src/models/device/scale_calibration.dart';
+import 'package:reaprime/src/models/device/scale_preference.dart';
 import 'package:reaprime/src/models/errors.dart';
 import 'package:reaprime/src/models/device/sensor.dart';
+import 'package:reaprime/src/plugins/plugin_device_contract.dart';
+import 'package:reaprime/src/plugins/plugin_device_surface_authority.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
+import 'package:reaprime/src/plugins/plugin_notifications.dart';
 import 'package:reaprime/src/plugins/plugin_source.dart';
 import 'package:reaprime/src/plugins/plugin_source_service.dart';
 import 'package:reaprime/src/services/storage/hive_store_service.dart';
+import 'package:reaprime/src/services/storage/kv_store_service.dart';
 import 'package:reaprime/src/services/webserver/json_response.dart';
 import 'package:reaprime/src/services/webserver/opaque_path_component.dart';
 import 'package:reaprime/src/services/webserver/bounded_request_body.dart';
@@ -193,6 +199,7 @@ Future<void> startWebServer(
     auxiliaryScaleRegistry: connectionManager.auxiliaryScaleRegistry,
     de1Controller: de1Controller,
     settingsController: settingsController,
+    isPluginRuntimeActive: pluginService.pluginManager.isPluginRuntimeActive,
   );
   final grinderHandler = GrinderHandler(
     controller: connectionManager.grinderController,
@@ -210,6 +217,7 @@ Future<void> startWebServer(
     service: webUIService,
     webUIStorage: webUIStorage,
     batteryController: batteryController,
+    deviceScanner: deviceController,
   );
   final sensorsHandler = SensorsHandler(controller: sensorController);
   final workflowHandler = WorkflowHandler(
@@ -291,7 +299,21 @@ Future<void> startWebServer(
     grindersHandler = GrindersHandler(storage: grinderStorage);
   }
 
-  final kvStoreHandler = KvStoreHandler();
+  int? apiListenerPort;
+  String? apiListenerAddress;
+  int? apiDocsListenerPort;
+  final browserOrigins = extensionManagementBrowserOrigins(
+    webUIService,
+    apiListenerPort: () => apiListenerPort,
+    docsListenerPort: () => apiDocsListenerPort,
+  );
+
+  final kvStoreHandler = KvStoreHandler(
+    isPluginNamespace: (namespace) => pluginService.availablePlugins.any(
+      (plugin) => plugin.id.toLowerCase() == namespace.toLowerCase(),
+    ),
+    deviceOrigins: browserOrigins,
+  );
   await kvStoreHandler.store.initialize();
 
   final dataExportHandler = DataExportHandler(
@@ -317,7 +339,18 @@ Future<void> startWebServer(
       ),
       WorkflowExportSection(controller: workflowController),
       SettingsExportSection(controller: settingsController),
-      KvStoreExportSection(store: kvStoreHandler.store),
+      KvStoreExportSection(
+        store: kvStoreHandler.store,
+        pluginStore: pluginService.pluginManager.kvStore,
+        pluginIds: () => pluginService.availablePlugins.map((m) => m.id),
+        onPluginStorageImported: (pluginIds) async {
+          for (final id in pluginIds) {
+            if (pluginService.isPluginLoaded(id)) {
+              await pluginService.reloadPlugin(id);
+            }
+          }
+        },
+      ),
       if (beanStorage != null)
         BeanExportSection(
           storage: beanStorage,
@@ -374,7 +407,8 @@ Future<void> startWebServer(
     );
   }
 
-  int? apiListenerPort;
+  Future<Set<String>> deviceAddresses() =>
+      webUIService.currentBrowserOriginAddresses();
   final handler = _init(
     deviceHandler,
     de1Handler,
@@ -401,9 +435,11 @@ Future<void> startWebServer(
     proxyTokenService,
     () => accountProxyCorsAllowedOrigins(webUIService),
     () => settingsController.currentRequireExtensionManagementAuthorization(),
-    extensionManagementBrowserOrigins(
-      webUIService,
-      apiListenerPort: () => apiListenerPort,
+    browserOrigins,
+    BuiltinPageListener(
+      listenerPort: () => apiListenerPort,
+      deviceAddresses: deviceAddresses,
+      listenerAddress: () => apiListenerAddress,
     ),
     dataExportHandler,
     dataSyncHandler,
@@ -416,11 +452,15 @@ Future<void> startWebServer(
     updateHandler,
   );
   pluginService.pluginManager.attachLocalApi(handler);
-  final server = await serveOrReportPortInUse(handler, '0.0.0.0', 8080);
+  final server = await serveApiHandler(handler, '0.0.0.0', 8080);
   apiListenerPort = server.port;
+  apiListenerAddress = server.address.address;
   log.info('API Web server running on ${server.address.host}:${server.port}');
 
-  await startApiDocsServer();
+  final apiDocsServer = await startApiDocsServer(
+    deviceAddresses: deviceAddresses,
+  );
+  apiDocsListenerPort = apiDocsServer?.port;
 }
 
 Handler _init(
@@ -450,6 +490,7 @@ Handler _init(
   Set<String> Function() accountProxyAllowedOrigins,
   Future<bool> Function() requireExtensionManagementAuthorization,
   ExtensionManagementBrowserOrigins browserOrigins,
+  BuiltinPageListener? pageListener,
   DataExportHandler dataExportHandler,
   DataSyncHandler dataSyncHandler,
   BeansHandler? beansHandler,
@@ -516,17 +557,222 @@ Handler _init(
     requireExtensionManagementAuthorization:
         requireExtensionManagementAuthorization,
     browserOrigins: browserOrigins,
+    pageListener: pageListener,
   );
 }
 
 Set<String> _noAccountProxyOrigins() => const {};
 
+const builtinSettingsPagePath = '/api/v1/plugins/settings.reaplugin/ui';
+
+const builtinApiDocsViewerPaths = {'/', '/index.html'};
+
+const builtinPageAddressUnavailableError =
+    'This page is only served from the device address';
+
+final class BuiltinPageListener {
+  const BuiltinPageListener({
+    required this.listenerPort,
+    required this.deviceAddresses,
+    this.listenerAddress,
+  });
+
+  final int? Function() listenerPort;
+  final Future<Set<String>> Function() deviceAddresses;
+  final String? Function()? listenerAddress;
+}
+
+Middleware builtinBrowserCanonicalRedirect({
+  required Set<String> pagePaths,
+  required BuiltinPageListener listener,
+}) {
+  return (Handler inner) {
+    return (Request request) async {
+      if (request.method != 'GET') return inner(request);
+      final path = _pageRequestPath(request.url);
+      if (!pagePaths.contains(path)) return inner(request);
+      final entryHost = _pageHostName(request.headers['host']);
+      if (entryHost == null) return _builtinPageAddressRefusal();
+      if (!_requiresCanonicalPageHost(entryHost)) return inner(request);
+      final refusal = _builtinPageAddressRefusal();
+      final connectionInfo = request.context[_pageConnectionInfoKey];
+      if (connectionInfo is! HttpConnectionInfo) return refusal;
+      final InternetAddress peer;
+      try {
+        peer = connectionInfo.remoteAddress;
+      } catch (error, stackTrace) {
+        log.warning('The socket peer is unreadable', error, stackTrace);
+        return refusal;
+      }
+      final port = listener.listenerPort();
+      if (port == null || port < 1 || port > 65535) return refusal;
+      var addresses = const <String>{};
+      if (!peer.isLoopback) {
+        try {
+          addresses = await listener.deviceAddresses();
+        } catch (error, stackTrace) {
+          log.warning(
+            'Could not enumerate the device addresses; refusing the page entry',
+            error,
+            stackTrace,
+          );
+          return refusal;
+        }
+      }
+      final destination = canonicalPageHost(
+        peer: peer,
+        addresses: addresses,
+        boundAddress: listener.listenerAddress?.call(),
+      );
+      if (destination == null) return refusal;
+      return Response.found(
+        builtinPageLocation(host: destination, port: port, path: path),
+        headers: const {
+          'cache-control': 'no-store',
+          'referrer-policy': 'no-referrer',
+        },
+      );
+    };
+  };
+}
+
+final _pageConnectionInfoKey = 'shelf.io.connection_info';
+
+final _pagePortSuffix = RegExp(r'^:(\d{1,5})$');
+const _pageHostLabel = '[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?';
+final _pageRegName = RegExp('^$_pageHostLabel(?:\\.$_pageHostLabel)*\\.?\$');
+
+Uri builtinPageLocation({
+  required String host,
+  required int port,
+  required String path,
+}) => Uri(scheme: 'http', host: host, port: port, path: path, fragment: '');
+
+String? canonicalPageHost({
+  required InternetAddress peer,
+  required Set<String> addresses,
+  String? boundAddress,
+}) {
+  final normalizedPeer = _normalizedPageAddress(peer);
+  if (normalizedPeer == null) return null;
+  if (normalizedPeer.isLoopback) {
+    return normalizedPeer.type == InternetAddressType.IPv6
+        ? '::1'
+        : '127.0.0.1';
+  }
+  final bound = boundAddress == null ? null : _pageAddress(boundAddress);
+  if (bound != null && _isPageCandidate(bound, normalizedPeer)) {
+    return bound.address;
+  }
+  final candidates = <String>{};
+  final seen = <String>{};
+  for (final address in addresses) {
+    final parsed = _pageAddress(address);
+    if (parsed == null || !_isPageCandidate(parsed, normalizedPeer)) continue;
+    if (!seen.add(_pageAddressKey(parsed))) continue;
+    candidates.add(parsed.address);
+  }
+  return candidates.length == 1 ? candidates.single : null;
+}
+
+bool _isPageCandidate(InternetAddress address, InternetAddress peer) =>
+    address.type == peer.type &&
+    !address.isLoopback &&
+    _isPageDestination(address);
+
+String _pageAddressKey(InternetAddress address) =>
+    '${address.type.name}:${address.rawAddress.join('.')}';
+
+InternetAddress? _pageAddress(String text) {
+  final parsed = InternetAddress.tryParse(text);
+  return parsed == null ? null : _normalizedPageAddress(parsed);
+}
+
+InternetAddress? _normalizedPageAddress(InternetAddress address) {
+  if (address.address.contains('%')) return null;
+  final raw = address.rawAddress;
+  if (raw.length != 16) return InternetAddress.fromRawAddress(raw);
+  var mapped = raw[10] == 0xff && raw[11] == 0xff;
+  for (var index = 0; index < 10 && mapped; index++) {
+    if (raw[index] != 0) mapped = false;
+  }
+  if (mapped) return InternetAddress.fromRawAddress(raw.sublist(12));
+  return InternetAddress.fromRawAddress(raw, type: InternetAddressType.IPv6);
+}
+
+bool _isPageDestination(InternetAddress address) {
+  final raw = address.rawAddress;
+  if (raw.every((byte) => byte == 0)) return false;
+  if (raw.length == 4) {
+    if ((raw[0] & 0xf0) == 0xe0) return false;
+    return !raw.every((byte) => byte == 0xff);
+  }
+  if (raw[0] == 0xff) return false;
+  return !(raw[0] == 0xfe && (raw[1] & 0xc0) == 0x80);
+}
+
+String _pageRequestPath(Uri url) {
+  final path = url.path;
+  if (path.isEmpty) return '/';
+  return path.startsWith('/') ? path : '/$path';
+}
+
+bool _requiresCanonicalPageHost(String host) {
+  if (host.toLowerCase() == 'localhost') return false;
+  return InternetAddress.tryParse(host) == null;
+}
+
+String? _pageHostName(String? hostHeader) {
+  if (hostHeader == null) return null;
+  final value = hostHeader.trim();
+  if (value.isEmpty) return null;
+  if (value.startsWith('[')) {
+    final end = value.indexOf(']');
+    if (end < 0) return null;
+    final literal = value.substring(1, end);
+    if (!_isPageIpv6Literal(literal)) return null;
+    if (!_isPagePort(value.substring(end + 1))) return null;
+    return literal;
+  }
+  final colon = value.indexOf(':');
+  if (colon < 0) return _pageRegName.hasMatch(value) ? value : null;
+  if (!_isPagePort(value.substring(colon))) return null;
+  final host = value.substring(0, colon);
+  return _pageRegName.hasMatch(host) ? host : null;
+}
+
+bool _isPageIpv6Literal(String literal) {
+  if (literal.contains('%')) return false;
+  return InternetAddress.tryParse(literal)?.type == InternetAddressType.IPv6;
+}
+
+bool _isPagePort(String suffix) {
+  if (suffix.isEmpty) return true;
+  final match = _pagePortSuffix.firstMatch(suffix);
+  if (match == null) return false;
+  final port = int.parse(match.group(1)!);
+  return port >= 1 && port <= 65535;
+}
+
+Response _builtinPageAddressRefusal() => Response(
+  403,
+  body: jsonEncode({'error': builtinPageAddressUnavailableError}),
+  headers: const {
+    'content-type': 'application/json',
+    'cache-control': 'no-store',
+  },
+);
+
 ExtensionManagementBrowserOrigins extensionManagementBrowserOrigins(
   WebUIService webUIService, {
   required int? Function() apiListenerPort,
+  int? Function()? docsListenerPort,
 }) => ExtensionManagementBrowserOrigins(
   apiListenerPort: apiListenerPort,
-  pagePorts: () => webUIService.browserOriginPorts,
+  pagePorts: () => {
+    ...webUIService.browserOriginPorts,
+    ?docsListenerPort?.call(),
+  },
   deviceAddresses: () => webUIService.currentBrowserOriginAddresses(),
 );
 
@@ -584,16 +830,27 @@ Handler buildWebServerHandler(
   Future<bool> Function()? requireExtensionManagementAuthorization,
   ExtensionManagementBrowserOrigins? browserOrigins,
   AdmissionGate? admissionGate,
+  BuiltinPageListener? pageListener,
 }) {
   var pipeline = const Pipeline();
+  final listener = pageListener;
+  if (listener != null) {
+    pipeline = pipeline.addMiddleware(
+      builtinBrowserCanonicalRedirect(
+        pagePaths: const {builtinSettingsPagePath},
+        listener: listener,
+      ),
+    );
+  }
   final origins = browserOrigins;
   if (origins != null) {
-    pipeline = pipeline.addMiddleware(
-      extensionManagementBrowserOriginMiddleware(origins),
-    );
+    pipeline = pipeline
+        .addMiddleware(extensionManagementBrowserOriginMiddleware(origins))
+        .addMiddleware(apiBrowserBoundaryMiddleware(origins));
   }
   return pipeline
       .addMiddleware(accountProxyCorsMiddleware(accountProxyAllowedOrigins))
+      .addMiddleware(frameProtectionMiddleware(skinPorts: origins?.pagePorts))
       .addMiddleware(logRequestsWithClientIp())
       .addMiddleware(
         corsHeaders(
@@ -620,6 +877,65 @@ Handler buildWebServerHandler(
       .addMiddleware(requestBodyReadMiddleware())
       .addMiddleware(apiAdmissionMiddleware(admissionGate ?? _apiAdmissionGate))
       .addHandler(routes);
+}
+
+const _frameAncestors = "frame-ancestors 'self'";
+
+Future<HttpServer> serveApiHandler(
+  Handler handler,
+  Object address,
+  int port,
+) async {
+  final server = await serveOrReportPortInUse(handler, address, port);
+  server.defaultResponseHeaders.removeAll('x-frame-options');
+  return server;
+}
+
+Middleware frameProtectionMiddleware({Set<int> Function()? skinPorts}) {
+  return (Handler inner) {
+    return (Request request) async {
+      final response = await inner(request);
+      final type = response.headers['content-type']?.toLowerCase() ?? '';
+      if (!type.startsWith('text/html')) return response;
+      final pluginPage = _isPluginPage(request);
+      final ancestors = pluginPage
+          ? [
+              _frameAncestors,
+              ..._skinFrameSources(request, skinPorts?.call()),
+            ].join(' ')
+          : _frameAncestors;
+      final policy = response.headers['content-security-policy'];
+      return response.change(
+        headers: {
+          'x-frame-options': pluginPage ? null : 'SAMEORIGIN',
+          'content-security-policy': policy == null
+              ? ancestors
+              : policy.contains('frame-ancestors')
+              ? policy
+              : '$policy; $ancestors',
+        },
+      );
+    };
+  };
+}
+
+bool _isPluginPage(Request request) {
+  final path = _pageRequestPath(request.url);
+  return path.startsWith('/api/v1/plugins/') && path != builtinSettingsPagePath;
+}
+
+Iterable<String> _skinFrameSources(Request request, Set<int>? ports) sync* {
+  if (ports == null || ports.isEmpty) return;
+  final hosts = <String>{'localhost', '127.0.0.1'};
+  final requested = InternetAddress.tryParse(request.requestedUri.host);
+  if (requested?.type == InternetAddressType.IPv4) {
+    hosts.add(requested!.address);
+  }
+  for (final port in ports) {
+    for (final host in hosts) {
+      yield 'http://$host:$port';
+    }
+  }
 }
 
 const _shelfConnectionInfoKey = 'shelf.io.connection_info';
@@ -749,13 +1065,36 @@ String _appendVary(String? value, String headerName) {
   return '$value, $headerName';
 }
 
-Handler createApiDocsHandler(String apiDirectory) => createStaticHandler(
-  apiDirectory,
-  defaultDocument: 'index.html',
-  listDirectories: true,
-);
+Handler createApiDocsHandler(
+  String apiDirectory, {
+  BuiltinPageListener? pageListener,
+}) {
+  final handler = createStaticHandler(
+    apiDirectory,
+    defaultDocument: 'index.html',
+    listDirectories: true,
+  );
+  final framed = const Pipeline()
+      .addMiddleware(frameProtectionMiddleware())
+      .addHandler(handler);
+  final listener = pageListener;
+  if (listener == null) return framed;
+  return const Pipeline()
+      .addMiddleware(
+        builtinBrowserCanonicalRedirect(
+          pagePaths: builtinApiDocsViewerPaths,
+          listener: listener,
+        ),
+      )
+      .addHandler(framed);
+}
 
-Future<HttpServer?> startApiDocsServer() async {
+Future<HttpServer?> startApiDocsServer({
+  Future<Set<String>> Function()? deviceAddresses,
+}) async {
+  final viewerAddresses = deviceAddresses;
+  int? viewerListenerPort;
+  String? viewerListenerAddress;
   final tempDir = await getTemporaryDirectory();
   final apiDir = Directory('${tempDir.path}/api');
   if (!apiDir.existsSync()) {
@@ -770,7 +1109,16 @@ Future<HttpServer?> startApiDocsServer() async {
     await file.writeAsBytes(bytes, flush: true);
   }
 
-  final apiHandler = createApiDocsHandler(apiDir.path);
+  final apiHandler = createApiDocsHandler(
+    apiDir.path,
+    pageListener: viewerAddresses == null
+        ? null
+        : BuiltinPageListener(
+            listenerPort: () => viewerListenerPort,
+            deviceAddresses: viewerAddresses,
+            listenerAddress: () => viewerListenerAddress,
+          ),
+  );
 
   final HttpServer apiServer;
   try {
@@ -785,6 +1133,8 @@ Future<HttpServer?> startApiDocsServer() async {
     );
     return null;
   }
+  viewerListenerPort = apiServer.port;
+  viewerListenerAddress = apiServer.address.address;
   log.info(
     '✅ API Docs server running at http://${apiServer.address.host}:${apiServer.port}',
   );

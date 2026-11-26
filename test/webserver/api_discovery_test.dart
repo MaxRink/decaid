@@ -167,6 +167,23 @@ void main() {
     }
   });
 
+  test('the docs viewer may only be framed by its own origin', () async {
+    final apiDirectory = Directory('${tempDirectory.path}/framed-api')
+      ..createSync(recursive: true);
+    await File('assets/api/index.html').copy('${apiDirectory.path}/index.html');
+
+    final response = await createApiDocsHandler(apiDirectory.path)(
+      Request('GET', Uri.parse('http://localhost:4001/')),
+    );
+
+    expect(response.statusCode, 200);
+    expect(response.headers['x-frame-options'], 'SAMEORIGIN');
+    expect(
+      response.headers['content-security-policy'],
+      "frame-ancestors 'self'",
+    );
+  });
+
   test('existing successful routes and CORS remain available', () async {
     final success = await createHandler()(
       Request('GET', Uri.parse('http://localhost/api/v1/info')),

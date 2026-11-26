@@ -231,6 +231,7 @@ Map<String, dynamic> _manifestJson(
   String id, {
   String version = '1.0.0',
   List<String> permissions = const ['api', 'log'],
+  bool secureToken = false,
 }) => {
   'id': id,
   'author': 'Test',
@@ -241,6 +242,7 @@ Map<String, dynamic> _manifestJson(
   'permissions': permissions,
   'settings': {
     'Label': {'type': 'string'},
+    if (secureToken) 'Token': {'type': 'string', 'secure': true},
   },
   'api': [
     for (final endpoint in ['echo', 'enable', 'source', 'approve'])
@@ -271,6 +273,7 @@ function createPlugin(host) {
 List<int> _releaseArchive({
   String version = '1.0.0',
   List<String> permissions = const ['log'],
+  bool secureToken = false,
 }) {
   final archive = Archive()
     ..addFile(
@@ -281,6 +284,7 @@ List<int> _releaseArchive({
             _releasedId,
             version: version,
             permissions: permissions,
+            secureToken: secureToken,
           ),
         ),
       ),
@@ -339,6 +343,7 @@ Object? _bodyFor(ExtensionManagementRoute route) {
     };
   }
   if (path.endsWith('/skins/default')) return {'skinId': _otherSkinId};
+  if (path.endsWith('/machine-control')) return {'granted': true};
   if (path.contains('/install')) {
     return {'repo': 'acme/plugin', 'url': 'https://example.test/skin.zip'};
   }
@@ -918,6 +923,45 @@ void main() {
         expect(invalid.error, 'manifest object is required');
       });
 
+      test('PUT source adds permissions only with a manager token', () async {
+        const id = 'growing.reaplugin';
+        final created = await send(
+          'PUT',
+          '/api/v1/plugins/$id/source',
+          authorization: bearer(),
+          body: {
+            'manifest': _manifestJson(id, permissions: ['log']),
+            'plugin': _echoPluginJs(id),
+          },
+        );
+        expect(created.status, 200, reason: '$created');
+
+        if (!required) {
+          final tokenless = await send(
+            'PUT',
+            '/api/v1/plugins/$id/source',
+            body: {
+              'manifest': _manifestJson(id, version: '1.0.1'),
+              'plugin': _echoPluginJs(id),
+            },
+          );
+          expect(tokenless.status, 409, reason: '$tokenless');
+          expect(service.getPluginManifest(id)?.version, '1.0.0');
+        }
+
+        final withToken = await send(
+          'PUT',
+          '/api/v1/plugins/$id/source',
+          authorization: 'Bearer $managerToken',
+          body: {
+            'manifest': _manifestJson(id, version: '1.0.1'),
+            'plugin': _echoPluginJs(id),
+          },
+        );
+        expect(withToken.status, 200, reason: '$withToken');
+        expect(service.getPluginManifest(id)?.version, '1.0.1');
+      });
+
       test(
         'enable, disable, settings and delete apply; unknown ids are 404',
         () async {
@@ -969,6 +1013,59 @@ void main() {
           }
         },
       );
+
+      test('a GitHub install over an installed plugin follows the source '
+          'write rules', () async {
+        releaseArchive = _releaseArchive(secureToken: true);
+        final first = await send(
+          'POST',
+          '/api/v1/plugins/install/github-release',
+          authorization: bearer(),
+          body: {'repo': 'acme/plugin'},
+        );
+        expect(first.status, 200, reason: '$first');
+        await service.savePluginSettings(_releasedId, {'Token': 'secret'});
+
+        releaseTag = 'v1.1.0';
+        releaseArchive = _releaseArchive(
+          version: '1.1.0',
+          permissions: ['log', 'proxy.decent_api'],
+          secureToken: true,
+        );
+        if (!required) {
+          final tokenless = await send(
+            'POST',
+            '/api/v1/plugins/install/github-release',
+            body: {'repo': 'evil/fork'},
+          );
+          expect(tokenless.status, 409, reason: '$tokenless');
+          expect(service.getPluginManifest(_releasedId)?.version, '1.0.0');
+        }
+
+        final updated = await send(
+          'POST',
+          '/api/v1/plugins/update',
+          authorization: bearer(),
+        );
+        expect(updated.status, 200, reason: '$updated');
+        if (!required) {
+          final tokenlessApproval = await send(
+            'POST',
+            '/api/v1/plugins/$_releasedId/update/approve',
+          );
+          expect(tokenlessApproval.status, 403, reason: '$tokenlessApproval');
+          expect(service.getPluginManifest(_releasedId)?.version, '1.0.0');
+        }
+        final approved = await send(
+          'POST',
+          '/api/v1/plugins/$_releasedId/update/approve',
+          authorization: 'Bearer $managerToken',
+        );
+        expect(approved.status, 200, reason: '$approved');
+        expect((await service.pluginSettings(_releasedId))['Token'], {
+          'isSet': true,
+        });
+      });
 
       test('GitHub install, update, approval and the 409 without a pending '
           'update', () async {
@@ -1151,6 +1248,46 @@ void main() {
     String freshId(String name) => '$name-${++fresh}.reaplugin';
 
     final probes = <String, _RouteProbe>{
+      'PUT /api/v1/plugins/<id>/machine-control': (caller) async {
+        final granted = await send(
+          'PUT',
+          '/api/v1/plugins/$_echoId/machine-control',
+          authorization: caller.authorization,
+          body: {'granted': true},
+        );
+        expect(granted.status, 200, reason: '${caller.name}: $granted');
+        expect(granted.json, {'id': _echoId, 'machineControl': true});
+        expect(service.machineControlGranted(_echoId), isTrue);
+        final listed = await send('GET', '/api/v1/plugins');
+        expect(
+          (listed.json as List).singleWhere(
+            (plugin) => plugin['id'] == _echoId,
+          )['machineControl'],
+          isTrue,
+        );
+        final invalid = await send(
+          'PUT',
+          '/api/v1/plugins/$_echoId/machine-control',
+          authorization: caller.authorization,
+          body: {'granted': 'yes'},
+        );
+        expect(invalid.status, 400, reason: caller.name);
+        final missing = await send(
+          'PUT',
+          '/api/v1/plugins/missing.reaplugin/machine-control',
+          authorization: caller.authorization,
+          body: {'granted': true},
+        );
+        expect(missing.status, 404, reason: caller.name);
+        final revoked = await send(
+          'PUT',
+          '/api/v1/plugins/$_echoId/machine-control',
+          authorization: caller.authorization,
+          body: {'granted': false},
+        );
+        expect(revoked.json, {'id': _echoId, 'machineControl': false});
+        expect(service.machineControlGranted(_echoId), isFalse);
+      },
       'POST /api/v1/plugins/install': (caller) async {
         final reply = await send(
           'POST',
@@ -1302,6 +1439,7 @@ void main() {
           id,
           manifestJson: _manifestJson(id),
           pluginJs: _echoPluginJs(id),
+          authorized: true,
         );
         final reply = await send(
           'DELETE',
@@ -2009,7 +2147,7 @@ void main() {
       });
 
       test('an untrusted preflight for a read-only method on a shared '
-          'management path keeps the general CORS contract', () async {
+          'management path gets no CORS grant', () async {
         final before = await snapshot();
         for (final path in [
           '/api/v1/plugins',
@@ -2032,21 +2170,11 @@ void main() {
                 'access-control-request-method': 'GET',
               },
             );
-            expect(reply.status, 200, reason: '$path $origin');
-            expect(reply.body, isEmpty, reason: '$path $origin');
+            expect(reply.status, 403, reason: '$path $origin');
+            expect(reply.error, crossOriginRequestError);
             expect(
               reply.headers.value('access-control-allow-origin'),
-              origin,
-              reason: '$path $origin',
-            );
-            expect(
-              reply.headers.value('access-control-allow-methods'),
-              isNotNull,
-              reason: '$path $origin',
-            );
-            expect(
-              reply.headers.value('access-control-max-age'),
-              isNotNull,
+              isNull,
               reason: '$path $origin',
             );
           }
@@ -2094,8 +2222,8 @@ void main() {
         expect(await snapshot(), before);
       });
 
-      test('an untrusted preflight for a plugin-defined route keeps the '
-          'general CORS contract', () async {
+      test('an untrusted preflight for a plugin-defined route is '
+          'is refused without a CORS grant', () async {
         for (final (method, path) in [
           ('POST', '/api/v1/plugins/$_echoId/echo'),
           ('GET', '/api/v1/plugins/$_echoId/status'),
@@ -2108,10 +2236,10 @@ void main() {
               'access-control-request-method': method,
             },
           );
-          expect(reply.status, 200, reason: '$method $path');
+          expect(reply.status, 403, reason: '$method $path');
           expect(
             reply.headers.value('access-control-allow-origin'),
-            _untrustedOrigin,
+            isNull,
             reason: '$method $path',
           );
         }
@@ -2170,13 +2298,12 @@ void main() {
         }
       });
 
-      test('an untrusted origin keeps read-only, plugin-defined and '
-          'unrelated routes unchanged', () async {
+      test('an untrusted origin may still send reads but gets no CORS '
+          'grant, and cannot send writes', () async {
         for (final (method, path) in [
           ('GET', '/api/v1/plugins'),
           ('GET', '/api/v1/plugins/$_echoId/echo'),
           ('GET', '/api/v1/webui/server/status'),
-          ('POST', '/api/v1/plugins/$_echoId/echo'),
         ]) {
           final reply = await send(
             method,
@@ -2188,7 +2315,15 @@ void main() {
             isNot(anyOf(401, 403)),
             reason: '$method $path -> $reply',
           );
+          expect(reply.headers.value('access-control-allow-origin'), isNull);
         }
+        final write = await send(
+          'POST',
+          '/api/v1/plugins/$_echoId/echo',
+          headers: {'origin': _untrustedOrigin},
+        );
+        expect(write.status, 403, reason: '$write');
+        expect(write.error, crossOriginRequestError);
       });
     });
   }
@@ -2416,6 +2551,7 @@ void main() {
         id,
         manifestJson: visualizerManifest(),
         pluginJs: _echoPluginJs(id),
+        authorized: true,
       );
     });
 

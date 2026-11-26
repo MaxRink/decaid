@@ -16,9 +16,12 @@ import 'plugin_ble_registry.dart';
 import 'plugin_ble_service.dart';
 import 'plugin_ble_session.dart';
 import 'plugin_decent_proxy_bridge.dart';
+import 'plugin_discovery.dart';
 import 'plugin_device_service.dart';
 import 'plugin_local_api_bridge.dart';
+import 'plugin_log.dart';
 import 'plugin_runtime.dart';
+import 'plugin_tls_pin.dart';
 import 'plugin_transport_service.dart';
 import 'plugin_types.dart';
 import '../services/storage/kv_store_service.dart';
@@ -30,7 +33,11 @@ import '../services/account/decent_proxy_service.dart';
 import '../services/ble/ble_exception_mapper.dart';
 import '../services/webserver/extension_management_auth.dart';
 
-enum _PendingOpKind { fetch, pluginHttp, decentProxy, localApi }
+enum _PendingOpKind { fetch, pluginHttp, decentProxy, localApi, discovery }
+
+const machineControlNoticeId = 'host.machine-control';
+
+bool _noMachineControl(String _) => false;
 
 enum PluginManagerLifecycle { active, disposing, disposed }
 
@@ -99,6 +106,8 @@ class PluginManager {
   final _log = Logger("PluginManager");
 
   final Map<String, PluginRuntime> _plugins = {};
+  final Map<String, PluginLogLimiter> _pluginLogLimiters = {};
+  final Map<String, List<String>> _pluginLogSecrets = {};
   final JavascriptRuntime js;
   final KeyValueStoreService kvStore;
   final DecentProxyService? decentProxyService;
@@ -119,8 +128,12 @@ class PluginManager {
   final Duration fetchTimeout;
   final int maxFetchResponseBytes;
   final Duration pluginHttpTimeout;
+  final int hostApiPort;
+  bool Function(String pluginId) machineControlGranted = _noMachineControl;
   final Duration decentProxyTimeout;
   final Duration localApiTimeout;
+  final PluginMdnsBrowser mdnsBrowser;
+  final Set<String> _discoveryBrowsing = {};
   final Duration transportCloseTimeout;
   final Duration deviceInvocationTimeout;
   final PluginDeviceService deviceService;
@@ -177,11 +190,13 @@ class PluginManager {
     this.pluginHttpTimeout = const Duration(seconds: 30),
     this.decentProxyTimeout = const Duration(seconds: 30),
     this.localApiTimeout = const Duration(seconds: 60),
+    this.mdnsBrowser = browseMdnsWithBonsoir,
     JavascriptRuntime? js,
     WebSocketConnector? connectWebSocket,
     SocketConnector? connectSocket,
     SecureSocketConnector? connectSecureSocket,
     this.transportCloseTimeout = const Duration(seconds: 5),
+    this.hostApiPort = 8080,
     this.deviceInvocationTimeout = const Duration(seconds: 10),
     PluginDeviceService? deviceService,
     PluginBleRegistry? bleRegistry,
@@ -347,11 +362,15 @@ class PluginManager {
     }
   }
 
-  bool _hasPermission(String pluginId, PluginPermissions permission) {
+  bool _holdsPermission(String pluginId, PluginPermissions permission) {
     final permissions =
         _plugins[pluginId]?.manifest.permissions ??
         _closingPluginPermissions[pluginId];
-    final allowed = permissions?.contains(permission) ?? false;
+    return permissions?.contains(permission) ?? false;
+  }
+
+  bool _hasPermission(String pluginId, PluginPermissions permission) {
+    final allowed = _holdsPermission(pluginId, permission);
     if (!allowed) {
       final denial = '$pluginId:${permission.wireName}';
       if (_loggedPermissionDenials.add(denial)) {
@@ -414,9 +433,34 @@ class PluginManager {
     js.evaluate(r'''
       (function () {
         "use strict";
-        if (globalThis.__plugins__) return;
+        if (globalThis.__registerPlugin) return;
 
-        globalThis.__plugins__ = Object.create(null);
+        const __pluginRegistry = new Map();
+        Object.defineProperty(globalThis, "__registerPlugin", {
+          value: function (bridgeToken, plugin) {
+            if (typeof bridgeToken !== "string" ||
+                __mapHas(__pluginRegistry, bridgeToken)) {
+              throw new Error("Plugin registration refused");
+            }
+            __mapSet(__pluginRegistry, bridgeToken, plugin);
+          },
+          writable: false,
+          configurable: false,
+          enumerable: false
+        });
+        Object.defineProperty(globalThis, "__unregisterPlugin", {
+          value: function (bridgeToken) {
+            const plugin = __mapGet(__pluginRegistry, bridgeToken);
+            try {
+              plugin?.onUnload?.();
+            } finally {
+              __mapDelete(__pluginRegistry, bridgeToken);
+            }
+          },
+          writable: false,
+          configurable: false,
+          enumerable: false
+        });
         
         // Add HTTP response handling
         const __nativeSendMessage = sendMessage;
@@ -555,6 +599,32 @@ class PluginManager {
           return __wrapDecentProxyPromise(promise);
         }
 
+        function __discoveryBrowse(pluginId, generation, bridgeToken, options) {
+          const requestId = "__discovery_" + __decentProxyNonce + "_" + (++__decentProxySeq);
+          const promise = new __NativePromise((resolve, reject) => {
+            const pendingByPlugin = __pendingDecentProxyByPlugin(pluginId);
+            __mapSet(pendingByPlugin, requestId, { generation: generation, resolve: resolve, reject: reject });
+            try {
+              __sendHostMessage({
+                pluginId: pluginId,
+                generation: generation,
+                bridgeToken: bridgeToken,
+                type: "discoveryBrowse",
+                requestId: requestId,
+                options: options
+              });
+            } catch (e) {
+              __mapDelete(pendingByPlugin, requestId);
+              reject(e);
+            }
+          });
+          return __wrapDecentProxyPromise(
+            __nativeReflectApply(__nativePromiseThen, promise, [
+              (response) => response.services
+            ])
+          );
+        }
+
         function __completeDecentProxyRequest(pluginId, requestId, response) {
           const pendingByPlugin = __mapGet(__pendingDecentProxyRequests, pluginId);
           if (!pendingByPlugin) return;
@@ -592,6 +662,7 @@ class PluginManager {
           value: __nativeFreeze({
             decentProxy: __decentProxy,
             localApi: __localApi,
+            discoveryBrowse: __discoveryBrowse,
             completeDecentProxyRequest: __completeDecentProxyRequest,
             cancelForPlugin: __cancelDecentProxyRequestsForPlugin,
             cancelAll: __cancelAllDecentProxyRequests
@@ -621,7 +692,7 @@ class PluginManager {
 
         Object.defineProperty(globalThis, "__dispatchPluginHttp", {
           value: function (pluginId, bridgeToken, generation, requestId, event) {
-            const plugin = globalThis.__plugins__[pluginId];
+            const plugin = __mapGet(__pluginRegistry, bridgeToken);
             if (!plugin || typeof plugin.__httpRequestHandler !== "function") return;
             try {
               const response = plugin.__httpRequestHandler(event);
@@ -691,13 +762,37 @@ class PluginManager {
             };
         }
 
-        globalThis.__dispatchToPlugin = function (pluginId, evt) {
-          const plugin = globalThis.__plugins__[pluginId];
+        if (typeof globalThis.atob === 'undefined') {
+          globalThis.atob = function (input) {
+            const chars =
+              "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            const str = String(input).replace(/[\t\n\f\r ]/g, "");
+            const clean = str.length % 4 === 0 ? str.replace(/==?$/, "") : str;
+            if (clean.length % 4 === 1 || /[^A-Za-z0-9+/]/.test(clean)) {
+              throw new Error("The string to be decoded is not correctly encoded.");
+            }
+            let output = "";
+            let buffer = 0;
+            let bits = 0;
+            for (let i = 0; i < clean.length; i++) {
+              buffer = (buffer << 6) | chars.indexOf(clean.charAt(i));
+              bits += 6;
+              if (bits >= 8) {
+                bits -= 8;
+                output += String.fromCharCode((buffer >> bits) & 0xff);
+              }
+            }
+            return output;
+          };
+        }
+
+        globalThis.__dispatchToPlugin = function (bridgeToken, evt) {
+          const plugin = __mapGet(__pluginRegistry, bridgeToken);
           if (!plugin || typeof plugin.onEvent !== "function") return;
           try {
             plugin.onEvent(evt);
           } catch (e) {
-            console.error("Plugin error", pluginId, e);
+            console.error("Plugin error", e);
           }
         };
 
@@ -809,6 +904,7 @@ class PluginManager {
           if (msg.error) {
             const error = new __NativeError(msg.error);
             if (msg.code) error.code = msg.code;
+            if (msg.peerSha256) error.peerSha256 = msg.peerSha256;
             pending.reject(error);
             return;
           }
@@ -1076,7 +1172,9 @@ class PluginManager {
               url: String(input),
               method: init.method || "GET",
               headers: init.headers || {},
-              body: init.body ?? null
+              body: init.body ?? null,
+              tlsPinSha256: init.tlsPinSha256 ?? null,
+              responseType: init.responseType ?? null
             }));
           });
         };
@@ -1091,19 +1189,32 @@ class PluginManager {
           _pendingFetches.delete(msg.id);
 
           if (msg.error) {
-            pending.reject(new Error(msg.error));
+            const error = new Error(msg.error);
+            if (msg.code) error.code = msg.code;
+            if (msg.peerSha256) error.peerSha256 = msg.peerSha256;
+            pending.reject(error);
             return;
           }
 
           const headers = makeHeaders(msg.headers);
+          const isBase64 = typeof msg.bodyBase64 === "string";
+          const base64Only =
+            "This response was requested with responseType base64; use base64()";
 
           const response = {
             status: msg.status,
             ok: msg.status >= 200 && msg.status < 300,
             headers,
-            text: async () => msg.body ?? "",
-            json: async () => JSON.parse(msg.body ?? "null")
+            text: async () => {
+              if (isBase64) throw new TypeError(base64Only);
+              return msg.body ?? "";
+            },
+            json: async () => {
+              if (isBase64) throw new TypeError(base64Only);
+              return JSON.parse(msg.body ?? "null");
+            }
           };
+          if (isBase64) response.base64 = async () => msg.bodyBase64;
           pending.resolve(response);
         };
 
@@ -1122,6 +1233,10 @@ class PluginManager {
           _pendingFetches.clear();
         };
 
+        const hostGlobalNames = Object.getOwnPropertyNames(globalThis).filter(
+          (name) => name.startsWith("__") || name === "host" ||
+            name === "fetch" || name === "sendMessage"
+        );
         Object.defineProperty(globalThis, "__lockPluginHostBridge", {
           value: function () {
             if (globalThis.__reaprimePluginHostBridge) return;
@@ -1143,6 +1258,51 @@ class PluginManager {
               configurable: false,
               enumerable: false
             });
+            const intrinsicNames = [
+              "Object", "Function", "Array", "JSON", "Promise", "Map", "Set",
+              "WeakMap", "WeakSet", "String", "Number", "Boolean", "Symbol",
+              "Reflect", "Math", "Date", "RegExp", "Error", "TypeError",
+              "BigInt", "Proxy", "ArrayBuffer", "SharedArrayBuffer", "DataView",
+              "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array",
+              "Uint16Array", "Int32Array", "Uint32Array", "Float32Array",
+              "Float64Array", "BigInt64Array", "BigUint64Array", "TextEncoder",
+              "TextDecoder", "btoa", "atob"
+            ];
+            const freezeWithPrototype = (intrinsic, freezePrototype) => {
+              if (intrinsic === undefined || intrinsic === null) return;
+              Object.freeze(intrinsic);
+              if (freezePrototype && intrinsic.prototype) {
+                Object.freeze(intrinsic.prototype);
+              }
+            };
+            for (const name of intrinsicNames) {
+              freezeWithPrototype(
+                globalThis[name],
+                name !== "Error" && name !== "TypeError"
+              );
+            }
+            if (typeof Uint8Array === "function") {
+              freezeWithPrototype(Object.getPrototypeOf(Uint8Array), true);
+            }
+            for (const name of [...hostGlobalNames, ...intrinsicNames]) {
+              const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+              if (!descriptor) continue;
+              if (descriptor.configurable) {
+                Object.defineProperty(globalThis, name, "value" in descriptor
+                  ? { writable: false, configurable: false }
+                  : { configurable: false });
+                continue;
+              }
+              // A non-configurable data property cannot be redefined, but a
+              // writable one can still be made non-writable, and that is the
+              // whole point of this pass. Engines that ship btoa/atob as
+              // non-configurable globals used to fall through the branch above
+              // and stay writable, so a plugin could replace the helper another
+              // plugin calls and read its arguments.
+              if ("value" in descriptor && descriptor.writable) {
+                Object.defineProperty(globalThis, name, { writable: false });
+              }
+            }
           },
           writable: false,
           configurable: false,
@@ -1238,7 +1398,7 @@ class PluginManager {
           return;
         }
         if (_hasPermission(pluginId, PluginPermissions.log)) {
-          _log.finest("[JS:$pluginId] ${msg['payload']?['message']}");
+          _writePluginLog(pluginId, '${msg['payload']?['message']}');
         }
         return;
       }
@@ -1249,6 +1409,10 @@ class PluginManager {
       }
       if (type == 'localApi') {
         await _handleLocalApiMessage(pluginId, msg);
+        return;
+      }
+      if (type == 'discoveryBrowse') {
+        await _handleDiscoveryMessage(pluginId, msg);
         return;
       }
       if (!_isCurrentPluginMessage(pluginId, msg) && !retiringStorageWrite) {
@@ -1978,6 +2142,16 @@ class PluginManager {
             );
             return;
           }
+          if (await _isHostMachineTransport(payload)) {
+            _replyTransport(
+              requestId,
+              bridgeToken,
+              error:
+                  'Plugins cannot open machine control connections to the '
+                  'host API',
+            );
+            return;
+          }
           final result = await _transportService.open(
             pluginId: pluginId,
             generation: generation,
@@ -2047,6 +2221,14 @@ class PluginManager {
       }
     } on PluginTransportException catch (e) {
       _replyTransport(requestId, bridgeToken, error: e.message, code: e.code);
+    } on TlsPinMismatchException catch (e) {
+      _replyTransport(
+        requestId,
+        bridgeToken,
+        error: e.toString(),
+        code: TlsPinMismatchException.code,
+        peerSha256: e.peerSha256,
+      );
     } catch (e) {
       _replyTransport(requestId, bridgeToken, error: e.toString());
     }
@@ -2058,11 +2240,12 @@ class PluginManager {
     Map<String, dynamic>? result,
     String? error,
     String? code,
+    String? peerSha256,
   }) {
     try {
       js.evaluate(
         'globalThis.__handleTransportReply('
-        '${jsonEncode({'requestId': requestId, 'bridgeToken': ?bridgeToken, 'result': result, 'error': error, 'code': code})});',
+        '${jsonEncode({'requestId': requestId, 'bridgeToken': ?bridgeToken, 'result': result, 'error': error, 'code': code, 'peerSha256': ?peerSha256})});',
       );
       while (js.executePendingJob() > 0) {}
     } catch (e, st) {
@@ -2181,6 +2364,10 @@ class PluginManager {
 
     final runtime = PluginRuntime(pluginId: id, manifest: manifest);
     final pluginBridgeToken = _newBridgeToken();
+    _pluginLogSecrets[id] = [
+      for (final key in manifest.secureSettingKeys)
+        if (settings[key] case final String value) value,
+    ];
 
     _plugins[id] = runtime;
     _pluginBridgeTokens[id] = pluginBridgeToken;
@@ -2440,7 +2627,16 @@ class PluginManager {
             );
           },
           transport: transport,
-          devices: devices
+          devices: devices,
+          discovery: Object.freeze({
+            browse: (options = {}) =>
+              globalThis.__reaprimePluginBridge.discoveryBrowse(
+                pluginId,
+                pluginGeneration,
+                pluginBridgeToken,
+                options
+              )
+          })
         };
         
         // Inject and evaluate the plugin code
@@ -2464,7 +2660,7 @@ class PluginManager {
         }
         
         // Store the plugin object
-        globalThis.__plugins__[pluginId] = plugin;
+        globalThis.__registerPlugin(pluginBridgeToken, plugin);
         
         // Add HTTP API handler if the plugin defines one
         if (typeof plugin.handleHttpRequest === "function") {
@@ -2535,7 +2731,25 @@ class PluginManager {
     }
   }
 
+  void _writePluginLog(String pluginId, String message) {
+    final admission = (_pluginLogLimiters[pluginId] ??= PluginLogLimiter())
+        .admit();
+    _logSuppressedPluginLines(pluginId, admission.suppressed);
+    if (!admission.write) return;
+    _log.info(
+      '[JS:$pluginId] '
+      '${redactPluginLog(message, _pluginLogSecrets[pluginId] ?? const [])}',
+    );
+  }
+
+  void _logSuppressedPluginLines(String pluginId, int suppressed) {
+    if (suppressed == 0) return;
+    _log.info('[JS:$pluginId] suppressed $suppressed plugin log lines');
+  }
+
   Future<void> _unloadPlugin(String id) async {
+    _logSuppressedPluginLines(id, _pluginLogLimiters.remove(id)?.drain() ?? 0);
+    _pluginLogSecrets.remove(id);
     notifications.retireSource(NotificationNamespace.plugin, id);
     _loggedPermissionDenials.removeWhere((denial) => denial.startsWith('$id:'));
     final pluginBridgeToken = _pluginBridgeTokens[id];
@@ -2554,17 +2768,12 @@ class PluginManager {
 
     try {
       try {
-        final result = js.evaluate('''
-          (function () {
-            const plugin = globalThis.__plugins__["$id"];
-            try {
-              plugin?.onUnload?.();
-            } finally {
-              delete globalThis.__plugins__["$id"];
-            }
-          })();
-        ''');
-        if (result.isError) {
+        final result = pluginBridgeToken == null
+            ? null
+            : js.evaluate(
+                'globalThis.__unregisterPlugin(${jsonEncode(pluginBridgeToken)});',
+              );
+        if (result != null && result.isError) {
           _log.warning('Plugin onUnload failed: $id: ${result.stringResult}');
         }
       } catch (e, st) {
@@ -2710,7 +2919,7 @@ class PluginManager {
       'notificationResult' => PluginPermissions.notifications,
       _ => null,
     };
-    if (permission != null && !_hasPermission(pluginId, permission)) return;
+    if (permission != null && !_holdsPermission(pluginId, permission)) return;
 
     final requestIdValue = payload is Map<String, dynamic>
         ? payload['requestId']
@@ -2728,8 +2937,9 @@ class PluginManager {
         );'''
         : '';
 
+    if (pluginBridgeToken == null) return;
     js.evaluate('''
-    __dispatchToPlugin("$pluginId", {
+    __dispatchToPlugin(${jsonEncode(pluginBridgeToken)}, {
       name: "$name",
       payload: ${jsonEncode(payload)}
     });
@@ -2767,6 +2977,7 @@ class PluginManager {
             canOpenAccount: _plugins[pluginId]!.manifest.permissions.contains(
               PluginPermissions.proxyDecentApi,
             ),
+            manifest: _plugins[pluginId]!.manifest,
           );
           await notifications.publish(
             notice,
@@ -2998,6 +3209,125 @@ class PluginManager {
     return counts;
   }
 
+  Map<String, dynamic>? _machineControlRefusal(String pluginId, Uri uri) {
+    final Map<String, String> error;
+    if (_decodedPath(uri).startsWith('/api/v1/machine/firmware')) {
+      error = {
+        'error': 'Plugins cannot update machine firmware',
+        'code': 'machine_control_forbidden',
+      };
+    } else if (machineControlGranted(pluginId)) {
+      return null;
+    } else {
+      _askForMachineControl(pluginId);
+      error = {
+        'error':
+            'Plugin $pluginId is not allowed to control the machine; the user '
+            'can allow it in Settings > Plugins',
+        'code': 'machine_control_not_granted',
+      };
+    }
+    return {
+      'status': 403,
+      'headers': {'content-type': 'application/json'},
+      'body': jsonEncode(error),
+    };
+  }
+
+  void _askForMachineControl(String pluginId) {
+    final name = _plugins[pluginId]?.manifest.name ?? pluginId;
+    unawaited(
+      notifications
+          .publish(
+            NativeNotification(
+              namespace: NotificationNamespace.plugin,
+              sourceId: pluginId,
+              sourceName: name,
+              id: machineControlNoticeId,
+              message:
+                  'Allow $name to control the machine? It tried to change the '
+                  'machine state. Allow it in Settings > Plugins > $name.',
+              actions: const [
+                NotificationAction(
+                  id: 'review',
+                  label: 'Review',
+                  type: NotificationActionType.reviewMachineControl,
+                ),
+              ],
+            ),
+            binding: NotificationBinding(
+              owner: (machineControlNoticeId, pluginId),
+              isAlive: () => _lifecycle == PluginManagerLifecycle.active,
+            ),
+          )
+          .catchError(
+            (Object error) =>
+                _log.fine('Could not ask for machine control: $error'),
+          ),
+    );
+  }
+
+  bool _isMachineControlWrite(String method, Uri uri) {
+    if (method == 'GET' || method == 'HEAD') return false;
+    final path = _decodedPath(uri);
+    return path == '/api/v1/machine' || path.startsWith('/api/v1/machine/');
+  }
+
+  String _decodedPath(Uri uri) {
+    final path = uri.normalizePath().path;
+    try {
+      return Uri.decodeFull(path).toLowerCase();
+    } on ArgumentError {
+      return path.toLowerCase();
+    }
+  }
+
+  Future<bool> _isHostMachineTransport(Map payload) async {
+    switch (payload['kind']) {
+      case 'websocket':
+        final url = Uri.tryParse('${payload['url']}');
+        return url != null &&
+            _decodedPath(url).startsWith('/ws/v1/machine/raw') &&
+            await _isHostApi(url.host, url.port);
+      case 'tcp' || 'tls':
+        final host = payload['host'];
+        final port = payload['port'];
+        return host is String && port is int && await _isHostApi(host, port);
+    }
+    return false;
+  }
+
+  Future<bool> _isHostApi(String host, int port) async {
+    if (port != hostApiPort) return false;
+    final literal = InternetAddress.tryParse(host);
+    final List<InternetAddress> targets;
+    try {
+      targets = literal != null
+          ? [literal]
+          : await InternetAddress.lookup(host);
+    } catch (_) {
+      return false;
+    }
+    var local = const <String>{};
+    try {
+      local = {
+        for (final interface in await NetworkInterface.list(
+          includeLoopback: true,
+          includeLinkLocal: true,
+        ))
+          for (final address in interface.addresses) address.address,
+      };
+    } catch (error) {
+      _log.fine('Could not list network interfaces: $error');
+    }
+    return targets.any(
+      (target) =>
+          target.isLoopback ||
+          target.rawAddress.every((byte) => byte == 0) ||
+          local.contains(target.address),
+    );
+  }
+
   HttpClient _getHttpClient() {
     return _httpClient ??= HttpClient()
       ..connectionTimeout = const Duration(seconds: 10);
@@ -3025,6 +3355,7 @@ class PluginManager {
     Map<String, dynamic>? result,
     String? error,
     String? errorCode,
+    String? peerSha256,
   }) {
     op.timeout?.cancel();
     if (_pendingOps.remove(op.key) == null) return;
@@ -3039,7 +3370,12 @@ class PluginManager {
           } catch (_) {}
         }
         final fetchPayload = error != null
-            ? {'id': int.parse(op.requestId), 'error': error}
+            ? {
+                'id': int.parse(op.requestId),
+                'error': error,
+                'code': ?errorCode,
+                'peerSha256': ?peerSha256,
+              }
             : result;
         js.evaluate(
           'globalThis.__handleFetchResponse(${jsonEncode(fetchPayload)});',
@@ -3053,7 +3389,9 @@ class PluginManager {
         } else {
           completer.complete(result);
         }
-      case _PendingOpKind.decentProxy || _PendingOpKind.localApi:
+      case _PendingOpKind.decentProxy ||
+          _PendingOpKind.localApi ||
+          _PendingOpKind.discovery:
         js.evaluate(
           'globalThis.__reaprimePluginBridge.completeDecentProxyRequest('
           '${jsonEncode(op.pluginId)}, ${jsonEncode(op.requestId)}, '
@@ -3206,6 +3544,97 @@ class PluginManager {
       _completeOp(op, result: response);
     } catch (e) {
       _completeOp(op, error: e.toString());
+    }
+  }
+
+  static const _discoveryPermissions = {
+    PluginPermissions.api,
+    PluginPermissions.networkWebsocket,
+    PluginPermissions.networkTcp,
+    PluginPermissions.networkTls,
+  };
+
+  Future<void> _handleDiscoveryMessage(
+    String pluginId,
+    Map<String, dynamic> msg,
+  ) async {
+    final requestId = msg['requestId'] as String?;
+    if (requestId == null) return;
+    final generation = msg['generation'] is num
+        ? (msg['generation'] as num).toInt()
+        : 0;
+    final op = _PendingOp(
+      kind: _PendingOpKind.discovery,
+      pluginId: pluginId,
+      generation: generation,
+      requestId: requestId,
+    );
+    if (_pendingOps.containsKey(op.key)) return;
+    _pendingOps[op.key] = op;
+
+    final runtime = _plugins[pluginId];
+    if (msg['bridgeToken'] != _pluginBridgeTokens[pluginId]) {
+      _completeOp(op, error: 'Invalid plugin discovery caller');
+      return;
+    }
+    if (generation != _pluginGenerations[pluginId] ||
+        runtime?.isAlive != true) {
+      _completeOp(op, error: 'Plugin generation changed');
+      return;
+    }
+    if (!runtime!.manifest.permissions.any(_discoveryPermissions.contains)) {
+      _completeOp(
+        op,
+        error:
+            'host.discovery requires the api permission or a network.* '
+            'permission',
+        errorCode: 'permission',
+      );
+      return;
+    }
+    final PluginDiscoveryRequest request;
+    try {
+      request = resolvePluginDiscoveryRequest(
+        runtime.manifest.mdnsDiscovery,
+        msg['options'],
+      );
+    } on FormatException catch (e) {
+      _completeOp(op, error: e.message, errorCode: 'validation');
+      return;
+    }
+    if (!_discoveryBrowsing.add(pluginId)) {
+      _completeOp(
+        op,
+        error: 'A discovery browse is already running',
+        errorCode: 'busy',
+      );
+      return;
+    }
+    op.timeout = Timer(request.timeout + const Duration(seconds: 5), () {
+      _completeOp(op, error: 'Discovery timed out');
+    });
+    bool accepts(String name) =>
+        pluginDiscoveryNameMatches(name, request.namePrefixes);
+    try {
+      final services = await mdnsBrowser(
+        request.serviceType,
+        request.timeout,
+        accepts,
+      );
+      _completeOp(
+        op,
+        result: {
+          'services': services
+              .where((service) => accepts(service.name))
+              .take(maxPluginDiscoveryResults)
+              .map((service) => service.toJson())
+              .toList(),
+        },
+      );
+    } catch (e) {
+      _completeOp(op, error: 'Discovery failed: $e');
+    } finally {
+      _discoveryBrowsing.remove(pluginId);
     }
   }
 
@@ -3528,6 +3957,13 @@ class PluginManager {
     try {
       final response = await _performFetch(op, msg);
       _completeOp(op, result: response);
+    } on TlsPinMismatchException catch (e) {
+      _completeOp(
+        op,
+        error: e.toString(),
+        errorCode: TlsPinMismatchException.code,
+        peerSha256: e.peerSha256,
+      );
     } catch (e) {
       _completeOp(op, error: e.toString());
     }
@@ -3541,8 +3977,44 @@ class PluginManager {
     final method = ((msg['method'] as String?) ?? 'GET').toUpperCase();
     final headers = msg['headers'] as Map? ?? {};
     final body = msg['body'];
+    final binary = switch (msg['responseType']) {
+      null || 'text' => false,
+      'base64' => true,
+      _ => throw const FormatException(
+        'responseType must be "base64" or omitted',
+      ),
+    };
+    if (_isMachineControlWrite(method, uri) &&
+        await _isHostApi(uri.host, uri.port)) {
+      final refusal = _machineControlRefusal(op.pluginId, uri);
+      if (refusal != null) return {'id': int.parse(op.requestId), ...refusal};
+    }
+    final pin = parseTlsPinSha256(msg[tlsPinOption]);
+    requireTlsScheme(pin, uri.scheme == 'https', 'an https:// url');
+    final check = pin == null ? null : TlsPinCheck(pin);
+    final client = check == null
+        ? _getHttpClient()
+        : (pinnedHttpClient(check)
+            ..connectionTimeout = const Duration(seconds: 10));
+    Future<Map<String, dynamic>> send() =>
+        _sendFetch(op, client, method, uri, headers, body, binary);
+    try {
+      return await (check == null ? send() : check.guard(send));
+    } finally {
+      if (pin != null) client.close(force: true);
+    }
+  }
 
-    final request = await _getHttpClient().openUrl(method, uri);
+  Future<Map<String, dynamic>> _sendFetch(
+    _PendingOp op,
+    HttpClient client,
+    String method,
+    Uri uri,
+    Map headers,
+    Object? body,
+    bool binary,
+  ) async {
+    final request = await client.openUrl(method, uri);
     op.request = request;
     headers.forEach((k, v) {
       request.headers.set(k.toString(), v.toString());
@@ -3570,7 +4042,10 @@ class PluginManager {
       'id': int.parse(op.requestId),
       'status': response.statusCode,
       'headers': responseHeaders,
-      'body': utf8.decode(bytes, allowMalformed: true),
+      if (binary)
+        'bodyBase64': base64Encode(bytes)
+      else
+        'body': utf8.decode(bytes, allowMalformed: true),
     };
   }
 }

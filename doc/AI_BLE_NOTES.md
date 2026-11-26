@@ -37,6 +37,13 @@ The single BLE transport is `UniversalBleTransport` in `lib/src/services/ble/uni
 
 `UnifiedDe1Transport` wraps `UniversalBleTransport` and adds MMR read/write on top of raw characteristic I/O. It provides `rawData` stream, `readMmr()`, `writeMmr()`, and typed connection guards (`DeviceNotConnectedException.machine()` on read/write when disconnected).
 
+Automatic BLE timeout recovery retires notification callbacks before awaiting
+link teardown. It clears replay caches with internal null values, filtered from
+the public streams, without closing active typed subscriptions. New snapshot
+getters therefore wait for current-session samples while existing subscribers
+resume after recovery. Firmware-map callbacks use the same generation fence but
+remain typed-only; they never enter the raw notification mirror.
+
 ## MMR read architecture
 
 Consecutive MMR settings words can share one request, reducing transport round
@@ -634,6 +641,14 @@ Every scan-generation advance also resets evidence, observations, ownership
 decisions, and queued observation work. Watch stop and adapter recovery are
 generation boundaries too; otherwise fresh Apple quick-connect system evidence
 is rejected by the previous cache generation.
+
+Because a watch stop empties the evidence cache, plugin candidate admission
+falls back to the evidence captured when the candidate was created and still
+re-decides ownership against the current registry. `ScaleWatch` stops the
+watch before it connects a sighted preferred scale; without the fallback a
+plugin scale was refused with `stale_session: BLE ownership changed` on every
+watch-driven reconnect until a full scan refilled the cache. Native candidates
+already fall back to system evidence in `_nativeEligible`.
 
 Real-JS integration fixtures are in `test/plugins/plugin_manager_ble_test.dart`,
 `plugin_ble_native_bridge_test.dart`, and `plugin_ble_sensor_api_test.dart`. The

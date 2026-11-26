@@ -6,6 +6,29 @@ import 'package:reaprime/src/models/data/shot_snapshot.dart';
 import 'package:reaprime/src/models/device/machine.dart';
 
 void main() {
+  group('shotTime', () {
+    ShotRecord at(DateTime t) => ShotRecord(
+      id: 'shot-time',
+      timestamp: t,
+      measurements: const [],
+      workflow: WorkflowController().currentWorkflow,
+      annotations: const ShotAnnotations(),
+    );
+
+    test('uses a 24-hour clock when the platform asks for it', () {
+      final text = at(DateTime(2026, 11, 23, 16, 50))
+          .shotTime(use24HourFormat: true);
+      expect(text, endsWith('16:50'));
+      expect(text, isNot(contains('PM')));
+    });
+
+    test('keeps the locale clock otherwise', () {
+      final text = at(DateTime(2026, 11, 23, 16, 50))
+          .shotTime(use24HourFormat: false);
+      expect(text, contains('PM'));
+    });
+  });
+
   test('canonical constructor annotations stay authoritative when null', () {
     final serialized = ShotRecord(
       id: 'shot-1',

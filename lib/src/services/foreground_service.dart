@@ -10,6 +10,7 @@ class ForegroundTaskService {
   static StreamSubscription? _machineSubscription;
   static Object? _machineWatchToken;
   static Future<bool>? _startFuture;
+  static bool _keepRunning = false;
 
   static void init() {
     FlutterForegroundTask.init(
@@ -102,6 +103,7 @@ class ForegroundTaskService {
     _machineSubscription?.cancel();
     _graceTimer?.dispose();
     _graceTimer = ForegroundServiceGraceTimer(
+      keepRunning: _keepRunning,
       onStop: () => _stopServiceOnly(),
       onStart: () => start(),
     );
@@ -120,6 +122,21 @@ class ForegroundTaskService {
       }
     });
     return token;
+  }
+
+  static void setKeepRunning(bool value) {
+    if (value == _keepRunning) return;
+    _keepRunning = value;
+    _graceTimer?.setKeepRunning(value);
+  }
+
+  static Future<void> requestBatteryOptimizationExemption() async {
+    try {
+      if (await FlutterForegroundTask.isIgnoringBatteryOptimizations) return;
+      await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+    } catch (e, st) {
+      _log.warning("Battery optimization exemption request failed", e, st);
+    }
   }
 
   static void unwatchMachineConnection(Object token) {
@@ -186,11 +203,14 @@ class ForegroundServiceGraceTimer {
 
   Timer? _graceTimer;
   bool _serviceStopped = false;
+  bool _machineDisconnected = false;
+  bool _keepRunning;
 
   ForegroundServiceGraceTimer({
     this.gracePeriod = const Duration(minutes: 5),
     required this.onStop,
     required this.onStart,
+    this._keepRunning = false,
   });
 
   Future<void> _updateNotification(String title, String text) async {
@@ -208,26 +228,55 @@ class ForegroundServiceGraceTimer {
   }
 
   void onMachineConnected() {
+    _machineDisconnected = false;
     _graceTimer?.cancel();
     _graceTimer = null;
 
     if (_serviceStopped) {
       _log.info('Machine reconnected - restarting foreground service');
-      _serviceStopped = false;
-      onStart()
-          .then(
-            (_) => _updateNotification('Streamline Active', 'Connected to DE1'),
-          )
-          .catchError(
-            (e) => _log.warning('Failed to restart foreground service: $e'),
-          );
+      _restart('Connected to DE1');
     } else {
       _updateNotification('Streamline Active', 'Connected to DE1');
     }
   }
 
-  void onMachineDisconnected() {
+  void _restart(String notificationText) {
+    _serviceStopped = false;
+    onStart()
+        .then((_) => _updateNotification('Streamline Active', notificationText))
+        .catchError(
+          (e) => _log.warning('Failed to restart foreground service: $e'),
+        );
+  }
+
+  void setKeepRunning(bool value) {
+    if (value == _keepRunning) return;
+    _keepRunning = value;
+    if (!value) {
+      if (_machineDisconnected) onMachineDisconnected();
+      return;
+    }
     _graceTimer?.cancel();
+    _graceTimer = null;
+    if (_serviceStopped) {
+      _log.info('Keep running enabled - restarting foreground service');
+      _restart(_keepRunningText);
+    } else if (_machineDisconnected) {
+      _updateNotification('Streamline Active', _keepRunningText);
+    }
+  }
+
+  static const _keepRunningText = 'Running in the background';
+
+  void onMachineDisconnected() {
+    _machineDisconnected = true;
+    _graceTimer?.cancel();
+    if (_keepRunning) {
+      _graceTimer = null;
+      _log.info('Machine disconnected - keeping foreground service running');
+      _updateNotification('Streamline: Disconnected', _keepRunningText);
+      return;
+    }
     _log.info(
       'Machine disconnected - starting ${gracePeriod.inMinutes}m grace period',
     );

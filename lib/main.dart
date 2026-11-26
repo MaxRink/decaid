@@ -574,6 +574,7 @@ void main(List<String> args) async {
     rateLimit: githubRateLimit,
     credentials: githubCredentials,
   );
+  webUIService.legacySkinPathsProvider = webUIStorage.legacySkinPaths;
 
   DecentAccountService? decentAccountService;
   DecentProxyService? decentProxyService;
@@ -910,9 +911,7 @@ void main(List<String> args) async {
       ) ??
       Level.FINE;
 
-  Future.delayed(Duration(minutes: 10), () async {
-    await updateCheckService.initialize();
-  });
+  updateCheckService.scheduleInitialize();
 
   WidgetsBinding.instance.addObserver(
     AppLifecycleObserver(
@@ -920,18 +919,25 @@ void main(List<String> args) async {
       pluginLoaderService: pluginService,
       connectionManager: connectionManager,
       appLogUploadService: appLogUploadService,
+      updateCheckService: updateCheckService,
       settingsController: settingsController,
     ),
   );
 
   if (Platform.isAndroid) {
     ForegroundTaskService.init();
+    void applyKeepServiceRunning() => ForegroundTaskService.setKeepRunning(
+      settingsController.keepServiceRunning,
+    );
+    applyKeepServiceRunning();
+    settingsController.addListener(applyKeepServiceRunning);
   }
 
   BootTiming.mark('runapp');
   runApp(
     WithForegroundTask(
       child: AppRoot(
+        nativeApiToken: proxyTokenService.nativeToken,
         directConnect: cliArgs.direct,
         settingsController: settingsController,
         deviceController: deviceController,
@@ -970,6 +976,7 @@ class AppLifecycleObserver with WidgetsBindingObserver {
   final PluginLoaderService? pluginLoaderService;
   final ConnectionManager? connectionManager;
   final AppLogUploadService? appLogUploadService;
+  final UpdateCheckService? updateCheckService;
   final SettingsController? settingsController;
 
   late Timer _memTimer;
@@ -980,6 +987,7 @@ class AppLifecycleObserver with WidgetsBindingObserver {
     this.pluginLoaderService,
     this.connectionManager,
     this.appLogUploadService,
+    this.updateCheckService,
     this.settingsController,
   }) {
     _memTimer = Timer.periodic(Duration(minutes: 5), (t) {
@@ -1000,6 +1008,7 @@ class AppLifecycleObserver with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       _log.info("state: resumed");
 
+      updateCheckService?.onAppResumed();
       unawaited(displayController?.onAppResumed() ?? Future<void>.value());
       final settings = settingsController;
       if (settings != null) {
@@ -1025,6 +1034,11 @@ class AppLifecycleObserver with WidgetsBindingObserver {
   }
 
   Future<void> _handleDetached() async {
+    try {
+      updateCheckService?.dispose();
+    } catch (error, stackTrace) {
+      _log.warning('Update service disposal failed', error, stackTrace);
+    }
     try {
       await connectionManager?.shutdown();
     } catch (error, stackTrace) {
@@ -1071,6 +1085,7 @@ class AppRoot extends StatefulWidget {
   final DisplayController displayController;
   final AccountConsentStore? accountConsentStore;
   final GithubCredentialProvider credentials;
+  final String? nativeApiToken;
 
   const AppRoot({
     super.key,
@@ -1101,6 +1116,7 @@ class AppRoot extends StatefulWidget {
     required this.displayController,
     this.accountConsentStore,
     required this.credentials,
+    this.nativeApiToken,
   });
 
   static void restart(BuildContext context) {
@@ -1203,6 +1219,7 @@ class _AppRootState extends State<AppRoot> {
         batteryController: widget.batteryController,
         displayController: widget.displayController,
         accountConsentStore: widget.accountConsentStore,
+        nativeApiToken: widget.nativeApiToken,
         credentials: widget.credentials,
         startupCoordinator: _startupCoordinator,
       ),

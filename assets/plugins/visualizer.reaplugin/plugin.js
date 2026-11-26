@@ -13,9 +13,7 @@ function createPlugin(host) {
   const SHOT_FETCH_DELAY_MS = 5000;
   const NS = "visualizer.reaplugin";
   const LOCAL_API_URL = "http://localhost:8080/api/v1";
-  const VISUALIZER_API_URL = "https://visualizer.coffee/api";
-  const VISUALIZER_SHARED_API = "https://visualizer.coffee/api/shots/shared?code=";
-  const VISUALIZER_PROFILE_API = "https://visualizer.coffee/api/shots/%1/profile?format=json";
+  const DEFAULT_SERVER_URL = "https://visualizer.coffee";
   const CANONICAL_ENJOYMENT_MAX = 10;
   const VISUALIZER_ENJOYMENT_SCALE = 10;
 
@@ -29,6 +27,8 @@ function createPlugin(host) {
     lastCheckedShotId: null,
     username: null,
     password: null,
+    uploadKey: null,
+    serverUrl: DEFAULT_SERVER_URL,
     autoUpload: true,
     lengthThreshold: 5,
     lastMachineState: null,
@@ -74,13 +74,34 @@ function createPlugin(host) {
     }
   }
 
+  function normalizeServerUrl(value) {
+    const text = typeof value === "string" ? value.trim().replace(/\/+$/, "") : "";
+    if (!text) return DEFAULT_SERVER_URL;
+    if (!/^https:\/\/[^\s/?#]+(\/[^\s?#]*)?$/i.test(text)) {
+      log(`Ignoring Visualizer server "${text}": it must be an https:// address`);
+      return DEFAULT_SERVER_URL;
+    }
+    return text;
+  }
+
+  function apiUrl() {
+    return `${state.serverUrl}/api`;
+  }
+
+  function hasCredentials(authState) {
+    return !!(authState.uploadKey || (authState.username && authState.password));
+  }
+
   function getAuthHeader(authState) {
     if (authState == null) {
       authState = state;
     }
 
+    if (authState.uploadKey) {
+      return "Bearer " + authState.uploadKey;
+    }
     if (!authState.username || !authState.password) {
-      throw new Error("Username or password not configured");
+      throw new Error("Visualizer upload key or username and password not configured");
     }
     return "Basic " + btoa(authState.username + ":" + authState.password);
   }
@@ -104,7 +125,7 @@ function createPlugin(host) {
   async function uploadShot(shotData, onRetry) {
     const retries = 3;
     const delay = 2000;
-    const url = `${VISUALIZER_API_URL}/shots/upload`;
+    const url = `${apiUrl()}/shots/upload`;
 
     log(`shot duration: ${shotData.duration}`);
     if (shotData.duration < state.lengthThreshold) {
@@ -345,8 +366,8 @@ function createPlugin(host) {
 
       state.lastCheckedShotId = latestMeta.id;
 
-      if (!state.username || !state.password) {
-        log("Username/password not configured. Skipping upload.");
+      if (!hasCredentials(state)) {
+        log("Visualizer credentials not configured. Skipping upload.");
         return;
       }
 
@@ -419,10 +440,15 @@ function createPlugin(host) {
   }
 
   async function checkCredentials(body) {
-    log(`checking creds: ${JSON.stringify(body)}`)
-    const url = `${VISUALIZER_API_URL}/me`;
+    const authState = {
+      username: body?.username,
+      password: body?.password,
+      uploadKey: body?.uploadKey,
+    };
+    if (!hasCredentials(authState)) return false;
+    const url = `${apiUrl()}/me`;
     const headers = {
-      'Authorization': getAuthHeader(body)
+      'Authorization': getAuthHeader(authState)
     };
 
     try {
@@ -433,7 +459,7 @@ function createPlugin(host) {
 
       return response.ok;
     } catch (error) {
-      log('Error checking Visualizer credentials:', error);
+      log(`Error checking Visualizer credentials: ${error.message}`);
       return false;
     }
   }
@@ -447,28 +473,28 @@ function createPlugin(host) {
 
     log(`Importing profile from share code: ${code}`);
 
-    // Step 1: Fetch shot metadata from share code
-    const sharedUrl = `${VISUALIZER_SHARED_API}${code}`;
-    log(`Fetching from: ${sharedUrl}`);
-
-    const sharedResponse = await fetch(sharedUrl, {
-      method: 'GET',
-      headers: {
-        'Authorization': getAuthHeader(),
-        'Content-Type': 'application/json'
+    // Step 1: look the code up on the configured server, then on the public
+    // one. Share codes and profiles are public on Visualizer, so the public
+    // fallback is asked without credentials.
+    const servers = state.serverUrl === DEFAULT_SERVER_URL ? [state.serverUrl] : [state.serverUrl, DEFAULT_SERVER_URL];
+    let server = null;
+    let sharedData = null;
+    for (const candidate of servers) {
+      const headers = candidate === state.serverUrl && hasCredentials(state) ? { 'Authorization': getAuthHeader() } : {};
+      const sharedResponse = await fetch(`${candidate}/api/shots/shared?code=${encodeURIComponent(code)}`, { method: 'GET', headers });
+      if (sharedResponse.status === 404 && candidate !== servers[servers.length - 1]) {
+        log(`Share code not found on ${candidate}, trying ${servers[servers.length - 1]}`);
+        continue;
       }
-    });
-
-    if (!sharedResponse.ok) {
-      const statusCode = sharedResponse.status;
-      if (statusCode === 401) {
-        throw new Error("Invalid Visualizer credentials");
+      if (!sharedResponse.ok) {
+        if (sharedResponse.status === 401) throw new Error("Invalid Visualizer credentials");
+        throw new Error(`Failed to fetch share code: HTTP ${sharedResponse.status} ${sharedResponse.statusText}`);
       }
-      throw new Error(`Failed to fetch share code: HTTP ${statusCode} ${sharedResponse.statusText}`);
+      server = candidate;
+      sharedData = await sharedResponse.json();
+      break;
     }
-
-    const sharedData = await sharedResponse.json();
-    log(`Share code response: ${JSON.stringify(sharedData).slice(0, 200)}`);
+    log(`Share code found on ${server}`);
 
     // Handle both array and object responses
     let shotId;
@@ -485,18 +511,10 @@ function createPlugin(host) {
       throw new Error("Share code response missing shot ID");
     }
 
-    log(`Got shot ID: ${shotId}, fetching profile...`);
-
-    // Step 2: Fetch profile data using shot ID
-    const profileUrl = VISUALIZER_PROFILE_API.replace('%1', shotId);
-    log(`Fetching profile from: ${profileUrl}`);
-
-    const profileResponse = await fetch(profileUrl, {
+    // Step 2: Fetch profile data from the server that knew the code
+    const profileResponse = await fetch(`${server}/api/shots/${encodeURIComponent(shotId)}/profile?format=json`, {
       method: 'GET',
-      headers: {
-        'Authorization': getAuthHeader(),
-        'Content-Type': 'application/json'
-      }
+      headers: server === state.serverUrl && hasCredentials(state) ? { 'Authorization': getAuthHeader() } : {}
     });
 
     if (!profileResponse.ok) {
@@ -661,7 +679,7 @@ function createPlugin(host) {
   }
 
   async function visualizerGet(path) {
-    const res = await fetch(`${VISUALIZER_API_URL}${path}`, {
+    const res = await fetch(`${apiUrl()}${path}`, {
       method: "GET",
       headers: { "Authorization": getAuthHeader(), "Content-Type": "application/json" },
     });
@@ -670,7 +688,7 @@ function createPlugin(host) {
   }
 
   async function visualizerPatch(path, body) {
-    const res = await fetch(`${VISUALIZER_API_URL}${path}`, {
+    const res = await fetch(`${apiUrl()}${path}`, {
       method: "PATCH",
       headers: {
         "Authorization": getAuthHeader(),
@@ -951,7 +969,7 @@ function createPlugin(host) {
       recordLocalSyncStatus(shot.id, null, "skipped: suppressed", null);
       return { skipped: "suppressed" };
     }
-    if (!state.username || !state.password) {
+    if (!hasCredentials(state)) {
       recordLocalSyncStatus(shot.id, null, "skipped: no credentials", null);
       return { skipped: "no credentials" };
     }
@@ -990,7 +1008,7 @@ function createPlugin(host) {
   // never hit /api/shots unauthenticated (which would return the public feed).
   async function verifyCredentials() {
     try {
-      const res = await fetch(`${VISUALIZER_API_URL}/me`, {
+      const res = await fetch(`${apiUrl()}/me`, {
         method: "GET",
         headers: { "Authorization": getAuthHeader() },
       });
@@ -1132,7 +1150,7 @@ function createPlugin(host) {
     opts = opts || {};
     if (state.backSyncRunning) return { skipped: "already running" };
     if (!state.backSyncEnabled && !opts.force) return { skipped: "disabled" };
-    if (!state.username || !state.password) return { skipped: "no credentials" };
+    if (!hasCredentials(state)) return { skipped: "no credentials" };
 
     state.backSyncRunning = true;
     state.backSyncStatus.lastCheck = Date.now();
@@ -1279,17 +1297,19 @@ function createPlugin(host) {
   // Return the plugin object
   return {
     id: "visualizer.reaplugin",
-    version: "1.5.11",
+    version: "1.5.13",
 
     onLoad(settings) {
       state.username = settings.Username;
       state.password = settings.Password;
+      state.uploadKey = typeof settings.UploadKey === "string" && settings.UploadKey.trim() ? settings.UploadKey.trim() : null;
+      state.serverUrl = normalizeServerUrl(settings.ServerUrl);
       state.autoUpload = settings.AutoUpload != undefined ? settings.AutoUpload : true;
       state.lengthThreshold = settings.LengthThreshold != undefined ? settings.LengthThreshold : 5;
       state.backSyncEnabled = settings.BackSync === true;
       state.backSyncIntervalSeconds = settings.BackSyncIntervalSeconds != undefined ? settings.BackSyncIntervalSeconds : 300;
 
-      log(`Loaded with username: ${state.username ? 'configured' : 'not configured'}, back-sync ${state.backSyncEnabled ? 'on' : 'off'}`);
+      log(`Loaded for ${state.serverUrl} with ${state.uploadKey ? 'an upload key' : (state.username ? 'username and password' : 'no credentials')}, back-sync ${state.backSyncEnabled ? 'on' : 'off'}`);
 
       // Load saved state from storage
       host.storage({ type: "read", key: "lastUploadedShot", namespace: NS });
@@ -1413,7 +1433,6 @@ function createPlugin(host) {
       }
 
       if (request.endpoint === "verifyCredentials") {
-        log(`verifying ${JSON.stringify(request.body)}`)
         return checkCredentials(request.body).then((verified) => {
           return {
             status: 200,
@@ -1610,6 +1629,13 @@ function createPlugin(host) {
           }
           if (event.payload?.Password !== undefined) {
             state.password = event.payload.Password;
+          }
+          if (event.payload?.UploadKey !== undefined) {
+            const key = event.payload.UploadKey;
+            state.uploadKey = typeof key === "string" && key.trim() ? key.trim() : null;
+          }
+          if (event.payload?.ServerUrl !== undefined) {
+            state.serverUrl = normalizeServerUrl(event.payload.ServerUrl);
           }
           if (event.payload?.LengthThreshold !== undefined) {
             state.lengthThreshold = event.payload.LengthThreshold;

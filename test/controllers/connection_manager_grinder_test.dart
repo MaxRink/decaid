@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:logging/logging.dart';
 import 'package:reaprime/src/controllers/connection_manager.dart';
 import 'package:reaprime/src/controllers/device_controller.dart';
 import 'package:reaprime/src/models/device/de1_interface.dart';
@@ -144,6 +145,41 @@ void main() {
       },
     );
   }
+
+  test('a failed grinder connect logs the error and its stack', () async {
+    final previousLevel = Logger.root.level;
+    Logger.root.level = Level.ALL;
+    final records = <LogRecord>[];
+    final logs = Logger.root.onRecord
+        .where((record) => record.loggerName == 'ConnectionManager')
+        .listen(records.add);
+    addTearDown(() async {
+      await logs.cancel();
+      Logger.root.level = previousLevel;
+    });
+    grinder = TestGrinder(
+      deviceId: 'grinder',
+      connectGate: grinderGate,
+      connectError: StateError('grinder initialization failed'),
+    );
+    grinderGate.complete();
+
+    final result = await manager.connectGrinder(grinder);
+
+    expect(result.success, isFalse);
+    final warning = records.singleWhere(
+      (record) =>
+          record.level == Level.WARNING &&
+          record.message.contains('grinder initialization failed'),
+    );
+    expect(warning.message, contains(grinder.deviceId));
+    expect(
+      records.where(
+        (record) => record.level == Level.FINE && record.stackTrace != null,
+      ),
+      isNotEmpty,
+    );
+  });
 
   test('scale-only recovery never attempts the preferred grinder', () async {
     scanner.addDevice(scale);
@@ -312,6 +348,43 @@ void main() {
       expect(manager.currentStatus.phase, ConnectionPhase.ready);
       expect(manager.currentStatus.pendingAmbiguity, isNull);
       expect(manager.lastScanReport, isNotNull);
+    },
+  );
+
+  test(
+    'a preferred grinder that leaves and returns outside a scan is reconnected',
+    () async {
+      grinderGate.complete();
+      final other = TestGrinder(deviceId: 'other');
+      addTearDown(other.dispose);
+      scanner.addDevice(grinder);
+      scanner.addDevice(other);
+      await pumpEventQueue();
+      expect(
+        grinder.onConnectCalls,
+        0,
+        reason: 'a first sighting is the scan\'s',
+      );
+
+      scanner.removeDevice(grinder.deviceId);
+      scanner.removeDevice(other.deviceId);
+      await pumpEventQueue();
+      final returned = TestGrinder(deviceId: 'grinder');
+      addTearDown(returned.dispose);
+      scanner.addDevice(returned);
+      scanner.addDevice(other);
+      await pumpEventQueue();
+
+      expect(returned.onConnectCalls, 1);
+      expect(other.onConnectCalls, 0, reason: 'only the preferred grinder');
+      scanner.removeDevice(other.deviceId);
+      scanner.addDevice(other);
+      await pumpEventQueue();
+      expect(
+        returned.onConnectCalls,
+        1,
+        reason: 'still present, not reconnected',
+      );
     },
   );
 

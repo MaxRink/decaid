@@ -19,10 +19,20 @@ class BackupTransferService {
   final HttpClient _client;
   final int maxResponseBytes;
 
+  final String? bearerToken;
+
   BackupTransferService({
     HttpClient? client,
     this.maxResponseBytes = 8 * 1024 * 1024,
+    this.bearerToken,
   }) : _client = client ?? HttpClient();
+
+  void _authorize(HttpClientRequest request) {
+    final token = bearerToken;
+    if (token != null) {
+      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+    }
+  }
 
   Future<File> downloadExportZip(String url, Directory tempDir) async {
     final file = File('${tempDir.path}${Platform.pathSeparator}export.zip');
@@ -31,6 +41,7 @@ class BackupTransferService {
 
   Future<File> downloadExportZipTo(String url, File destination) async {
     final request = await _client.getUrl(Uri.parse(url));
+    _authorize(request);
     final response = await request.close();
 
     if (response.statusCode != 200) {
@@ -72,6 +83,7 @@ class BackupTransferService {
       },
     );
     final request = await _client.postUrl(uri);
+    _authorize(request);
     request.headers.contentType = ContentType('application', 'zip');
 
     final Stream<List<int>> body;

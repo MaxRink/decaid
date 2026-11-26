@@ -45,6 +45,7 @@ void main() {
         },
         pluginJs:
             'function createPlugin() { return {id: "first", onLoad() { ${fail ? 'throw new Error("load failed");' : ''} }}; }',
+        authorized: true,
       )
       .then((_) {});
 
@@ -62,6 +63,9 @@ void main() {
       kvStore: FakeKeyValueStoreService(),
       notifications: center,
     );
+    // The bundled plugins publish notices of their own (Mahlkönig E64 asks for
+    // setup), which this suite asserts around rather than about.
+    await disableBundledPluginAutoLoad();
     await loader.initialize();
     await retain('first');
     await retain('second');

@@ -109,7 +109,19 @@ final class ExtensionManagementBrowserOrigins {
       );
       return BrowserOriginVerdict.untrusted;
     }
-    if (peer.isLoopback) return BrowserOriginVerdict.trusted;
+    return await _isDeviceAddress(peer, 'the loopback origin $origin')
+        ? BrowserOriginVerdict.trusted
+        : BrowserOriginVerdict.untrusted;
+  }
+
+  Future<bool> isDevicePeer(Request request) async {
+    final peer = _socketPeer(request.context[_shelfConnectionInfoContextKey]);
+    return peer != null &&
+        await _isDeviceAddress(peer, 'the request from ${peer.address}');
+  }
+
+  Future<bool> _isDeviceAddress(InternetAddress peer, String refused) async {
+    if (peer.isLoopback) return true;
     final Set<String> addresses;
     try {
       addresses = {
@@ -117,17 +129,31 @@ final class ExtensionManagementBrowserOrigins {
       };
     } catch (error, stackTrace) {
       _log.warning(
-        'Could not enumerate the device addresses; refusing the loopback '
-        'origin $origin',
+        'Could not enumerate the device addresses; refusing $refused',
         error,
         stackTrace,
       );
-      return BrowserOriginVerdict.untrusted;
+      return false;
     }
     final peerKey = _hostKey(peer.address);
-    return peerKey != null && addresses.contains(peerKey)
-        ? BrowserOriginVerdict.trusted
-        : BrowserOriginVerdict.untrusted;
+    return peerKey != null && addresses.contains(peerKey);
+  }
+
+  Future<bool> isDeviceHost(String host) async {
+    final key = _hostKey(host);
+    if (key == null) return false;
+    if (_loopbackHostKeys.contains(key)) return true;
+    try {
+      return {for (final address in await deviceAddresses()) ?_hostKey(address)}
+          .contains(key);
+    } catch (error, stackTrace) {
+      _log.warning(
+        'Could not enumerate the device addresses; refusing host $host',
+        error,
+        stackTrace,
+      );
+      return false;
+    }
   }
 
   static InternetAddress? _socketPeer(Object? connectionInfo) {
@@ -163,6 +189,7 @@ const extensionManagementRoutes = <ExtensionManagementRoute>[
   ExtensionManagementRoute('POST', '/api/v1/plugins/update'),
   ExtensionManagementRoute('POST', '/api/v1/plugins/<id>/settings'),
   ExtensionManagementRoute('PUT', '/api/v1/plugins/<id>/source'),
+  ExtensionManagementRoute('PUT', '/api/v1/plugins/<id>/machine-control'),
   ExtensionManagementRoute('POST', '/api/v1/plugins/<id>/enable'),
   ExtensionManagementRoute('POST', '/api/v1/plugins/<id>/disable'),
   ExtensionManagementRoute('POST', '/api/v1/plugins/<id>/update/approve'),
@@ -178,6 +205,17 @@ const extensionManagementRoutes = <ExtensionManagementRoute>[
   ExtensionManagementRoute('DELETE', '/api/v1/webui/skins/<id>'),
   ExtensionManagementRoute('POST', '/api/v1/webui/server/start'),
   ExtensionManagementRoute('POST', '/api/v1/webui/server/stop'),
+];
+
+const machineControlRoutes = <ExtensionManagementRoute>[
+  ExtensionManagementRoute('GET', '/ws/v1/machine/raw'),
+  ExtensionManagementRoute('POST', '/api/v1/machine/firmware'),
+  ExtensionManagementRoute('POST', '/api/v1/machine/firmware/apply'),
+  ExtensionManagementRoute('POST', '/api/v1/machine/calibration'),
+  ExtensionManagementRoute('PUT', '/api/v1/machine/calibration/<target>'),
+  ExtensionManagementRoute('PUT', '/api/v1/machine/scaleCalibration'),
+  ExtensionManagementRoute('POST', '/api/v1/machine/settings/advanced'),
+  ExtensionManagementRoute('DELETE', '/api/v1/machine/settings/reset'),
 ];
 
 const extensionManagementReadRoutes = <ExtensionManagementRoute>[
@@ -235,6 +273,13 @@ final class ExtensionManagementAuthorization {
     if (caller == null) return 'unauthenticated';
     final label = caller.label;
     return label == null ? caller.id : '${caller.id} ${jsonEncode(label)}';
+  }
+
+  bool get holdsCredential {
+    final grant = _grant;
+    if (grant != null) return grant.isActive;
+    return _caller?.scopes.contains(ProxyTokenService.scopeExtensionsManage) ??
+        false;
   }
 
   Future<Response?> denial() async {
@@ -340,6 +385,45 @@ Middleware extensionManagementBrowserOriginMiddleware(
   };
 }
 
+const crossOriginRequestError =
+    'This API does not accept requests from this browser origin';
+
+const untrustedBrowserHostError =
+    'This API only answers browsers on the device address';
+
+Middleware apiBrowserBoundaryMiddleware(
+  ExtensionManagementBrowserOrigins origins,
+) {
+  return (Handler inner) {
+    return (Request request) async {
+      final origin = request.headers['origin'];
+      if (origin == null && !request.headers.containsKey('sec-fetch-site')) {
+        return inner(request);
+      }
+      final action = '${request.method} /${request.url.path}';
+      if (!await origins.isDeviceHost(request.requestedUri.host)) {
+        _log.warning('$action refused (403) for a browser on a foreign host');
+        return _json(403, untrustedBrowserHostError);
+      }
+      if (origin == null) return inner(request);
+      final verdict = await origins.classify(
+        origin,
+        connectionInfo: request.context[_shelfConnectionInfoContextKey],
+      );
+      if (verdict != BrowserOriginVerdict.untrusted) return inner(request);
+      if (_isSafeRead(request)) {
+        return _withoutAffirmativeCors(await inner(request));
+      }
+      _log.warning('$action refused (403) for an untrusted browser origin');
+      return _json(403, crossOriginRequestError);
+    };
+  };
+}
+
+bool _isSafeRead(Request request) =>
+    (request.method == 'GET' || request.method == 'HEAD') &&
+    request.headers['upgrade']?.toLowerCase() != 'websocket';
+
 bool _isBrowserOriginRefusal(Response response) =>
     response.context[_originRefusalContextKey] == true;
 
@@ -386,9 +470,10 @@ Response? requireTrustedBrowserOrigin(
 Middleware extensionManagementAuthMiddleware(
   ProxyTokenService? tokens, {
   List<ExtensionManagementRoute> routes = extensionManagementRoutes,
+  List<ExtensionManagementRoute> machineRoutes = machineControlRoutes,
   Future<bool> Function()? requireExtensionManagementAuthorization,
 }) {
-  final policy = ExtensionManagementRouteMatcher(routes);
+  final policy = ExtensionManagementRouteMatcher([...routes, ...machineRoutes]);
   return (Handler inner) {
     return (Request request) async {
       final grant = request.context[extensionManagementGrantContextKey];
@@ -438,6 +523,12 @@ Future<bool> mayManageExtensions(Request request) async {
   final authorization = request.context[_authorizationContextKey];
   if (authorization is! ExtensionManagementAuthorization) return false;
   return await authorization.denial() == null;
+}
+
+bool holdsExtensionManagementCredential(Request request) {
+  final authorization = request.context[_authorizationContextKey];
+  return authorization is ExtensionManagementAuthorization &&
+      authorization.holdsCredential;
 }
 
 Future<Response?> _authorize(

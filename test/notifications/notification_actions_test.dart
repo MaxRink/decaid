@@ -141,12 +141,12 @@ void main() {
 
   for (final retire in [false, true]) {
     test(
-      'download handoff prevents reentry and honors retirement=$retire',
+      'update View handoff prevents reentry and honors retirement=$retire',
       () async {
-        const download = NotificationAction(
-          id: 'download',
-          label: 'Download',
-          type: NotificationActionType.downloadUpdate,
+        const view = NotificationAction(
+          id: 'view',
+          label: 'View',
+          type: NotificationActionType.viewUpdate,
         );
         var preparations = 0;
         var confirmations = 0;
@@ -158,7 +158,7 @@ void main() {
             sourceName: 'Decaid',
             id: '99.0.0',
             message: 'Update available: 99.0.0',
-            actions: const [download],
+            actions: const [view],
           ),
           binding: NotificationBinding(
             onActivate: (_) async => confirmations++,
@@ -172,10 +172,10 @@ void main() {
 
         final opening = actions.activate(
           current,
-          download,
-          beforeDownload: prepare,
+          view,
+          beforeOpenUpdate: prepare,
         );
-        await actions.activate(current, download, beforeDownload: prepare);
+        await actions.activate(current, view, beforeOpenUpdate: prepare);
         expect(preparations, 1);
         expect(confirmations, 0);
         expect(actions.busy, isTrue);
@@ -189,6 +189,23 @@ void main() {
       },
     );
   }
+
+  test('plugin snapshots cannot acquire host update navigation', () {
+    final snapshot = notice.toJson();
+    expect(
+      () => NativeNotification.fromJson({
+        ...snapshot,
+        'actions': [
+          const NotificationAction(
+            id: 'view',
+            label: 'View',
+            type: NotificationActionType.viewUpdate,
+          ).toJson(),
+        ],
+      }),
+      throwsFormatException,
+    );
+  });
 
   for (final retirement in ['replacement', 'removal', 'reload']) {
     test('$retirement invalidates a pending launch and return', () async {
@@ -218,4 +235,85 @@ void main() {
       expect(phases, ['activated']);
     });
   }
+
+  group('host-routed actions', () {
+    const surfaceAction = NotificationAction(
+      id: 'open',
+      label: 'Set up',
+      type: NotificationActionType.openPluginSurface,
+      href: '/api/v1/plugins/plugin/setup?ui=1&surface=setup',
+    );
+    const reviewAction = NotificationAction(
+      id: 'review',
+      label: 'Review',
+      type: NotificationActionType.reviewMachineControl,
+    );
+
+    Future<NativeNotification> publish(NotificationAction action) async {
+      await center.publish(
+        NativeNotification(
+          namespace: NotificationNamespace.plugin,
+          sourceId: 'plugin',
+          sourceName: 'Plugin',
+          id: action.id,
+          message: 'Needs you',
+          actions: [action],
+        ),
+        binding: NotificationBinding(onAction: (_, phase) => phases.add(phase)),
+      );
+      return center.value.singleWhere((notice) => notice.id == action.id);
+    }
+
+    test('openPluginSurface opens the resolved href in the app', () async {
+      final opened = <String>[];
+      actions.dispose();
+      actions = NotificationActions(
+        center: center,
+        onOpenAccount: () {},
+        launch: (_) => throw StateError('no external launch'),
+        onOpenPluginSurface: (notice, href) async {
+          opened.add('${notice.sourceId} $href');
+          return true;
+        },
+      );
+      final notice = await publish(surfaceAction);
+
+      await actions.activate(notice, notice.actions.single);
+
+      expect(opened, ['plugin ${surfaceAction.href}']);
+      expect(phases, ['activated']);
+      expect(actions.errorFor(notice), isNull);
+    });
+
+    test('a surface that cannot open reports failure', () async {
+      actions.dispose();
+      actions = NotificationActions(
+        center: center,
+        onOpenAccount: () {},
+        onOpenPluginSurface: (_, _) async => false,
+      );
+      final notice = await publish(surfaceAction);
+
+      await actions.activate(notice, notice.actions.single);
+
+      expect(phases, ['activated', 'failed']);
+      expect(actions.errorFor(notice), isNotNull);
+    });
+
+    test('reviewMachineControl asks the host, not the plugin', () async {
+      final reviewed = <String>[];
+      actions.dispose();
+      actions = NotificationActions(
+        center: center,
+        onOpenAccount: () {},
+        onReviewMachineControl: (notice) async => reviewed.add(notice.sourceId),
+      );
+      final notice = await publish(reviewAction);
+
+      await actions.activate(notice, notice.actions.single);
+
+      expect(reviewed, ['plugin']);
+      expect(phases, isEmpty);
+    });
+  });
 }

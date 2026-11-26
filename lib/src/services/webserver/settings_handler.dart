@@ -5,12 +5,14 @@ class SettingsHandler {
   final WebUIService _webUIService;
   final WebUIStorage _webUIStorage;
   final BatteryController? _batteryController;
+  final DeviceScanner? _deviceScanner;
 
   SettingsHandler({
     required this._controller,
     required WebUIService service,
     required this._webUIStorage,
     this._batteryController,
+    this._deviceScanner,
   }) : _webUIService = service;
 
   void addRoutes(RouterPlus app) {
@@ -27,7 +29,18 @@ class SettingsHandler {
       final blockTareDuringShot = _controller.blockTareDuringShot;
       final stopHotWaterAtWeight = _controller.stopHotWaterAtWeight;
       final preferredMachineId = _controller.preferredMachineId;
-      final preferredScaleId = _controller.preferredScaleId;
+      final savedScalePreference = _controller.preferredScaleId;
+      final preferredScaleId = savedScalePreference == usbHdsScalePreference
+          ? _deviceScanner?.devices
+                    .whereType<Scale>()
+                    .where(
+                      (scale) =>
+                          matchesScalePreference(scale, savedScalePreference),
+                    )
+                    .singleOrNull
+                    ?.deviceId ??
+                savedScalePreference
+          : savedScalePreference;
       final preferredGrinderDeviceId = _controller.preferredGrinderDeviceId;
       final defaultSkinId = _controller.defaultSkinId;
       final automaticUpdateCheck = _controller.automaticUpdateCheck;
@@ -53,6 +66,7 @@ class SettingsHandler {
         'nightModeMorningTime': _controller.nightModeMorningTime,
         'lowBatteryBrightnessLimit': _controller.lowBatteryBrightnessLimit,
         'keepAwake': _controller.keepAwake,
+        'keepServiceRunning': _controller.keepServiceRunning,
         'simulatedDevices': _controller.simulatedDevices
             .map((e) => e.name)
             .toList(),
@@ -92,6 +106,12 @@ class SettingsHandler {
       final freezeUntrustedExtensionSettings = isUntrustedBrowserOrigin(
         request,
       );
+      if (json.containsKey('webUiPath') &&
+          !_webUIStorage.containsSkinPath(json['webUiPath'].toString())) {
+        return jsonBadRequest({
+          'error': 'webUiPath must be a skin folder inside the skin storage',
+        });
+      }
       if (json.containsKey('gatewayMode')) {
         final GatewayMode? gatewayMode = GatewayModeFromString.fromString(
           json['gatewayMode'],
@@ -104,9 +124,7 @@ class SettingsHandler {
         await _controller.updateGatewayMode(gatewayMode);
       }
       if (json.containsKey('webUiPath')) {
-        final webUiPath = json['webUiPath'].toString();
-        final _ = File.fromUri(Uri.file(webUiPath));
-        await _webUIService.serveFolderAtPath(webUiPath);
+        await _webUIService.serveFolderAtPath(json['webUiPath'].toString());
       }
       if (json.containsKey('logLevel')) {
         await _controller.updateLogLevel(json['logLevel']);
@@ -196,7 +214,19 @@ class SettingsHandler {
       if (json.containsKey('preferredScaleId')) {
         final value = json['preferredScaleId'];
         if (value == null || value is String) {
-          await _controller.setPreferredScaleId(value);
+          final scale = _deviceScanner?.devices
+              .whereType<Scale>()
+              .where((scale) => scale.deviceId == value)
+              .firstOrNull;
+          final preferenceId = scale == null ? value : scalePreferenceId(scale);
+          if (preferenceId != null && isEphemeralDeviceIdentity(preferenceId)) {
+            return jsonBadRequest({
+              'message':
+                  'Session-only scale ID is not a durable preference. '
+                  'Select a discovered USB HDS or use usb-hds:any.',
+            });
+          }
+          await _controller.setPreferredScaleId(preferenceId);
         } else {
           return jsonBadRequest({
             'message': 'preferredScaleId must be a string or null',
@@ -298,6 +328,16 @@ class SettingsHandler {
           await _controller.setKeepAwake(value);
         } else {
           return jsonBadRequest({'message': 'keepAwake must be a boolean'});
+        }
+      }
+      if (json.containsKey('keepServiceRunning')) {
+        final value = json['keepServiceRunning'];
+        if (value is bool) {
+          await _controller.setKeepServiceRunning(value);
+        } else {
+          return jsonBadRequest({
+            'message': 'keepServiceRunning must be a boolean',
+          });
         }
       }
       if (json.containsKey('simulatedDevices')) {

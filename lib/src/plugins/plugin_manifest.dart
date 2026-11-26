@@ -1,8 +1,11 @@
+import 'dart:convert';
+
 import 'package:collection/collection.dart';
 import 'package:reaprime/src/models/device/grinder_device.dart';
 import 'package:reaprime/src/util/safe_path.dart';
 
 import 'plugin_ble_matcher.dart';
+import 'plugin_discovery.dart';
 
 List<String> parsePluginEnumValues(String key, dynamic schema) {
   if (schema is! Map || schema['type'] != 'enum') return const [];
@@ -21,6 +24,35 @@ String pluginSettingLabel(String key, dynamic schema) {
   if (label is! String) return key;
   final trimmed = label.trim();
   return trimmed.isEmpty ? key : trimmed;
+}
+
+bool pluginSettingHint(dynamic schema, String hint) =>
+    schema is Map && schema[hint] == true;
+
+String pluginSettingValueLabel(dynamic schema, String value) =>
+    _pluginSettingValueText(schema, 'valueLabels', value) ?? value;
+
+String? pluginSettingValueDescription(dynamic schema, String value) =>
+    _pluginSettingValueText(schema, 'valueDescriptions', value);
+
+String? _pluginSettingValueText(dynamic schema, String hint, String value) {
+  if (schema is! Map) return null;
+  final texts = schema[hint];
+  if (texts is! Map) return null;
+  final text = texts[value];
+  if (text is! String || text.trim().isEmpty) return null;
+  return text.trim();
+}
+
+bool isInvalidJsonLikeText(String text) {
+  final trimmed = text.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return false;
+  try {
+    jsonDecode(trimmed);
+    return false;
+  } on FormatException {
+    return true;
+  }
 }
 
 enum PluginDriverType { sensor, scale, grinder }
@@ -55,6 +87,27 @@ List<PluginDriverDeclaration> parsePluginDrivers(dynamic json) {
   return List.unmodifiable(drivers);
 }
 
+List<PluginDeviceSurface> parsePluginSurfaces(dynamic json) {
+  if (json == null) return const [];
+  if (json is! List || json.length > 8) {
+    throw const FormatException('Invalid plugin surfaces');
+  }
+  final surfaces = json
+      .map(
+        (surface) => PluginDeviceSurface.fromJson(
+          surface,
+          roles: PluginDeviceSurface.pluginRoles,
+        ),
+      )
+      .toList();
+  if (surfaces.map((surface) => surface.id).toSet().length != surfaces.length ||
+      surfaces.where((surface) => surface.role == 'setup').length > 1 ||
+      surfaces.where((surface) => surface.role == 'settings').length > 1) {
+    throw const FormatException('Invalid plugin surfaces');
+  }
+  return List.unmodifiable(surfaces);
+}
+
 class PluginDeviceSurface {
   final String id;
   final String role;
@@ -68,7 +121,13 @@ class PluginDeviceSurface {
     this.label,
   });
 
-  factory PluginDeviceSurface.fromJson(dynamic json) {
+  static const deviceRoles = {'settings', 'diagnostics'};
+  static const pluginRoles = {'setup', 'settings', 'diagnostics'};
+
+  factory PluginDeviceSurface.fromJson(
+    dynamic json, {
+    Set<String> roles = deviceRoles,
+  }) {
     if (json is! Map ||
         json.keys.any(
           (key) => !const {'id', 'role', 'endpoint', 'label'}.contains(key),
@@ -76,7 +135,7 @@ class PluginDeviceSurface {
         json['id'] is! String ||
         !isSafePathComponent(json['id'] as String) ||
         json['role'] is! String ||
-        !const {'settings', 'diagnostics'}.contains(json['role']) ||
+        !roles.contains(json['role']) ||
         json['endpoint'] is! String ||
         !isSafePathComponent(json['endpoint'] as String) ||
         (json['endpoint'] as String).runes.any(
@@ -285,6 +344,13 @@ class PluginManifest {
   final List<PluginDriverDeclaration> drivers;
   final Map<String, dynamic> settings;
   final PluginApi? api;
+  final List<PluginDeviceSurface> surfaces;
+  final List<PluginMdnsDeclaration> mdnsDiscovery;
+
+  Set<String> get secureSettingKeys => {
+    for (final entry in settings.entries)
+      if (entry.value is Map && entry.value['secure'] == true) entry.key,
+  };
 
   PluginManifest({
     required this.id,
@@ -297,6 +363,8 @@ class PluginManifest {
     this.drivers = const [],
     required this.settings,
     required this.api,
+    this.surfaces = const [],
+    this.mdnsDiscovery = const [],
   });
 
   factory PluginManifest.fromJson(Map<String, dynamic> json) {
@@ -307,7 +375,11 @@ class PluginManifest {
     final permissions = PluginPermissionsFromJson.fromJson(json['permissions']);
     final api = PluginApi.fromJsonList(json['api']);
     final drivers = parsePluginDrivers(json['drivers']);
-    for (final surface in drivers.expand((driver) => driver.surfaces)) {
+    final surfaces = parsePluginSurfaces(json['surfaces']);
+    for (final surface in [
+      ...drivers.expand((driver) => driver.surfaces),
+      ...surfaces,
+    ]) {
       if (_reservedSurfaceRoutes.contains((json['id'], surface.endpoint))) {
         throw const FormatException('Invalid plugin device surface');
       }
@@ -333,6 +405,8 @@ class PluginManifest {
       drivers: drivers,
       settings: settings,
       api: api,
+      surfaces: surfaces,
+      mdnsDiscovery: parsePluginDiscovery(json['discovery']),
     );
   }
 
@@ -348,6 +422,8 @@ class PluginManifest {
       'drivers': drivers.map((driver) => driver.toJson()).toList(),
       'settings': settings,
       'api': api?.toJson(),
+      if (surfaces.isNotEmpty)
+        'surfaces': surfaces.map((surface) => surface.toJson()).toList(),
     };
   }
 }

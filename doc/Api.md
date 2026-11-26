@@ -13,7 +13,7 @@ Decaid exposes REST and WebSocket APIs on port 8080. Full OpenAPI specs are in [
 {"api":"v1","docs":{"port":4001,"viewer":"/","openapi":"/rest_v1.yml","asyncapi":"/websocket_v1.yml"}}
 ```
 
-The `viewer`, `openapi`, and `asyncapi` paths use the same host as the API request with the manifest's `docs.port` (4001), not port 8080; the manifest does not guarantee that the separate docs listener is available. For example, reconstruct `http://decaid.local:4001/rest_v1.yml` or `http://decaid.local:4001/websocket_v1.yml` from the manifest. An unmatched API route returns JSON with `error: "Route not found"` and a `hint` naming the same-host docs port and the viewer/OpenAPI/AsyncAPI paths.
+The `viewer`, `openapi`, and `asyncapi` paths use the same host as the API request with the manifest's `docs.port` (4001), not port 8080; the manifest does not guarantee that the separate docs listener is available. For example, reconstruct `http://decaid.local:4001/rest_v1.yml` or `http://decaid.local:4001/websocket_v1.yml` from the manifest. The viewer then sends its own API calls to the host it was served from rather than to the `localhost` default the shipped spec carries, so a browser on another machine addresses the device. An unmatched API route returns JSON with `error: "Route not found"` and a `hint` naming the same-host docs port and the viewer/OpenAPI/AsyncAPI paths.
 
 For skin development, see [`doc/Skins.md`](Skins.md). For plugin development, see [`doc/Plugins.md`](Plugins.md).
 
@@ -83,8 +83,10 @@ same operations: each then needs `Authorization: Bearer <token>` with the scope
 `host.localApi` in process. There is no loopback, update-check or
 `automaticUpdateCheck` exception in either mode.
 
-The rest of the API is unchanged (general API authentication is tracked in
-#1135); this setting covers extension management only. Both modes run the same
+While protection is ON the same token is also required for the
+[machine control routes](#machine-control-routes) (raw machine access,
+firmware, calibration and advanced machine settings). The rest of the API is
+unchanged (general API authentication is tracked in #1135). Both modes run the same
 handlers with the same validation, manifest checks, pending-update rules,
 rollback and secure-value handling, so the setting changes authorization only.
 
@@ -102,6 +104,7 @@ in a Token column.
 | POST | `/api/v1/plugins/update` |
 | POST | `/api/v1/plugins/:id/settings` |
 | PUT | `/api/v1/plugins/:id/source` |
+| PUT | `/api/v1/plugins/:id/machine-control` |
 | POST | `/api/v1/plugins/:id/enable` |
 | POST | `/api/v1/plugins/:id/disable` |
 | POST | `/api/v1/plugins/:id/update/approve` |
@@ -114,6 +117,31 @@ in a Token column.
 | DELETE | `/api/v1/webui/skins/:id` |
 | POST | `/api/v1/webui/server/start` |
 | POST | `/api/v1/webui/server/stop` |
+
+### Machine control routes
+
+These routes can rewrite machine firmware, calibration or low-level settings, or
+send arbitrary bytes to the machine. While protection is ON each needs the same
+`extensions:manage` bearer as the routes above and answers 401/403 like them;
+while protection is OFF they need no credential, so existing LAN clients keep
+working:
+
+| Method | Route |
+|---|---|
+| GET (WebSocket upgrade) | `/ws/v1/machine/raw` |
+| POST | `/api/v1/machine/firmware` |
+| POST | `/api/v1/machine/firmware/apply` |
+| POST | `/api/v1/machine/calibration` |
+| PUT | `/api/v1/machine/calibration/:target` |
+| PUT | `/api/v1/machine/scaleCalibration` |
+| POST | `/api/v1/machine/settings/advanced` |
+| DELETE | `/api/v1/machine/settings/reset` |
+
+A skin page has no `extensions:manage` token, so with protection ON a skin's
+calibration, advanced-settings and firmware screens answer 401; use the native
+settings or a client holding a token. Browsers cannot send a bearer on a
+WebSocket upgrade, so with protection ON the raw socket is for native clients
+only.
 
 Two more routes are gated by what the body contains, and only while protection
 is ON:
@@ -156,6 +184,48 @@ protection is ON. The account proxy keeps its own scopes in both modes.
 
 ### Browser origins
 
+Every request a browser sends to the API port is checked, in both modes and
+for every route, not only extension management:
+
+- **Writes and WebSocket upgrades.** A request with an `Origin` that is not one
+  of the device's own origins (table below) is refused with `403` and
+  `{"error":"This API does not accept requests from this browser origin"}`
+  before any handler runs, if its method is anything other than `GET` or `HEAD`
+  or it is a WebSocket upgrade. That covers "simple" cross-site requests that
+  a browser sends without a preflight (`text/plain` or form bodies), so a web
+  page elsewhere cannot start a shot, write calibration, upload firmware or
+  open `/ws/v1/machine/raw`.
+- **Preflights.** An `OPTIONS` preflight from a foreign origin is refused the
+  same way, with no `access-control-*` header.
+- **Reads.** A `GET` or `HEAD` from a foreign origin is answered, but without
+  any `access-control-*` header, so the browser does not let that page read the
+  response. `Access-Control-Allow-Origin` and
+  `Access-Control-Allow-Credentials` are only sent to the device's own origins.
+- **Host names (DNS rebinding).** A request that carries an `Origin` or a
+  `Sec-Fetch-Site` header (that is, one sent by a browser) is refused with `403`
+  and `{"error":"This API only answers browsers on the device address"}` unless
+  its `Host` is `localhost`, a loopback address or a numeric address currently
+  assigned to the device. Open the API, plugin pages and skins by numeric
+  address or `localhost`; a browser that reaches them through a DNS name (a
+  `/etc/hosts` entry, a router name, a reverse proxy) is refused. Non-browser
+  clients (no `Origin`, no `Sec-Fetch-*`) may use any host name.
+
+- **Framing.** HTML from the host itself (the bundled settings page, the docs
+  viewer, any non-plugin page) carries `X-Frame-Options: SAMEORIGIN` and
+  `Content-Security-Policy: frame-ancestors 'self'`. Plugin pages and surfaces
+  (HTML under `/api/v1/plugins/<id>/`) carry no `X-Frame-Options` and
+  `frame-ancestors 'self'` plus the device's skin origins (live skin page and
+  docs ports on the requested numeric IPv4 device address, `localhost` and
+  `127.0.0.1`; IPv6 literals are not valid CSP sources and are left out), so
+  the active skin can embed them and other sites cannot.
+
+Requests without an `Origin` (and without `Sec-Fetch-Site`) are not affected:
+Home Assistant, `curl`, MCP clients, native app code and `host.localApi` keep
+working, in both modes.
+
+Extension management additionally keeps its own, older browser-origin check,
+described next.
+
 A browser page is also checked against its `Origin`, in both modes and
 independently of any credential. The check runs ahead of the general CORS
 middleware, the account-proxy CORS rule and the authentication middleware, and
@@ -167,7 +237,7 @@ and compatibility mode all make no difference to it.
 
 Which requests it refuses:
 
-- The 18 routes in the table above, on every method and path pair.
+- The 19 routes in the table above, on every method and path pair.
 - `POST /api/v1/data/import`, refused whole before the archive is read: whether
   an archive carries a gated settings key is only known after parsing it, so
   the conservative answer applies to every import.
@@ -186,7 +256,7 @@ What counts as the device's own origin:
 
 | Trusted | Rejected |
 |---|---|
-| Scheme `http`, host `localhost`, `127.0.0.1`, `::1`, or a numeric address currently assigned to a local network interface, and a port equal to the live skin page port or the actual API listener port | `Origin: null`, an empty value, `https` or any other scheme, a hostname such as `decaid.local`, another device's address, `user@host`, a path, query or fragment, a comma or a space in the value |
+| Scheme `http`, host `localhost`, `127.0.0.1`, `::1`, or a numeric address currently assigned to a local network interface, and a port equal to the live skin page port, the actual API listener port or the built-in API docs viewer port while its listener is bound | `Origin: null`, an empty value, `https` or any other scheme, a hostname such as `decaid.local`, another device's address, `user@host`, a path, query or fragment, a comma or a space in the value |
 
 A loopback origin is trusted only while the request's TCP socket peer is
 loopback or is exactly one of the addresses this device currently holds. A
@@ -199,15 +269,63 @@ elsewhere from borrowing the name.
 
 The ports and the addresses come from the running services and never from the
 request itself: the skin port follows a skin switch, a restart and a dynamically
-allocated port, the API port is the one the listener actually bound, and the
-address set is enumerated when a comparison needs it, so a moved or retired
-address is picked up without a restart or a skin serve. A port that is not live
-is not trusted, so `http://localhost:3000` is refused while the skin server is
-on another port. The port 3000 entry point only redirects to the active origin
-and an inactive skin's alias port only serves a redirect, so a skin page always
-runs, and posts, from its live origin. `Host`, `Referer`, `X-Forwarded-For`,
-`X-Forwarded-Host`, `X-Real-IP`, `Forwarded` and DNS resolution are never
-consulted, so a name that resolves to the device (DNS rebinding) is not enough.
+allocated port, the API port is the one the listener actually bound, the docs
+viewer port is the one the docs listener actually bound (and is trusted only
+while that bind succeeded), and the address set is enumerated when a comparison
+needs it, so a moved or retired address is picked up without a restart or a skin
+serve. A port that is not live is not trusted, so `http://localhost:3000` is
+refused while the skin server is on another port. The port 3000 entry point only
+redirects to the active origin and an inactive skin's alias port only serves a
+redirect, so a skin page always runs, and posts, from its live origin. `Host`,
+`Referer`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`, `Forwarded` and
+DNS resolution are never consulted, so a name that resolves to the device (DNS
+rebinding) is not enough.
+
+#### Opening a built-in page through a name
+
+A name is still not authority, but a browser that reached a built-in page through
+one would otherwise keep a page it may not use: the page loads, and every
+management request it makes is then refused. So the two first-party pages Decaid
+serves are canonicalised once, at the page entry, before any handler, plugin or
+body work:
+
+| Request | Answer |
+|---|---|
+| `GET /` or `GET /index.html` on the API docs viewer port | `302` to the same path on the numeric local endpoint |
+| `GET /api/v1/plugins/settings.reaplugin/ui` on the API port | `302` to the same path on the numeric local endpoint |
+
+The destination carries only `http`, a numeric local address and the port the
+listener bound; a loopback client keeps `127.0.0.1` or `::1`, and a remote client
+gets the address the listener bound when that is concrete, otherwise the single
+usable current numeric address of the client's own address family. Addresses are
+compared as parsed values, so the IPv4, IPv4-mapped and compressed spellings of
+one interface count once. Wildcard, multicast and broadcast addresses, plus
+link-local or scoped IPv6 addresses, are never a destination. The name decides only whether a
+redirect is needed and never where it points. The redirect keeps neither the
+incoming query string nor any credentials, and the `Location` ends in an
+explicitly empty fragment: a browser inherits the fragment of the address it
+entered through whenever the redirect target has no fragment component, and that
+fragment is never sent to the server, so the redirect is the only place it can be
+cleared. The answer carries `Cache-Control: no-store` and
+`Referrer-Policy: no-referrer`. A device address
+that is not unique is not resolved by preference: when the device holds more
+than one current address of the client's address family, the page entry is
+refused with `403` and
+`{"error":"This page is only served from the device address"}`, so on a
+multi-interface device open the numeric address directly. The same refusal
+covers a listener that is not bound, a request without socket provenance and an
+absent or malformed `Host` header. A `Host` is malformed unless it is a numeric
+address, `localhost`, a bracketed IPv6 literal or dot-separated DNS labels, with
+an optional port in `1`-`65535`: `/`, `?`, `#`, `,`, `;`, `@`, whitespace inside
+the value, a control character, `[localhost]`, a bracketed IPv4 address, port `0`
+or a port above `65535` in the value is refused rather than treated as a name.
+
+Nothing else moves: every other route, the spec files, third-party plugin pages
+and every mutation keep their existing behaviour, an `Origin` that is a name stays
+refused in both modes even with a valid `extensions:manage` bearer, and a numeric
+or `localhost` entry is not redirected at all. The browser finishes on the
+numeric origin, which the rules above already trust, so the mutation is admitted
+by the existing policy rather than by the redirect.
 
 Requests without an `Origin` header are not affected at all: `curl`, Home
 Assistant, MCP clients, native app code, `host.localApi` (in process) and every
@@ -254,6 +372,7 @@ for a shared or commercial deployment.
 | Approved `manage.extensions` plugin via `host.localApi` | Allowed | Allowed |
 | Trusted native Flutter controls | Allowed | Allowed |
 | Decent account proxy | Existing account scopes | Same account scopes |
+| [Machine control routes](#machine-control-routes) | No credential | Needs `extensions:manage` |
 | Other REST/WS APIs | Existing behaviour, no new gate | Existing behaviour, not protected by this setting |
 
 The rows assume a request that carries no untrusted browser `Origin`; the
@@ -279,7 +398,8 @@ key-value store, `host.localApi` nor the account proxy can write it. `GET
   silently downgrading security because storage failed.
 - **The current value is resolved per relevant request, once** (and refreshed
   when the app resumes from the background). Only a request whose outcome can
-  depend on the mode reads it: the 18 routes, a gated settings body, an import,
+  depend on the mode reads it: the 19 routes, the machine control routes, a
+  gated settings body, an import,
   and a `settings`-bearing pull or `two_way` sync. Everything else — machine
   state, polling, the account proxy, read-only and plugin-defined routes and
   ordinary settings bodies — never reads it. A change applies to the next
@@ -292,14 +412,12 @@ key-value store, `host.localApi` nor the account proxy can write it. `GET
   port 8080, so a bearer token can be observed on a hostile LAN. HTTPS is
   proposed in #925; #1135 remains the separate, optional full REST/WS
   authentication. Use a trusted network until then.
-- **The origin check does not tighten CORS in general.** Apart from the
-  refusals above, responses keep the pre-existing permissive echo of the request
-  `Origin` in both modes, `OPTIONS` keeps its pre-existing preflight answer on
-  unrelated and read-only paths, and the account proxy keeps its own restrictive
-  rule on top. So a browser page on any origin that can reach the device can
-  still read other API responses. The origin check is a browser boundary for
-  extension management, not authentication, and the setting still changes who is
-  authorized rather than what a browser may read.
+- **CORS is limited to the device's own origins.** Responses carry
+  `Access-Control-Allow-Origin` only for the device's own origins, foreign
+  preflights are refused, and foreign writes and WebSocket upgrades are refused
+  before any handler runs (see [Browser origins](#browser-origins)). This is a
+  browser boundary, not authentication: a non-browser LAN client can still call
+  every route that protection does not cover.
 - **A preflight for a body-gated path is refused before its body exists.** A
   preflight carries no body, so an untrusted `Origin` is refused for `OPTIONS
   /api/v1/settings`, `OPTIONS /api/v1/data/import` and `OPTIONS
@@ -426,9 +544,9 @@ For browser clients on a different origin, `ETag` is exposed via `Access-Control
 
 | Method | Path | Description | Handler |
 |--------|------|-------------|---------|
-| GET | `/api/v1/machine/info` | Machine model, firmware, features | `de1handler.dart` |
+| GET | `/api/v1/machine/info` | Machine model, firmware, features; `503` `{"error": "No machine connected"}` while no machine is connected | `de1handler.dart` |
 | GET | `/api/v1/machine/state` | Current machine state + substate. The steam substates `pausedSteam` and `puffing` report as themselves; a stopped refill kit reports `needsWater`/`refillStopped` rather than `needsWater`/`idle` | |
-| PUT | `/api/v1/machine/state/{newState}` | Request state change (`idle`, `sleep`, `espresso`, …) | |
+| PUT | `/api/v1/machine/state/{newState}` | Request state change (`idle`, `sleep`, `espresso`, …). On a machine whose `machine/info` reports `"GHC": true`, a remote `espresso`, `steam`, `hotWater` or `flush` start is still sent and answers 200, but the DE1 only arms the group head and the user must start there; stopping with `idle` works remotely ([device note](device-notes/de1.md#group-head-controller-start-restriction)) | |
 | GET | `/api/v1/machine/settings` | DE1 machine settings (temps, flows) | |
 | POST | `/api/v1/machine/settings` | Update machine settings (one grouped, serialized device write per request). API fan writes are retained locally per machine across app restarts and reapplied after reconnect; the default is 55 (DE1 clamps it to 50) until a fan value is written. The bounded map keeps 32 machines and evicts the oldest-updated entry. Each connection captures its raw handshake serial, falling back to device ID; account-resolved effective serials are excluded. Raw identity changes across connections do not migrate buckets, while account-only effective identity changes within a connection leave the bucket fixed. If neither is available, defaults are used with no retained entry. | |
 | POST | `/api/v1/machine/shotSettings` | Update shot settings (steam temp, hot water, target volume, group temp) | |
@@ -494,7 +612,7 @@ Pre-stream responses are `400` for malformed input, `404` for an unknown artifac
 | PUT | `/api/v1/scale/timer/stop` | Stop scale timer | |
 | PUT | `/api/v1/scale/timer/reset` | Reset scale timer | |
 
-`GET /api/v1/scale/info` is scoped to the currently connected scale. It returns `503` when no scale is connected and `{}` when connected metadata is not yet known. `firmwareVersion`, when present, is an opaque value reported by the scale (for example `R029`). `batteryLevel` is optional and nullable; unknown values are omitted, while `0` and `100` are valid readings. This endpoint is separate from device inventory.
+`GET /api/v1/scale/info` is scoped to the currently connected scale. It returns `503` when no scale is connected and `{}` when connected metadata is not yet known. `firmwareVersion`, when present, is an opaque value reported by the scale (for example `R029`). `batteryLevel` is optional and nullable; unknown values are omitted, while `0` and `100` are valid readings. For a plugin-backed scale whose owning plugin runtime is active, optional `surfaces` lists the driver's declared surfaces (`id`, `role` — `settings` or `diagnostics` — optional `label`, and a host-built same-plugin `href` carrying `ui=1`, the runtime `deviceId` and a display-only `deviceName`), resolved by the same `PluginDeviceSurfaceAuthority` as native device management. Skins can open a `settings` surface to reach the plugin's per-device settings page. `surfaces` is omitted for native scales, for plugin scales that declare none, and while the plugin runtime is inactive. This endpoint is separate from device inventory.
 
 ### Devices
 
@@ -825,12 +943,18 @@ from normal scan results; it is never a persisted `grinderId`.
 | GET | `/api/v1/settings` | All app settings (gateway, theme, charging, devices, etc.) | `settings_handler.dart` |
 | POST | `/api/v1/settings` | Update settings (partial, key-by-key); while extension management protection is ON, `webUiPath`, a changed `defaultSkinId` and turning `automaticUpdateCheck` on need an `extensions:manage` token ([details](#extension-management-authorization)) | |
 
-Settings fields include: `gatewayMode`, `themeMode`, `logLevel`, `weightFlowMultiplier`, `volumeFlowMultiplier`, `hotWaterFlowMultiplier`, `scalePowerMode`, `blockOnNoScale`, `blockTareDuringShot`, `stopHotWaterAtWeight`, `preferredMachineId`, `preferredScaleId`, `preferredGrinderDeviceId`, `defaultSkinId`, `automaticUpdateCheck`, `chargingMode`, `nightModeEnabled`, `nightModeSleepTime`, `nightModeMorningTime`, `lowBatteryBrightnessLimit`, `keepAwake`, `simulatedDevices`.
+Settings fields include: `gatewayMode`, `themeMode`, `logLevel`, `weightFlowMultiplier`, `volumeFlowMultiplier`, `hotWaterFlowMultiplier`, `scalePowerMode`, `blockOnNoScale`, `blockTareDuringShot`, `stopHotWaterAtWeight`, `preferredMachineId`, `preferredScaleId`, `preferredGrinderDeviceId`, `defaultSkinId`, `automaticUpdateCheck`, `chargingMode`, `nightModeEnabled`, `nightModeSleepTime`, `nightModeMorningTime`, `lowBatteryBrightnessLimit`, `keepAwake`, `keepServiceRunning`, `simulatedDevices`.
 
-Android session-only USB machine and scale IDs are usable for the current attachment but are not durable preferences. Writing one to `preferredMachineId` or `preferredScaleId` leaves the existing preference unchanged; `null` still clears it. Device inventory coalesces a remembered canonical USB record with a live session-only machine only after that attachment supplies the matching descriptor serial. The working session keeps its ID until a safe reconnect.
+Android session-only USB IDs are usable for the current attachment but are not durable device identities. Writing one to `preferredMachineId` leaves the existing preference unchanged. For `preferredScaleId`, a currently discovered, protocol-identified serial-less USB Half Decent Scale is saved as the durable family selector `usb-hds:any`; unsupported or absent session-only scale IDs return `400`. Clients may also save `usb-hds:any` directly without a connected scale. `null` still clears either preference.
+
+The USB HDS family preference auto-connects only when a completed scan finds exactly one matching scale not reserved as auxiliary. Multiple matches require explicit selection; early-connect optimizations do not choose the first family match. Stable USB serial identities, BLE scales and Wi-Fi scales retain exact-device preferences.
+
+For existing clients comparing settings and inventory IDs, `GET /api/v1/settings` presents the family preference as the current attachment ID when exactly one protocol-identified serial-less USB HDS is discovered. With none or multiple matches it returns `usb-hds:any`; this selector is not a device ID and must not be used in addressed routes. This readback is presentation only: stored settings and backups retain `usb-hds:any`, device inventory IDs remain unchanged, and no connection role is assigned. Device inventory coalesces a remembered canonical USB record with a live session-only machine only after that attachment supplies the matching descriptor serial. The working session keeps its ID until a safe reconnect.
 
 
 `stopHotWaterAtWeight` (boolean, default `true`): when on and a scale is connected, hot-water dispensing tares the scale and stops at the configured hot-water `volume` target treated as grams (mirrors the espresso stop-at-weight). The machine's own volume/time stop remains a backstop, and the value is ignored in `full` gateway mode (a skin owns the machine). `hotWaterFlowMultiplier` (number, default `0.3`) is the seconds-of-lookahead applied to scale weight flow for that stop — separate from `weightFlowMultiplier` because hot water dispenses with a different pump/flow profile than espresso. See [DeviceManagement.md](DeviceManagement.md#hot-water-stop-at-weight).
+
+`keepServiceRunning` (boolean, default `false`, Android only): when on, the foreground service is started with the app and kept running when the machine disconnects, instead of stopping after the 5-minute grace period. This keeps the REST API, plugins and integrations reachable while the machine sleeps, at the cost of a persistent notification. Turning it off re-arms the grace period immediately if the machine is disconnected; turning it on restarts a service the grace period already stopped. It is not gated by extension management protection. Enabling it from the native Advanced settings page also requests the battery-optimization exemption if not already granted; enabling it over REST does not. See [DeviceManagement.md](DeviceManagement.md#architecture-overview).
 
 `blockTareDuringShot` (boolean, default `false`): when on, `PUT /api/v1/scale/tare` is rejected with `400` (`type: "block_tare_during_shot"`) while an **app-tracked** espresso shot is actively brewing (any `ShotState` other than `idle`/`finished`). Prevents a stray programmatic tare (skin, external client) from re-zeroing the scale mid-pour and wrecking stop-at-weight. Does not affect the shot sequencer's own arm-before-pour tare or a manual tare via the scale's physical button — those never go through this endpoint. **`full` gateway mode is an explicit policy exemption**: the skin owns the shot there, so this lockout never blocks a tare in that mode, regardless of any app-tracked (including stale or unexpected) shot state.
 
@@ -887,6 +1011,7 @@ one explicitly requested source rather than running the batch update check.
 | POST | `/api/v1/plugins/:id/disable` | Unload plugin + disable auto-load | | required |
 | DELETE | `/api/v1/plugins/:id` | Remove plugin (unload + delete files) | | required |
 | PUT | `/api/v1/plugins/:id/source` | Create or overwrite `manifest.json` + `plugin.js` | | required |
+| PUT | `/api/v1/plugins/:id/machine-control` | Body `{"granted": true\|false}`: allow or forbid the plugin's `fetch` writes to `/api/v1/machine/*` ([details](Plugins.md#machine-control-grant)) | | required |
 | POST | `/api/v1/plugins/install` | Not supported — returns 501 naming the GitHub endpoints | | required |
 | POST | `/api/v1/plugins/install/github-release` | Install from a GitHub release asset; tag must equal the manifest version | | required |
 | POST | `/api/v1/plugins/install/github-branch` | Install from a GitHub branch; the resolved commit drives updates | | required |
@@ -1011,6 +1136,12 @@ single-owner: no other reader may hold the port while Decaid owns it.
 | POST | `/api/v1/store/:namespace/:key` | Set value | |
 | DELETE | `/api/v1/store/:namespace/:key` | Delete key | |
 
+A namespace equal to an installed plugin's id (case-insensitive) belongs to
+that plugin's `host.storage`. Requests whose socket peer is this device
+(loopback or one of the device's own addresses), such as a plugin's own page in
+the app WebView, may use it. Requests from any other machine answer 403 on every
+store route unless they carry an `extensions:manage` bearer.
+
 `GET /api/v1/store/:namespace?full=1` returns the entire namespace as a `{key: value}` map in one request instead of one GET per key. It sends an `ETag`, so a repeat request with `If-None-Match` returns `304 Not Modified` when nothing changed — cheap to poll. Without the flag the endpoint returns just the array of keys.
 
 ### Data Management
@@ -1026,6 +1157,19 @@ Sync accepts `target` (URL), `mode` (`pull`, `push`, `two_way`), `onConflict` (`
 Sync responses use semantic results rather than transport status alone. Each direct section under `pull.<section>` and `push.<section>` remains available and gains `status` (`complete`, `partial`, or `failed`). Additive phase metadata is under `phases.<phase>` with `status`, `complete`, and `partial`; fatal phase details remain available at the legacy `pull` or `push` path and are repeated under `phases`. Skipped-push reasons are reported under `phases`. A phase is complete only when every expected section is represented without errors. Warnings, conflict skips, and zero imported records do not make a valid section partial. Section errors with progress are partial; errors without progress are failed. Partial imports are not transactional.
 
 In `two_way` mode, push runs only after every expected pull section completes by default. Set `continueOnPullFailure: true` to explicitly continue after a partial or failed pull; the option is limited to `two_way` and is never inferred from overwrite handling. A complete operation returns `200`, an incomplete single-direction operation returns `502`, and an incomplete two-way operation with meaningful progress returns `207`; a two-way operation with no complete or partial phase returns `502` (its body may still report `partial` only when meaningful progress exists). Legacy flat and structured remote import responses are supported, but malformed, contradictory, hybrid, missing-section, and HTTP `200` responses with embedded errors are not treated as success.
+
+`store.json` holds the key-value store namespaces. Namespaces that belong to
+an installed plugin (its `host.storage`, see
+[Plugins](Plugins.md#security-considerations)) are exported and imported only
+when the request carries an `extensions:manage` bearer; the app's own Data
+Management screen and onboarding import send one. Without it, export leaves
+them out and import skips them, adding a warning such as `Plugin storage for
+skale.reaplugin was not imported: ...` to the `store` section result. When
+plugin storage is imported, every affected plugin that is running is reloaded
+so it reads the restored values. `POST /api/v1/data/sync` never transfers
+plugin storage. Before this change an export only contained a plugin namespace
+if a client had opened it through `/api/v1/store/` since the app started, and
+any import wrote plugin namespaces without a credential.
 
 Backups are ZIP archives with one JSON file per registered section:
 `profiles.json`, `shots.json`, `workflow.json`, `settings.json`, `store.json`,
@@ -1112,7 +1256,7 @@ archive is also bounded by the 2 GiB import request limit.
 | POST | `/api/v1/account/proxy/<path>` | Auth-enriching write proxy (relays body) | `account_proxy_handler.dart` |
 | PUT | `/api/v1/account/proxy/<path>` | Auth-enriching write proxy (relays body) | `account_proxy_handler.dart` |
 
-Linking/unlinking a Decent account is **native-only** — there are no network login/logout routes. Apart from the account proxy and extension management, the webserver is unauthenticated, and it echoes `Access-Control-Allow-Origin` for whatever origin a request presents (extension management additionally refuses untrusted browser origins, see [Browser origins](#browser-origins)), so exposing credential operations would let any LAN client or browser origin store attacker credentials or unlink the account. The status response omits the linked email (PII).
+Linking/unlinking a Decent account is **native-only** — there are no network login/logout routes. Apart from the account proxy, extension management and (in protected mode) the machine control routes, the webserver is unauthenticated to non-browser LAN clients (browsers on other origins are refused, see [Browser origins](#browser-origins)), so exposing credential operations would let any LAN client or browser origin store attacker credentials or unlink the account. The status response omits the linked email (PII).
 
 The **proxy** lets clients *use* the account without ever seeing the credentials: it attaches the linked account's Basic auth server-side, forwards to `decentespresso.com`, and relays the upstream status + body verbatim. It requires `Authorization: Bearer <token>`. The account proxy's scopes are independent of [extension management](#extension-management-authorization), which is the other surface with a scope of its own (and needs it only while extension management protection is ON): an `extensions:manage` token cannot use the proxy, and an account-proxy token cannot manage extensions. `GET` requires `account:proxy` (including the skin token injected into served skin pages); `POST`/`PUT` require the stronger `account:proxy:write` scope, so the read-only skin token cannot write. Forwarding is restricted to the `support/api/` prefix. The OpenAPI spec documents the generated-client-safe `/support/api/{endpoint}` form; use this raw catch-all route when a Decent backend path contains additional slashes. Each served skin generation gets a fresh token bound to that skin's immutable consent key; switching or stopping the skin server revokes the previous token. The skin's origin normally remains stable across restarts, with a temporary fallback if its assigned port is occupied; see [Skin Origins and Browser Storage](Skins.md#skin-origins-and-browser-storage). The stable port 3000 entry point redirects without caching to the active origin and is the address to bookmark. The first request from each skin, plugin, or named API client pauses for native approval on the Decaid device. Explicit allow and deny decisions are remembered; a 30-second timeout denies only that request. Responses: 401 (missing/invalid token or no linked account), 403 (token unscoped, path not allowed, or account access not granted). Write-scoped tokens are minted from the account page's API-token UI by enabling "Allow write access". Headless operators can grant session-only access with `--trust-consent=<caller-key>` or `--trust-all-consent`.
 
@@ -1181,6 +1325,20 @@ current token immediately, while release archives, ZIPs, and CDN downloads
 remain unauthenticated. The token owner is the GitHub identity shown on native
 feedback issues and attachment gists. Secure-storage read failures are surfaced
 in native settings and do not block app startup; requests retry loading later.
+
+For feedback from outside the Decaid organization, use a personal access token
+(classic) with `public_repo`, plus `gist` only for logs/screenshots. The broader
+`repo` scope includes public-repository access but also grants private-repository
+access and is unnecessary for Decaid. Fine-grained tokens may authenticate and
+read metadata, but GitHub restricts their public-organization issue writes for
+non-members. Use an expiry and keep tokens private.
+
+Native **Test token** checks an unsaved draft first, otherwise the saved user
+PAT, using read-only `GET https://api.github.com/user`. Success verifies
+authentication and identity only, not permission to create issues or Gists.
+Testing never saves a draft or changes active credentials. No token is required
+for public update metadata, and no PAT-testing API is exposed to skins/plugins.
+
 Account failures take precedence over missing GitHub configuration: `503` only
 applies after successful account verification. Other submission failures remain
 `500`. Trusted-LAN callers use the host's account without separate caller
@@ -1283,6 +1441,16 @@ For clients this means:
 Machine sockets opened before the first machine connection behave like any later disconnected gap:
 the socket stays open and remains silent until a machine attaches. No error or status frame is emitted
 on the typed telemetry sockets.
+
+### Raw notification semantics
+
+For UnifiedDe1 transports, `/ws/v1/machine/raw` mirrors incoming state info,
+DE1/Bengle shot samples, shot settings, water levels and MMR notifications once
+at BLE/serial ingress, independently of typed subscribers. Replaying a typed
+value, reading an initial characteristic, seeding serial settings or writing
+local settings does not synthesize a `notify` frame. Firmware-map and calibration
+notifications retain typed-only delivery. Raw command read/write receipts keep
+their existing operation types and payload shape.
 
 ### Sensor sockets follow replacement
 

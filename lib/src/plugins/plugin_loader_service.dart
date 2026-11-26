@@ -59,6 +59,15 @@ class PluginDowngradeException implements UserFacingException {
   String toString() => message;
 }
 
+class PluginPermissionApprovalRequiredException implements UserFacingException {
+  @override
+  final String message;
+  PluginPermissionApprovalRequiredException(this.message);
+
+  @override
+  String toString() => message;
+}
+
 enum PluginLoaderLifecycle { active, disposing, disposed }
 
 class PluginLoaderService {
@@ -98,6 +107,7 @@ class PluginLoaderService {
          deviceService: deviceService,
          bleRegistry: PluginBleRegistry(initiallyReady: false),
        ) {
+    pluginManager.machineControlGranted = machineControlGranted;
     _accountSubscription = decentAccountChanges?.listen((_) {
       if (_lifecycle == PluginLoaderLifecycle.active) {
         pluginManager.broadcastEvent('decentAccountChanged', const {});
@@ -208,6 +218,7 @@ class PluginLoaderService {
   Future<PluginManifest> installPluginPackage(
     Directory stagedDir, {
     bool allowDowngrade = false,
+    bool authorized = true,
   }) async {
     final package = resolvePluginPackage(stagedDir);
     final manifest = package.manifest;
@@ -221,10 +232,18 @@ class PluginLoaderService {
       final pluginDir = Directory('${_pluginsDir.path}/$pluginId');
       final backupDir = Directory('${pluginDir.path}$_backupSuffix');
       final previousManifest = _availablePluginsCache[pluginId];
+      if (!authorized) _requireNoAddedPermissions(previousManifest, manifest);
+      final codeChanged =
+          previousManifest != null &&
+          _readSource(File('${pluginDir.path}/plugin.js')) !=
+              _readSource(File('${package.root.path}/plugin.js'));
       final wasLoaded = isPluginLoaded(pluginId);
 
       if (wasLoaded) {
         await _unloadPlugin(pluginId, preserveNotifications: true);
+      }
+      if (!authorized && codeChanged) {
+        await _forgetTrustForChangedCode(pluginId, settingsSnapshot.secure);
       }
 
       if (backupDir.existsSync()) backupDir.deleteSync(recursive: true);
@@ -279,6 +298,7 @@ class PluginLoaderService {
     String pluginId, {
     required Map<String, dynamic> manifestJson,
     required String pluginJs,
+    bool authorized = false,
   }) async {
     if (!isSafePathComponent(pluginId)) {
       throw FormatException(
@@ -301,9 +321,10 @@ class PluginLoaderService {
     return _withPluginMutationLock(pluginId, () async {
       _ensureActive();
       _ensureNotDowngrade(manifest);
+      final previousManifest = _availablePluginsCache[pluginId];
+      if (!authorized) _requireNoAddedPermissions(previousManifest, manifest);
       final settingsSnapshot = await _capturePersistedSettings(pluginId);
 
-      final previousManifest = _availablePluginsCache[pluginId];
       final pluginDir = Directory('${_pluginsDir.path}/$pluginId');
       final manifestFile = File('${pluginDir.path}/manifest.json');
       final sourceFile = File('${pluginDir.path}/plugin.js');
@@ -336,6 +357,13 @@ class PluginLoaderService {
       }
 
       try {
+        if (previousSource != pluginJs) {
+          if (authorized) {
+            await _prefs.remove(_machineControlKey(pluginId));
+          } else {
+            await _forgetTrustForChangedCode(pluginId, settingsSnapshot.secure);
+          }
+        }
         stagedManifest.renameSync(manifestFile.path);
         stagedSource.renameSync(sourceFile.path);
         _availablePluginsCache[pluginId] = manifest;
@@ -436,6 +464,41 @@ class PluginLoaderService {
     );
   }
 
+  String? _readSource(File file) =>
+      file.existsSync() ? file.readAsStringSync() : null;
+
+  Future<void> _forgetTrustForChangedCode(
+    String pluginId,
+    Map<String, dynamic> secure,
+  ) async {
+    _log.warning(
+      'Code of $pluginId changed without extension-management '
+      'authorization; clearing its secure settings and machine-control grant',
+    );
+    await _prefs.remove(_machineControlKey(pluginId));
+    if (secure.isEmpty) return;
+    await _withPluginSettingsLock(
+      pluginId,
+      () => _deleteSecureSettings(pluginId),
+    );
+  }
+
+  void _requireNoAddedPermissions(
+    PluginManifest? installed,
+    PluginManifest candidate,
+  ) {
+    if (installed == null) return;
+    final added = candidate.permissions
+        .difference(installed.permissions)
+        .map((permission) => permission.wireName)
+        .toList();
+    if (added.isEmpty) return;
+    throw PluginPermissionApprovalRequiredException(
+      'A source write that adds permissions (${added.join(', ')}) needs an '
+      'extensions:manage token or a native install',
+    );
+  }
+
   Future<void> removePlugin(String pluginId) async {
     if (!isSafePathComponent(pluginId)) {
       throw FormatException(
@@ -459,6 +522,7 @@ class PluginLoaderService {
       await _deleteSecureSettings(pluginId);
       await _prefs.remove('plugin.settings.$pluginId');
       await _prefs.remove('plugin.autoload.$pluginId');
+      await _prefs.remove(_machineControlKey(pluginId));
       await _prefs.remove(_loadFailureKey(pluginId));
       if (_prefs.getString(_loadingPluginKey) == pluginId) {
         await _prefs.remove(_loadingPluginKey);
@@ -638,6 +702,38 @@ class PluginLoaderService {
         };
       });
 
+  String _machineControlKey(String pluginId) =>
+      'plugin.machineControl.$pluginId';
+
+  bool machineControlGranted(String pluginId) =>
+      _initialized && (_prefs.getBool(_machineControlKey(pluginId)) ?? false);
+
+  Future<void> setMachineControlGrant(String pluginId, bool granted) async {
+    _ensureActive();
+    if (!_availablePluginsCache.containsKey(pluginId)) {
+      throw Exception('Plugin not found: $pluginId');
+    }
+    if (granted) {
+      await _prefs.setBool(_machineControlKey(pluginId), true);
+      await pluginManager.notifications.removeSource(
+        NotificationNamespace.plugin,
+        pluginId,
+        machineControlNoticeId,
+      );
+    } else {
+      await _prefs.remove(_machineControlKey(pluginId));
+    }
+    _log.info(
+      'Machine control ${granted ? 'granted to' : 'revoked from'} $pluginId',
+    );
+  }
+
+  Future<bool> hasStoredSecureSettings(String pluginId) =>
+      _withPluginSettingsLock(
+        pluginId,
+        () async => (await _readSecureSettings(pluginId)).isNotEmpty,
+      );
+
   Future<void> savePluginSettings(
     String pluginId,
     Map<String, dynamic> settings,
@@ -761,10 +857,8 @@ class PluginLoaderService {
     });
   }
 
-  Set<String> _secureSettingKeys(PluginManifest manifest) => {
-    for (final entry in manifest.settings.entries)
-      if (entry.value is Map && entry.value['secure'] == true) entry.key,
-  };
+  Set<String> _secureSettingKeys(PluginManifest manifest) =>
+      manifest.secureSettingKeys;
 
   bool _isSecureState(dynamic value) =>
       value is Map && value.length == 1 && value['isSet'] is bool;
@@ -1079,6 +1173,9 @@ class PluginLoaderService {
       'assets/plugins/decent-profile.reaplugin',
       'assets/plugins/shot-upload.reaplugin',
       'assets/plugins/dcamp.reaplugin',
+      'assets/plugins/mahlkoenig-e64.reaplugin',
+      'assets/plugins/assisted-dialin.reaplugin',
+      'assets/plugins/skale.reaplugin',
     ];
   }
 

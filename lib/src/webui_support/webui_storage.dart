@@ -144,6 +144,16 @@ class WebUISkin {
   }
 }
 
+class _SkinIdChangedException extends UserFacingFormatException {
+  const _SkinIdChangedException(this.declaredSkinId)
+    : super(
+        'The skin package declares a different skin id than the installed '
+        'skin.',
+      );
+
+  final String declaredSkinId;
+}
+
 class WebUIStorage {
   final _log = Logger('WebUIStorage');
   static const _stagingDirName = '.webui-install-staging';
@@ -152,6 +162,7 @@ class WebUIStorage {
 
   late Directory _webUIDir;
   final Map<String, WebUISkin> _installedSkins = {};
+  final Map<String, List<String>> _skinPaths = {};
   final Map<String, WebUIReaMetadata> _skinMetadata = {};
   bool _initialized = false;
   final ValueNotifier<Future<void>?> _updateCheck = ValueNotifier(null);
@@ -185,6 +196,16 @@ class WebUIStorage {
       _webUIDir.createSync(recursive: true);
     }
     _initialized = true;
+  }
+
+  bool containsSkinPath(String path) {
+    try {
+      final rootPath = _webUIDir.resolveSymbolicLinksSync();
+      final target = Directory(path).resolveSymbolicLinksSync();
+      return p.isWithin(rootPath, target);
+    } on FileSystemException {
+      return false;
+    }
   }
 
   static List<String> get _bundledAssetPaths =>
@@ -243,6 +264,16 @@ class WebUIStorage {
   List<WebUISkin> get installedSkins => _installedSkins.values.toList();
 
   WebUISkin? getSkin(String id) => _installedSkins[id];
+
+  Iterable<String> legacySkinPaths(String path) {
+    final skin = _installedSkins.values
+        .where((skin) => skin.path == path)
+        .firstOrNull;
+    if (skin == null) return const [];
+    return (_skinPaths[skin.id] ?? const <String>[]).reversed.where(
+      (candidate) => candidate != path,
+    );
+  }
 
   WebUISkin? get defaultSkin {
     final preferredSkinId = _settingsController.defaultSkinId;
@@ -789,6 +820,24 @@ class WebUIStorage {
           tempFile.path,
           expectedSkinId: boundSkinId,
         );
+      } on _SkinIdChangedException catch (error) {
+        final declared = error.declaredSkinId;
+        if (expectedSkinId != null ||
+            !markAsRemoteBundled ||
+            !_mayTrackRelease(declared, repo)) {
+          rethrow;
+        }
+        _log.warning(
+          'Bundled skin source $repo now publishes skin "$declared" instead '
+          'of "$boundSkinId"; tracking "$declared" from now on and keeping '
+          '"$boundSkinId" installed without updates',
+        );
+        installedSkinId = await _installFromZip(
+          tempFile.path,
+          expectedSkinId: declared,
+        );
+        _skinMetadata.remove(boundSkinId);
+        _remoteBundledSkinIds.remove(boundSkinId);
       } finally {
         await tempDir.delete(recursive: true);
       }
@@ -817,6 +866,8 @@ class WebUIStorage {
 
       await _scanInstalledSkins();
       return RemoteUpdateStatus.updated;
+    } on _SkinIdChangedException {
+      rethrow;
     } catch (e, st) {
       _log.severe('Failed to install from GitHub release: $repo', e, st);
       rethrow;
@@ -825,6 +876,11 @@ class WebUIStorage {
 
   bool _tracksReleaseRepo(WebUIReaMetadata metadata, String repo) =>
       metadata.sourceUrl?.startsWith('github_release:$repo@') ?? false;
+
+  bool _mayTrackRelease(String skinId, String repo) {
+    final metadata = _skinMetadata[skinId];
+    return metadata?.sourceUrl == null || _tracksReleaseRepo(metadata!, repo);
+  }
 
   Future<RemoteUpdateStatus> _installFromUrlAsRemoteBundled(
     String url, {
@@ -1132,9 +1188,12 @@ class WebUIStorage {
   }
 
   Future<void> _scanInstalledSkins() async {
-    _installedSkins.clear();
+    final installedSkins = <String, WebUISkin>{};
+    final skinPaths = <String, List<String>>{};
 
     if (!_webUIDir.existsSync()) {
+      _installedSkins.clear();
+      _skinPaths.clear();
       return;
     }
 
@@ -1190,12 +1249,23 @@ class WebUIStorage {
           continue;
         }
 
-        _installedSkins[skin.id] = skin;
+        (skinPaths[skin.id] ??= []).add(skin.path);
+        final existing = installedSkins[skin.id];
+        if (existing != null && p.basename(existing.path) == skin.id) {
+          continue;
+        }
+        installedSkins[skin.id] = skin;
         _log.fine('Found skin: ${skin.id} at ${skin.path}');
       } catch (e) {
         _log.warning('Failed to load skin from ${dir.path}', e);
       }
     }
+    _installedSkins
+      ..clear()
+      ..addAll(installedSkins);
+    _skinPaths
+      ..clear()
+      ..addAll(skinPaths);
   }
 
   bool _isBundledSkin(String skinId) {
@@ -1303,10 +1373,7 @@ class WebUIStorage {
     if (expectedSkinId != null &&
         declaredSkinId != null &&
         declaredSkinId != expectedSkinId) {
-      throw const UserFacingFormatException(
-        'The skin package declares a different skin id than the installed '
-        'skin.',
-      );
+      throw _SkinIdChangedException(declaredSkinId);
     }
 
     if (!File('${sourceDir.path}/index.html').existsSync()) {

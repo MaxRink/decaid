@@ -43,7 +43,7 @@ Startup sequence and recovery limits:
 2. Core device/WebUI work completes before the scan step is allowed to proceed. A missing or unreadable configured skin can fall back to the default skin; core failures remain observable and the initialization view offers explicit retry.
 3. Device discovery startup is classified from actual service outcomes and platform applicability, not from the configured service list. `DeviceController.startupOutcome` reports the failures of startup-relevant services and whether scanning is blocked. `main.dart` supplies the pure applicability predicate `isStartupRelevantDiscoveryService`: no-op serial placeholders, simulation with no enabled devices, and plugin device services with no registered adapters are not startup-relevant, while real serial/BLE, initialized Wi-Fi capability (even without current endpoints), enabled simulation, registered plugin adapters, and unknown/custom services are. A platform serial placeholder that initialized successfully therefore cannot rescue a failed real scanner. Only actual relevant failures with no relevant successful service block startup; a platform with zero relevant configured services is not a failure by itself.
 4. Blocking discovery failure keeps the pre-scan loading/error/Retry presentation and does not mount the scan step. Partial discovery failure advances with useful scanning available and keeps a persistent device recovery notice, with Retry, above the guarded import/scan presentation and above the native Launcher route. Both placements use the shared `StartupDiscoveryRecovery` presentation, so normal auto-completion through the scan stage into the launcher cannot drop the recovery action; the notice is presented beside the launcher content instead of gating it, and no notice is repeated inside the skin or Settings screens. The notice observes coordinator state and disables recovery while an attempt is pending, so a pending retry is shared rather than duplicated. Recovery re-initializes only failed services; successfully initialized services keep their single initialization, device stream, and attach subscriptions, and recovery never starts a scan or remounts the guarded step. Recovery clears only the device reason and retains optional plugin/remote-skin diagnostics.
-5. Android foreground start/watch belongs only to the coordinator. Desktop has no foreground-task branch. A foreground start or watch failure is a non-blocking degraded condition: the same shared recovery presentation shows a separate foreground notice whose action (`Retry foreground service`) re-attempts only foreground start and the one-time machine-connection watcher. It never re-runs successful device or WebUI initialization, starts a scan, or clears unrelated diagnostics, it coalesces with any other pending attempt through one shared in-flight future, and it reuses the existing grace-timer and token ownership. The watcher is registered once, and only after a foreground start succeeds. Optional plugin and remote-skin work starts after core readiness and may remain pending or fail without delaying scans.
+5. Android foreground start/watch belongs only to the coordinator. Desktop has no foreground-task branch. A foreground start or watch failure is a non-blocking degraded condition: the same shared recovery presentation shows a separate foreground notice whose action (`Retry foreground service`) re-attempts only foreground start and the one-time machine-connection watcher. It never re-runs successful device or WebUI initialization, starts a scan, or clears unrelated diagnostics, it coalesces with any other pending attempt through one shared in-flight future, and it reuses the existing grace-timer and token ownership. The watcher is registered once, and only after a foreground start succeeds. By default the grace timer stops the foreground service 5 minutes after the machine disconnects; Android may then kill the backgrounded process. The opt-in `keepServiceRunning` setting (Advanced settings, "Keep Decaid running in the background", or `POST /api/v1/settings`) disables that stop: while it is on, a disconnect never arms the grace timer, enabling it restarts a service the grace timer already stopped, and disabling it while disconnected arms the grace period immediately. `main.dart` applies the setting through `ForegroundTaskService.setKeepRunning`; `autoRunOnBoot` is unchanged. Optional plugin and remote-skin work starts after core readiness and may remain pending or fail without delaying scans.
 6. `AppRoot` owns the coordinator across keyed `MyApp` recreation. Disposal fences new side effects and removes only that coordinator's foreground watcher; native operations already dispatched cannot be cancelled. Retry re-attempts only failed core subsystems, not successful storage initialization or skin serving. Successful fallback remains degraded with its diagnostic reason, but is not replayed. Optional failures cannot mask a failed core or disable explicit recovery. Post-onboarding navigation also rechecks its owner, navigator and a route lease captured after the launcher push, so a Settings screen opened while serving was pending (including a notification View into the updater) is never replaced by the automatic skin. `StartupNavigationGuard` increments a navigation generation only on a genuine top-route change, so removing the onboarding route below the launcher during the launcher transition does not invalidate the lease, while an unchanged launcher still opens the skin once.
 
 ```
@@ -717,6 +717,13 @@ GATT error 133 (`gattError`) is treated as transient — the queue is cleared
 and a `BleTimeoutException` is thrown so `UnifiedDe1Transport` can retry via
 `_handleBleTimeout`. The link is NOT declared dead for GATT-133.
 
+Successful machine timeout recovery keeps the logical connection and existing
+typed subscriptions alive. It retires callbacks and clears cached replay from
+the old physical link before reconnecting, then restores notification
+subscriptions, including Bengle samples when enabled. New snapshot subscribers
+wait for fresh samples instead of receiving the previous link's cached snapshot.
+If recovery fails, normal disconnection handling resumes.
+
 ### Crashlytics Error Filtering (telemetry)
 
 The `DeviceNotConnectedException` thrown from `_handleGattError` and the raw
@@ -744,9 +751,23 @@ This is the safety net. Device implementations should ALSO catch
 
 Device preferences are stored via `SettingsController`:
 - `preferredMachineId` — auto-set on successful machine connection
-- `preferredScaleId` — auto-set on successful scale connection; session-only USB IDs are not persisted
+- `preferredScaleId` — auto-set on successful scale connection; serial-less USB HDS uses the durable `usb-hds:any` family selector rather than an attachment ID
 - `preferredGrinderDeviceId` — auto-set on successful runtime grinder connection
 - Configurable in Settings → Device Management
+
+Serial-less USB Half Decent Scales keep their attachment-scoped runtime IDs for
+inventory, commands and role ownership. Their auto-connect preference is the
+family selector `usb-hds:any`, not a claim to identify the same physical scale
+across reattachment. Only a completed scan with exactly one matching,
+protocol-identified USB HDS not reserved as auxiliary may connect automatically.
+Multiple eligible matches enter the normal scale picker. Family selection waits
+for scan completion rather than connecting the first sighting, and uses the
+existing scale-only scan recovery and bounded retries rather than BLE watching.
+Stable serial-numbered USB scales and other transports keep exact preferences.
+The native device-management page shows one serial-less USB HDS preference;
+explicit connection pickers still list the individual physical attachments.
+Settings API readback presents a unique matching attachment ID for existing
+clients; durable settings and backups always retain the family selector.
 
 Identity remains per transport. BLE and USB IDs for the same physical machine
 are not aliased. If the BLE ID is preferred while Bluetooth is unavailable, a
@@ -873,8 +894,11 @@ REST/WebSocket lifecycle. `GrinderController` owns one selected runtime
 Replacement disconnects the old instance and generation-fences late
 publications. `ConnectionManager.connectGrinder()` connects
 `preferredGrinderDeviceId` only when the device appears in a normal scan after
-machine and primary-scale selection resolves. Grinder failures do not change
-machine or scale connection status.
+machine and primary-scale selection resolves, and again when that device leaves
+the device list and returns outside a scan (a plugin reload, for example after a
+plugin settings save, unregisters and re-registers its grinder). A first
+sighting is left to the scan. Grinder failures do not change machine or scale
+connection status.
 
 Runtime grinder identity is not equipment metadata. Persisted `Grinder.id` is a
 UUID used by `/api/v1/grinders` and workflow records; `GrinderDevice.deviceId`
@@ -1675,13 +1699,20 @@ connection/session availability filtering, so settings can open before connectin
 The owning plugin runtime must be active: settings eligibility is revoked when
 the owning generation starts retiring, before asynchronous disconnect finishes.
 Button visibility and launch refusal use the same runtime-liveness gate.
+A declared `role: "diagnostics"` surface adds a **Device diagnostics** action
+beside it under the same rules. Device management is the only native screen
+that configures scales and grinders, so these actions live only there.
 Machine, Scale, and Grinder auto-connect preferences remain independent; other
-devices with settings surfaces appear in a neutral listing.
+devices with settings or diagnostics surfaces appear in a neutral listing.
 
 The action resolves the authority-built relative `href` against
-`http://localhost:8080` and opens it in the platform in-app browser. Its query is
+`http://localhost:8080` and opens it in the native plugin surface sheet: a
+themed bottom sheet hosting a WebView, with the device name as title, a close
+button and an **Open in browser** button. On Linux, where the WebView is a
+no-op, it opens in the platform browser instead. Its query is
 `ui=1`, the exact runtime `deviceId`, plus an optional display-only `deviceName`,
-encoded once by the authority. Native device management supplies the device name;
+encoded once by the authority; the sheet adds `embed=1`, `theme` and `lang` as
+described in `doc/Plugins.md` ("Native surface sheet"). Native device management supplies the device name;
 it is not identity. Retired, replaced, or unloaded device instances cannot
 launch settings, even if a replacement reuses the same ID. A failed launch shows
 `Unable to open device settings.` The plugin validates identity and owns

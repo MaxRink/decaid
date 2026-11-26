@@ -39,6 +39,28 @@ void main() {
       PluginPermissions.eventsMachine,
       PluginPermissions.eventsShots,
     },
+    'mahlkoenig-e64.reaplugin': {
+      PluginPermissions.api,
+      PluginPermissions.networkWebsocket,
+      PluginPermissions.eventsMachine,
+      PluginPermissions.eventsShots,
+      PluginPermissions.notifications,
+    },
+    'assisted-dialin.reaplugin': {
+      PluginPermissions.log,
+      PluginPermissions.api,
+      PluginPermissions.pluginStorage,
+      PluginPermissions.eventsShots,
+      PluginPermissions.eventsWorkflow,
+      PluginPermissions.notifications,
+    },
+    'skale.reaplugin': {
+      PluginPermissions.transportBle,
+      PluginPermissions.api,
+      PluginPermissions.pluginStorage,
+      PluginPermissions.log,
+      PluginPermissions.notifications,
+    },
   };
   const versionsBeforePermissionEnforcement = <String, String>{
     'time-to-ready.reaplugin': '1.0.2',

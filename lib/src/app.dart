@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:logging/logging.dart';
-import 'package:reaprime/build_info.dart';
 import 'package:reaprime/main.dart';
 import 'package:reaprime/src/controllers/account_tokens_controller.dart';
 import 'package:reaprime/src/controllers/connection_manager.dart';
@@ -42,7 +41,6 @@ import 'package:reaprime/src/webui_support/webui_service.dart';
 import 'package:reaprime/src/services/installed_components.dart';
 import 'package:reaprime/src/webui_support/webui_storage.dart';
 import 'package:shadcn_ui/shadcn_ui.dart' hide Scale;
-import 'package:url_launcher/url_launcher.dart';
 import 'package:reaprime/src/controllers/de1_controller.dart';
 import 'package:reaprime/src/controllers/device_controller.dart';
 import 'package:reaprime/src/controllers/scale_controller.dart';
@@ -53,11 +51,11 @@ import 'package:reaprime/src/models/device/de1_interface.dart';
 import 'package:reaprime/src/models/device/scale.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
 import 'package:reaprime/src/plugins/plugin_source_service.dart';
+import 'package:reaprime/src/notifications/machine_control_review_dialog.dart';
 import 'package:reaprime/src/notifications/notification_actions.dart';
 import 'package:reaprime/src/notifications/update_notifications.dart';
 import 'package:reaprime/src/services/android_updater.dart';
 import 'package:reaprime/src/services/github_credentials.dart';
-import 'package:reaprime/src/settings/update_dialog.dart';
 import 'package:reaprime/src/debug_feature/scale_debug_view.dart';
 import 'package:reaprime/src/services/storage/bean_storage_service.dart';
 import 'package:reaprime/src/services/storage/grinder_storage_service.dart';
@@ -70,6 +68,7 @@ import 'package:reaprime/src/settings/data_management_page.dart';
 import 'package:reaprime/src/settings/device_management_page.dart';
 import 'package:reaprime/src/settings/advanced_page.dart';
 import 'package:reaprime/src/settings/plugins_settings_view.dart';
+import 'package:reaprime/src/settings/plugin_surface_sheet.dart';
 import 'package:reaprime/src/skin_selector/skin_selector_page.dart';
 
 import 'debug_feature/debug_item_details_view.dart';
@@ -154,6 +153,7 @@ class MyApp extends StatefulWidget {
     this.appLogUploadService,
     this.batteryController,
     this.accountConsentStore,
+    this.nativeApiToken,
     required this.credentials,
     required this.startupCoordinator,
   });
@@ -184,6 +184,7 @@ class MyApp extends StatefulWidget {
   final AppLogUploadService? appLogUploadService;
   final BatteryController? batteryController;
   final AccountConsentStore? accountConsentStore;
+  final String? nativeApiToken;
   final GithubCredentialProvider credentials;
   final AppStartupCoordinator startupCoordinator;
 
@@ -217,12 +218,34 @@ class _MyAppState extends State<MyApp> {
       updateCheckService: widget.updateCheckService,
       onOpenAccount: () => NavigationService.navigatorKey.currentState
           ?.pushNamed(AccountPage.routeName),
+      onOpenPluginSurface: (notice, href) async {
+        final context = NavigationService.navigatorKey.currentContext;
+        if (context == null || !context.mounted) return false;
+        return showPluginSurface(
+          context,
+          Uri.parse(pluginSurfaceOrigin).resolve(href),
+          title: notice.sourceName,
+        );
+      },
+      onReviewMachineControl: (notice) async {
+        final context = NavigationService.navigatorKey.currentContext;
+        if (context == null || !context.mounted) return;
+        if (await showMachineControlReview(
+          context,
+          pluginName: notice.sourceName,
+        )) {
+          await widget.pluginLoaderService.setMachineControlGrant(
+            notice.sourceId,
+            true,
+          );
+        }
+      },
     );
     if (widget.updateCheckService case final service?) {
       _updateNotifications = UpdateNotifications(
         center: widget.pluginLoaderService.pluginManager.notifications,
         service: service,
-        onDownload: _confirmUpdateDownload,
+        onView: _openAppUpdate,
       );
     }
     _initializeDe1StateManager();
@@ -263,6 +286,7 @@ class _MyAppState extends State<MyApp> {
               settingsController: widget.settingsController,
               persistenceController: widget.persistenceController,
               workflowController: widget.workflowController,
+              nativeApiToken: widget.nativeApiToken,
             ).builder,
           ),
         createScanStep(
@@ -294,33 +318,10 @@ class _MyAppState extends State<MyApp> {
     }
   }
 
-  Future<void> _confirmUpdateDownload(UpdateInfo update) async {
-    final context = NavigationService.context;
-    if (context == null || !context.mounted) return;
-    final updater = AndroidUpdater(
-      owner: 'tadelv',
-      repo: 'reaprime',
-      credentials: widget.credentials,
-    );
-    try {
-      await showDialog<void>(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => UpdateDialog(
-          updateInfo: update,
-          currentVersion: BuildInfo.version,
-          onViewReleaseNotes: () {
-            final url = widget.updateCheckService?.getReleaseUrl(update);
-            if (url != null) launchUrl(Uri.parse(url));
-          },
-          onDownload: (info, onProgress) =>
-              updater.downloadUpdate(info, onProgress: onProgress),
-          onInstall: updater.installUpdate,
-        ),
-      );
-    } finally {
-      updater.dispose();
-    }
+  Future<void> _openAppUpdate(UpdateInfo update) async {
+    final navigator = NavigationService.navigatorKey.currentState;
+    if (navigator == null) return;
+    await SettingsView.openUpdate(navigator, update.version);
   }
 
   @override
@@ -448,6 +449,7 @@ class _MyAppState extends State<MyApp> {
                         presenceController: widget.presenceController,
                         webUIStorage: widget.webUIStorage,
                         githubCredentials: widget.credentials,
+                        updateVersion: routeSettings.arguments as String?,
                       );
                     case De1DebugView.routeName:
                       final args = routeSettings.arguments;
@@ -579,6 +581,10 @@ class _MyAppState extends State<MyApp> {
                         pluginLoaderService: widget.pluginLoaderService,
                         pluginSourceService: widget.pluginSourceService,
                         decentAccountService: widget.decentAccountService,
+                        notifications: widget
+                            .pluginLoaderService
+                            .pluginManager
+                            .notifications,
                       );
                     case DeviceManagementPage.routeName:
                       return DeviceManagementPage(
@@ -596,6 +602,7 @@ class _MyAppState extends State<MyApp> {
                         de1Controller: widget.de1Controller,
                         decentAccountService: widget.decentAccountService,
                         githubCredentials: widget.credentials,
+                        nativeApiToken: widget.nativeApiToken,
                         profileStorageService: widget.profileStorageService,
                         beanStorageService: widget.beanStorage,
                         grinderStorageService: widget.grinderStorage,

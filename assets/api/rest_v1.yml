@@ -32,8 +32,9 @@ info:
     or webUiPath, and a pull or two-way sync that includes the settings
     section. A trusted origin is scheme `http` on localhost, 127.0.0.1, ::1 or
     a numeric address currently assigned to a local network interface, on the
-    live skin page port or the actual API listener port; anything else,
-    including `Origin: null`, `https`, a hostname and a retired port, is
+    live skin page port, the actual API listener port, or the built-in API docs
+    viewer port while its listener is bound; anything else, including
+    `Origin: null`, `https`, a hostname and a retired port, is
     refused. A literal loopback host is trusted only from a request whose TCP
     socket peer is loopback or one of the device's current addresses; a peer
     that is missing, unreadable or belongs to another machine is refused, so a
@@ -45,6 +46,27 @@ info:
     admitted. Requests without an `Origin` header are unaffected. Origin is not
     authentication: a non-browser client can omit or forge it, so this
     boundary covers browser pages only.
+
+    A `GET` of a built-in page that arrives through a hostname is answered with
+    302 to the same path on the numeric local endpoint: `/` and `/index.html`
+    on the docs viewer port, `/api/v1/plugins/settings.reaplugin/ui` on the API
+    port. The destination carries only `http`, the port the listener bound and
+    one numeric address of the client's address family: the address the
+    listener actually bound when that is concrete, otherwise the single usable
+    current interface address, and 127.0.0.1 or ::1 for a loopback client. The
+    incoming query string and credentials are not carried over, and the
+    `Location` ends in an explicitly empty fragment so a fragment on the alias
+    address is not inherited by the numeric page (a browser reattaches it when
+    the redirect target has no fragment, and it never reaches the server), and
+    the answer carries `Cache-Control: no-store`. The page entry is refused with
+    403 and `{"error":"This page is only served from the device address"}` when
+    that destination is not unique (more than one current address of the
+    family), when the listener has not bound, or when the request carries no
+    socket peer or an unclassifiable `Host` - anything that is not a numeric
+    address, `localhost`, a bracketed IPv6 literal or DNS labels with an optional
+    port in 1-65535; opening the numeric address directly avoids the redirect.
+    No other route, spec file, third-party plugin page or mutation is redirected,
+    and the redirect adds no trusted origin.
 x-admission-control:
   windowSeconds: 1
   globalConcurrent: 128
@@ -76,7 +98,9 @@ paths:
         Returns the static API documentation locations. The paths under `docs`
         are relative to the same host as the API request, using the advertised
         documentation port (4001) rather than port 8080. The documentation
-        listener may be unavailable even when this endpoint responds.
+        listener may be unavailable even when this endpoint responds. A viewer
+        opened through a hostname is redirected to the same path on the numeric
+        local endpoint.
       tags: [Documentation]
       responses:
         "200":
@@ -200,7 +224,9 @@ paths:
             after successful scan teardown, without restarting full discovery.
             Pending machine/selection work, occupied slots, auxiliary claims,
             and sleeping-scale restrictions disable the shortcut. Otherwise the
-            normal full explicit scan applies. Failed or uncertain BLE teardown
+            normal full explicit scan applies. The usb-hds:any family preference
+            always waits for scan completion to detect multiple matching scales.
+            Failed or uncertain BLE teardown
             never starts an early connection. If an early-stop request fails but
             the scan later completes normally with BLE ownership released, normal
             post-scan connection policy applies. Unrelated discovery failures do
@@ -464,11 +490,19 @@ paths:
       tags: [Machine]
       responses:
         "200":
-          description: Information about the currently connected machine or an error if not connected
+          description: Information about the currently connected machine
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/MachineInfo"
+        "503":
+          description: >
+            No machine is connected (for example during startup before the
+            DE1 connects). The body is `{"error": "No machine connected"}`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/machine/state:
     get:
@@ -485,7 +519,14 @@ paths:
   /api/v1/machine/state/{newState}:
     put:
       summary: Request Machine State Change
-      description: Requests a state change for the espresso machine.
+      description: >
+        Requests a state change for the espresso machine. A 200 means the
+        request was written to the machine, not that the machine entered the
+        state. On a DE1 whose `GET /api/v1/machine/info` reports `GHC: true`
+        (an active group head controller), the firmware ignores a remote start
+        of `espresso`, `steam`, `hotWater` or `flush`: it only arms the group
+        head and the user must start the operation there. Such a request is
+        still sent and answers 200; stopping with `idle` works remotely.
       tags: [Machine]
       parameters:
         - name: newState
@@ -908,6 +949,15 @@ paths:
         answers 409. Quick tare is deliberately not exposed here — use
         the integrated-scale tare path. Returns 404 when the connected
         machine is not a Bengle.
+
+        Machine control route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       requestBody:
         required: true
@@ -916,6 +966,25 @@ paths:
             schema:
               $ref: "#/components/schemas/ScaleCalibrationCommandRequest"
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "202":
           description: Command accepted, returns the new state
           content:
@@ -1004,6 +1073,15 @@ paths:
         raw serial nor device ID is available, defaults are used and no retained entry is
         created. The connect-time
         detection read and firmware handoff remain separate from this override.
+
+        Machine control route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       requestBody:
         required: true
@@ -1012,6 +1090,25 @@ paths:
             schema:
               $ref: "#/components/schemas/De1AdvancedSettingsRequest"
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "202":
           description: Advanced settings update accepted (one grouped serialized device write)
         "400":
@@ -1034,8 +1131,36 @@ paths:
         for the next connection.
         Profile and workflow are not touched. A reset acknowledgement is not evidence
         of factory restoration.
+
+        Machine control route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "202":
           description: Reset accepted (one grouped serialized device write)
         "503":
@@ -1066,6 +1191,15 @@ paths:
         the device ID when no usable serial exists, and is reapplied on the next connection. A
         settings reset preserves this machine's saved override. For DE1 sensor calibration
         (flow/pressure/temperature) see PUT /api/v1/machine/calibration/{target}.
+
+        Machine control route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       requestBody:
         required: true
@@ -1074,6 +1208,25 @@ paths:
             schema:
               $ref: "#/components/schemas/De1CalibrationRequest"
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "202":
           description: Calibration settings updated successfully
         "400":
@@ -1137,6 +1290,15 @@ paths:
         `measuredValue - de1ReportedValue`. To set an absolute value X, first
         read the current calibration C, then write
         `de1ReportedValue: C, measuredValue: X`.
+
+        Machine control route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       parameters:
         - name: target
@@ -1151,6 +1313,25 @@ paths:
             schema:
               $ref: "#/components/schemas/De1SensorCalibrationWriteRequest"
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "202":
           description: Calibration write acknowledged by the machine
         "400":
@@ -1248,6 +1429,15 @@ paths:
         intermediate percentage updates. The stream emits `erasing` when the
         operation starts and remains silent during verification until either
         `done` or `error`.
+
+        Machine control route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       requestBody:
         required: true
@@ -1258,6 +1448,25 @@ paths:
               format: binary
               maxLength: 16777216
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "200":
           description: NDJSON progress stream (see FirmwareProgressEvent)
           content:
@@ -1300,6 +1509,15 @@ paths:
         and must arrive within 10 seconds. Accepts optional `force: true` to
         bypass version-newer policy (never bypasses integrity or compatibility
         checks).
+
+        Machine control route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       requestBody:
         required: true
@@ -1317,6 +1535,25 @@ paths:
                   default: false
                   description: Allow downgrade/reinstall (default false)
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "200":
           description: NDJSON progress stream
           content:
@@ -1342,7 +1579,7 @@ paths:
   /api/v1/scale/info:
     get:
       summary: Get connected scale information
-      description: Returns metadata for the currently connected scale.
+      description: Returns metadata for the currently connected scale, plus declared plugin surfaces (for example a per-device settings page) when the scale is plugin-backed and its plugin runtime is active.
       tags: [Scale]
       responses:
         "200":
@@ -1740,6 +1977,12 @@ paths:
       responses:
         "200":
           description: Decent settings updated successfully
+        "400":
+          description: Invalid setting value, including an unsupported or absent session-only scale ID that cannot be saved as a durable preference, or a webUiPath outside the skin storage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401":
           description: >-
             When protection is ON, the body changes the served skin, the
@@ -3259,6 +3502,18 @@ paths:
             type: string
             enum: ["1"]
       responses:
+        "403":
+          description: >
+            The namespace equals an installed plugin's id (case-insensitive),
+            the request comes from another machine (its socket peer is not
+            loopback or one of this device's own addresses) and it carries no
+            `extensions:manage` bearer. That namespace holds the plugin's
+            `host.storage`; pages and plugins running on the device itself,
+            such as a plugin's own UI in the app WebView, may use it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "200":
           description: >
             Array of keys, or — when `?full=1` is set — an object mapping each
@@ -3297,6 +3552,18 @@ paths:
           schema:
             type: string
       responses:
+        "403":
+          description: >
+            The namespace equals an installed plugin's id (case-insensitive),
+            the request comes from another machine (its socket peer is not
+            loopback or one of this device's own addresses) and it carries no
+            `extensions:manage` bearer. That namespace holds the plugin's
+            `host.storage`; pages and plugins running on the device itself,
+            such as a plugin's own UI in the app WebView, may use it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "200":
           description: JSON value stored under the key
           content:
@@ -3326,6 +3593,18 @@ paths:
           application/json:
             schema: {}
       responses:
+        "403":
+          description: >
+            The namespace equals an installed plugin's id (case-insensitive),
+            the request comes from another machine (its socket peer is not
+            loopback or one of this device's own addresses) and it carries no
+            `extensions:manage` bearer. That namespace holds the plugin's
+            `host.storage`; pages and plugins running on the device itself,
+            such as a plugin's own UI in the app WebView, may use it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "204":
           description: Successfully stored
 
@@ -3345,6 +3624,18 @@ paths:
           schema:
             type: string
       responses:
+        "403":
+          description: >
+            The namespace equals an installed plugin's id (case-insensitive),
+            the request comes from another machine (its socket peer is not
+            loopback or one of this device's own addresses) and it carries no
+            `extensions:manage` bearer. That namespace holds the plugin's
+            `host.storage`; pages and plugins running on the device itself,
+            such as a plugin's own UI in the app WebView, may use it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "200":
           description: Key deleted
           content:
@@ -3444,6 +3735,89 @@ paths:
             `extensions:manage`; the request is refused before any change.
             A browser `Origin` that is not the device's own origin is refused
             with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/plugins/{id}/machine-control:
+    put:
+      summary: Allow or forbid a plugin to control the machine
+      description: >
+        Grants or revokes the plugin's machine-control grant. Without it, a
+        plugin `fetch` that writes (any method but GET/HEAD) to the host's
+        own /api/v1/machine/* routes resolves with status 403 and
+        `{"error": ..., "code": "machine_control_not_granted"}`, and the host
+        posts a notice asking the user to allow it. With it, those writes reach
+        the API. Firmware routes and the raw machine socket stay refused for
+        every plugin (`machine_control_forbidden`). The grant is stored per
+        plugin id, cleared when the plugin is removed or a source write changes
+        its plugin.js, and kept across installed updates. The current value is
+        the `machineControl` field of GET /api/v1/plugins.
+        When protection is ON, this operation needs `Authorization: Bearer
+        <token>` scoped `extensions:manage` (see the extensionsManage
+        security scheme). When protection is OFF (the default), it needs no
+        credential.
+      tags: [Plugins]
+      security:
+        - {}
+        - extensionsManage: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Plugin ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [granted]
+              properties:
+                granted:
+                  type: boolean
+      responses:
+        "200":
+          description: Grant updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  machineControl:
+                    type: boolean
+        "400":
+          description: Invalid JSON body or `granted` is not a boolean
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Plugin not found
           content:
             application/json:
               schema:
@@ -3566,7 +3940,14 @@ paths:
         and reloaded; if the new source fails to load, the previous manifest,
         source, and running plugin are restored and the request fails. An
         unloaded plugin stays unloaded and its source is not validated.
-        Settings and the auto-load preference are preserved. Overwriting a
+        Settings and the auto-load preference are preserved, with two
+        exceptions for a request that carries no `extensions:manage`
+        credential (a bearer with that scope, or an approved
+        `manage.extensions` plugin via localApi): a write whose plugin.js
+        differs from the installed one clears the plugin's stored secure
+        settings, so new code never inherits secrets it was not configured
+        with, and a write whose manifest adds permissions to an installed
+        plugin is refused with 409. Overwriting a
         bundled plugin is temporary: on the next app start the bundled copy wins
         whenever its version is higher. This path shadows a plugin-declared
         endpoint named "source", the same way /settings does.
@@ -3648,7 +4029,9 @@ paths:
         "409":
           description: >
             The submitted version is lower than the installed version; remove
-            the plugin before installing an older version
+            the plugin before installing an older version. Also returned when
+            the manifest adds permissions to an installed plugin and the
+            request carries no `extensions:manage` credential
           content:
             application/json:
               schema:
@@ -3834,6 +4217,11 @@ paths:
         Malformed downloaded data and package manifests return HTTP 400 with
         plain-language validation errors, without parser diagnostics or source snippets.
         This includes missing or incorrectly typed release fields and asset entries.
+        Installing over an already installed plugin id without an
+        `extensions:manage` credential follows the source-write rules: a
+        package that adds permissions is refused with 409, and a package whose
+        plugin.js differs clears the plugin's stored secure settings and its
+        machine-control grant.
         When protection is ON, this operation needs `Authorization: Bearer
         <token>` scoped `extensions:manage` (see the extensionsManage
         security scheme). When protection is OFF (the default), it needs no
@@ -3892,7 +4280,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: The release is older than the installed version
+          description: >
+            The release is older than the installed version, or it adds
+            permissions to an installed plugin and the request carries no
+            `extensions:manage` credential
           content:
             application/json:
               schema:
@@ -3916,6 +4307,11 @@ paths:
         transport exceptions.
         Invalid GitHub commit response structures return HTTP 400 with
         plain-language validation guidance and no response-body snippets.
+        Installing over an already installed plugin id without an
+        `extensions:manage` credential follows the source-write rules: a
+        package that adds permissions is refused with 409, and a package whose
+        plugin.js differs clears the plugin's stored secure settings and its
+        machine-control grant.
         When protection is ON, this operation needs `Authorization: Bearer
         <token>` scoped `extensions:manage` (see the extensionsManage
         security scheme). When protection is OFF (the default), it needs no
@@ -4063,7 +4459,10 @@ paths:
         Installs the exact candidate recorded in pendingUpdate - the stored
         release tag or commit - accepting its added permissions. If the source
         moved since detection, the fetched candidate is refused, recorded as
-        the new pendingUpdate and has to be approved again.
+        the new pendingUpdate and has to be approved again. When the plugin
+        has stored secure settings, approval needs an `extensions:manage`
+        credential in both modes (or the native Plugins screen); without one
+        the request is refused with 403 before anything is downloaded.
         When protection is ON, this operation needs `Authorization: Bearer
         <token>` scoped `extensions:manage` (see the extensionsManage
         security scheme). When protection is OFF (the default), it needs no
@@ -5638,6 +6037,9 @@ paths:
         files for each data type. Includes profiles, shots, workflow, settings,
         and KV store data. The archive also contains a metadata.json with export
         information (format version, app version, commit SHA, timestamp, platform).
+        Key-value namespaces that belong to an installed plugin are included
+        only when the request carries an `extensions:manage` bearer (the app's
+        own Data Management screen sends one); otherwise they are left out.
 
         ZIP contents:
         - metadata.json — export metadata (formatVersion, appVersion, commitSha, branch, exportTimestamp, platform)
@@ -5688,6 +6090,10 @@ paths:
         not constitute an importable backup. Metadata is optional for legacy
         archives without metadata.json, but is validated when present. Use the
         onConflict parameter to control how duplicate records are handled.
+        store.json namespaces that belong to an installed plugin are written
+        only when the request carries an `extensions:manage` bearer, after
+        which each affected running plugin is reloaded; otherwise they are
+        skipped with a warning in the store section result.
 
         A 200 response means every processed section completed without errors.
         A 207 response means recognized sections were processed but at least
@@ -6693,6 +7099,11 @@ components:
           nullable: true
           minimum: 0
           maximum: 100
+        surfaces:
+          type: array
+          description: Pre-authorized surfaces declared by the owning plugin driver of a plugin-backed scale (same `PluginDeviceSurfaceAuthority` resolution as native device management, including the display-only `deviceName` query). Not filtered by session availability. Omitted for native scales, for plugin scales without declared surfaces, and while the owning plugin runtime is not active.
+          items:
+            $ref: '#/components/schemas/PluginDeviceSurface'
     GrinderCommandError:
       type: object
       required: [error]
@@ -7115,24 +7526,22 @@ components:
             milk-probe scaffolding lives in `/sensors`, not here.
           items:
             type: string
-            enum: [
-              cupWarmer,
-              integratedScale,
-              ledStrip,
-              stopAtWeight,
-              scaleCalibration,
-              preheat,
-              wakeSchedule,
-            ]
-          example: [
-            cupWarmer,
-            integratedScale,
-            ledStrip,
-            stopAtWeight,
-            scaleCalibration,
-            preheat,
-            wakeSchedule,
-          ]
+            enum:
+              - cupWarmer
+              - integratedScale
+              - ledStrip
+              - stopAtWeight
+              - scaleCalibration
+              - preheat
+              - wakeSchedule
+          example:
+            - cupWarmer
+            - integratedScale
+            - ledStrip
+            - stopAtWeight
+            - scaleCalibration
+            - preheat
+            - wakeSchedule
 
     CupWarmerState:
       type: object
@@ -7271,18 +7680,17 @@ components:
           description: Seconds left in the current settle/average phase
         status:
           type: string
-          enum: [
-            ok,
-            incomplete,
-            noZero,
-            notSettled,
-            badWeight,
-            badDelta,
-            illConditioned,
-            outOfRange,
-            notIsolated,
-            none,
-          ]
+          enum:
+            - ok
+            - incomplete
+            - noZero
+            - notSettled
+            - badWeight
+            - badDelta
+            - illConditioned
+            - outOfRange
+            - notIsolated
+            - none
           description: Result of the last latch attempt (`none` = in progress / not attempted)
 
     ScaleCalibrationCommandRequest:
@@ -7847,7 +8255,7 @@ components:
           enum: ["disabled", "full", "tracking"]
           nullable: true
         webUiPath:
-          description: Set a path on local filesystem, from which REA will serve the webUI. Any value is gated only while extension management protection is ON, and then requires a bearer token scoped extensions:manage (see POST /api/v1/settings). When protection is OFF (the default), no token is needed.
+          description: Set a skin folder inside the skin storage directory (an installed skin), from which REA will serve the webUI; any other path, including one that resolves outside the storage through a symlink, is refused with 400 before any key of the body is applied. Directory listings are never served. Any value is gated only while extension management protection is ON, and then requires a bearer token scoped extensions:manage (see POST /api/v1/settings). When protection is OFF (the default), no token is needed.
           type: string
           nullable: true
         logLevel:
@@ -7894,7 +8302,15 @@ components:
           nullable: true
           example: "F4:12:FA:5C:3D:8E"
         preferredScaleId:
-          description: Device ID of the preferred scale for auto-connect on startup. When set, REA will automatically connect to this scale when it's discovered during device scan. Session-only USB scale IDs are not persisted as preferences. Set to null to clear the preference.
+          description: >
+            Preferred scale device ID, or usb-hds:any to prefer a serial-less USB
+            Half Decent Scale. A currently discovered serial-less USB HDS attachment
+            ID is normalized to usb-hds:any. Other session-only scale IDs return 400
+            instead of silently leaving the existing preference unchanged. The family
+            selector can be saved without a live device and connects automatically
+            only when a completed scan finds exactly one matching non-auxiliary
+            scale; multiple matches require explicit selection. Stable USB IDs and
+            other scale IDs keep exact-device semantics. Set null to clear.
           type: string
           nullable: true
           example: "AA:BB:CC:DD:EE:FF"
@@ -7935,6 +8351,9 @@ components:
         keepAwake:
           type: boolean
           description: When enabled, the wake lock stays on while the app is running, preventing the tablet screen from turning off. Default value is true.
+        keepServiceRunning:
+          type: boolean
+          description: Android only. When enabled, the foreground service starts with the app and is never stopped when the machine disconnects, so the REST API, plugins and integrations stay available while the machine sleeps; the persistent notification stays visible. When disabled, the service stops 5 minutes after the machine disconnects (previous behaviour). Persisted on all platforms but has no effect off Android. Not gated by extension management. Default value is false.
         simulatedDevices:
           description: List of simulated device types to enable in scan results
           type: array
@@ -7997,7 +8416,16 @@ components:
           nullable: true
           example: "F4:12:FA:5C:3D:8E"
         preferredScaleId:
-          description: Device ID of the preferred scale for auto-connect on startup. Session-only USB scale IDs are not persisted as preferences. Returns null if no preferred device is set.
+          description: >
+            Preferred scale device ID or null when unset. A persisted usb-hds:any
+            family preference is presented as the current attachment ID when
+            exactly one protocol-identified serial-less USB HDS is discovered,
+            for compatibility with clients comparing settings and inventory IDs.
+            If none or multiple match, returns usb-hds:any instead. Storage and
+            backup retain the durable family selector; reading settings never
+            changes it or assigns scale ownership. The selector is not a device
+            ID and must not be used in addressed routes. Automatic connection
+            still requires a unique non-auxiliary match after scan completion.
           type: string
           nullable: true
           example: "AA:BB:CC:DD:EE:FF"
@@ -8036,6 +8464,9 @@ components:
         keepAwake:
           type: boolean
           description: When enabled, the wake lock stays on while the app is running, preventing the tablet screen from turning off. Default value is true.
+        keepServiceRunning:
+          type: boolean
+          description: Android only. When enabled, the foreground service starts with the app and is never stopped when the machine disconnects, so the REST API, plugins and integrations stay available while the machine sleeps; the persistent notification stays visible. When disabled, the service stops 5 minutes after the machine disconnects (previous behaviour). Persisted on all platforms but has no effect off Android. Not gated by extension management. Default value is false.
         simulatedDevices:
           description: List of simulated device types currently enabled in scan results
           type: array
@@ -8758,13 +9189,54 @@ components:
           description: >
             Where the installed copy came from. Null for plugins installed
             before source tracking existed and for bundled plugins.
+        machineControl:
+          type: boolean
+          description: >
+            Whether the user allowed this plugin to write the host's machine
+            control routes (see PUT /api/v1/plugins/{id}/machine-control).
         pendingUpdate:
           allOf:
             - $ref: '#/components/schemas/PluginPendingUpdate'
           nullable: true
           description: >
             An update that was found but not installed because it requests
-            permissions the installed version does not hold.
+            permissions the installed version does not hold, or because the
+            background update check found it for a plugin that has stored
+            secure settings (then addedPermissions is empty).
+        surfaces:
+          type: array
+          maxItems: 8
+          description: >
+            Plugin-level pages declared in the manifest's top-level `surfaces`
+            (not tied to a device). Absent when none are declared. At most one
+            `setup` and one `settings` surface. Each href is a same-origin
+            relative URL to one of the plugin's own HTTP endpoints, built by
+            the host; plugins cannot supply URLs.
+          items:
+            type: object
+            required: [id, role, href]
+            properties:
+              id:
+                type: string
+              role:
+                type: string
+                enum: [setup, settings, diagnostics]
+              label:
+                type: string
+                description: Optional display text from the manifest.
+              href:
+                type: string
+                example: /api/v1/plugins/mahlkoenig-e64.reaplugin/setup?ui=1&surface=setup
+        needsSetup:
+          type: boolean
+          description: >
+            True while the plugin has a current notice whose action is
+            openPluginSurface to its declared `setup` surface. Always present
+            on hosts that support it, so a client can feature-detect the key.
+        setupReason:
+          type: string
+          description: >
+            The message of that notice. Present only when needsSetup is true.
 
     PluginSettingSchema:
       type: object
@@ -8814,6 +9286,40 @@ components:
           items:
             type: string
           description: Allowed values. Required when `type` is `enum`, otherwise absent.
+        hidden:
+          type: boolean
+          description: >
+            Presentation hint. When true, generated settings forms do not show
+            the setting; the plugin owns it through its own pages. The stored
+            value is kept on save. Hosts and skins that do not know the hint
+            show the setting as usual.
+        advanced:
+          type: boolean
+          description: >
+            Presentation hint. When true, generated forms place the setting in
+            a collapsed "Advanced" section.
+        multiline:
+          type: boolean
+          description: >
+            Presentation hint for `string` settings. Generated forms use a
+            multi-line field, and the native form refuses to save a value that
+            starts with `{` or `[` but is not valid JSON.
+        valueLabels:
+          type: object
+          additionalProperties:
+            type: string
+          description: >
+            Presentation hint for `enum` settings: display label per raw value.
+            Values without a label are shown raw. The stored value is always the
+            raw value.
+        valueDescriptions:
+          type: object
+          additionalProperties:
+            type: string
+          description: >
+            Presentation hint for `enum` settings: one explanatory line per raw
+            value. When any value has one, the native form renders the enum as
+            a list of choices with these lines as subtitles.
       example:
         type: boolean
         label: Upload shots automatically

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:reaprime/src/models/data/shot_annotations.dart';
 import 'package:reaprime/src/models/data/shot_snapshot.dart';
@@ -170,9 +171,12 @@ class ShotRecord {
         other.contentSignature(includeMeasurements: includeMeasurements),
       );
 
-  String shotTime() {
+  String shotTime({bool? use24HourFormat}) {
     final dateFormat = DateFormat.yMd();
-    final timeFormat = DateFormat('jm');
+    final timeFormat =
+        (use24HourFormat ?? PlatformDispatcher.instance.alwaysUse24HourFormat)
+        ? DateFormat.Hm()
+        : DateFormat('jm');
     return "${dateFormat.format(timestamp)}, ${timeFormat.format(timestamp)}";
   }
 

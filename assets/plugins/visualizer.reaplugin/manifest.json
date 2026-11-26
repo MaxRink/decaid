@@ -3,7 +3,7 @@
   "author": "Decent Espresso",
   "name": "Visualizer upload",
   "description": "Uploads shots to Visualizer and syncs your edited shot metadata back",
-  "version": "1.5.11",
+  "version": "1.5.13",
   "apiVersion": 1,
   "permissions": [
     "log",
@@ -14,6 +14,18 @@
     "events.shots"
   ],
   "settings": {
+    "ServerUrl": {
+      "type": "string",
+      "label": "Visualizer server",
+      "description": "Address of the Visualizer server, for example https://visualizer.coffee or your own instance. Must start with https://.",
+      "default": "https://visualizer.coffee"
+    },
+    "UploadKey": {
+      "type": "string",
+      "label": "Visualizer upload key",
+      "secure": true,
+      "description": "Password-free key from your Visualizer profile page (starts with vzu_). When set, it is used instead of the username and password."
+    },
     "Username": {
       "type": "string",
       "label": "Visualizer username",
@@ -74,6 +86,9 @@
           "type": "string"
         },
         "password": {
+          "type": "string"
+        },
+        "uploadKey": {
           "type": "string"
         }
       }

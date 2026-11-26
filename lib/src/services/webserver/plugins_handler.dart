@@ -27,6 +27,18 @@ final class PluginsHandler {
         final source = pluginSourceService.sourceFor(manifest.id);
         json['source'] = source == null ? null : _sourceJson(source);
         json['pendingUpdate'] = source?.pendingUpdate?.toJson();
+        json['machineControl'] = pluginService.machineControlGranted(
+          manifest.id,
+        );
+        if (manifest.surfaces.isNotEmpty) {
+          json['surfaces'] = pluginSurfaceLinks(manifest);
+        }
+        final setupReason = pluginSetupReason(
+          manifest,
+          pluginManager.notifications.value,
+        );
+        json['needsSetup'] = setupReason != null;
+        if (setupReason != null) json['setupReason'] = setupReason;
         list.add(json);
       }
       return jsonOk(list);
@@ -71,6 +83,8 @@ final class PluginsHandler {
 
     app.put('/api/v1/plugins/<id>/source', _handlePluginSourceWrite);
 
+    app.put('/api/v1/plugins/<id>/machine-control', _handleMachineControlGrant);
+
     app.post('/api/v1/plugins/<id>/enable', (Request request, String id) async {
       try {
         if (pluginService.getPluginManifest(id) == null) {
@@ -104,6 +118,14 @@ final class PluginsHandler {
     ) async {
       if (pluginService.getPluginManifest(id) == null) {
         return jsonNotFound({'error': 'Plugin not found: $id'});
+      }
+      if (!holdsExtensionManagementCredential(request) &&
+          await pluginService.hasStoredSecureSettings(id)) {
+        return jsonForbidden({
+          'error':
+              'Approving an update of a plugin with stored secrets needs the '
+              'native Plugins screen or an extensions:manage token',
+        });
       }
       try {
         final manifest = await pluginSourceService.approvePendingUpdate(id);
@@ -184,6 +206,7 @@ final class PluginsHandler {
         repo,
         assetName: assetName as String?,
         includePrerelease: (includePrerelease as bool?) ?? false,
+        authorized: holdsExtensionManagementCredential(request),
       ),
     );
   }
@@ -217,6 +240,7 @@ final class PluginsHandler {
       () => pluginSourceService.installFromGitHubBranch(
         repo,
         branch: (branch as String?) ?? 'main',
+        authorized: holdsExtensionManagementCredential(request),
       ),
     );
   }
@@ -232,6 +256,8 @@ final class PluginsHandler {
       });
     } on PluginDowngradeException catch (e) {
       return jsonConflict({'error': e.message});
+    } on PluginPermissionApprovalRequiredException catch (e) {
+      return jsonConflict({'error': e.message});
     } on FormatException catch (e, st) {
       _log.warning('Invalid plugin installation', e, st);
       return jsonBadRequest({
@@ -243,6 +269,35 @@ final class PluginsHandler {
         'error': remoteErrorMessage(e, action: 'install the plugin'),
       });
     }
+  }
+
+  Future<Response> _handleMachineControlGrant(
+    Request request,
+    String id,
+  ) async {
+    final Object? json;
+    try {
+      json = jsonDecode(
+        await readBoundedRequestBodyString(
+          request,
+          maxBytes: smallRequestBodyBytes,
+          timeout: smallRequestBodyTimeout,
+        ),
+      );
+    } on RequestBodyReadException {
+      rethrow;
+    } catch (e) {
+      return jsonBadRequest({'error': 'Invalid JSON body: $e'});
+    }
+    final granted = json is Map ? json['granted'] : null;
+    if (granted is! bool) {
+      return jsonBadRequest({'error': 'granted must be a boolean'});
+    }
+    if (pluginService.getPluginManifest(id) == null) {
+      return jsonNotFound({'error': 'Plugin not found: $id'});
+    }
+    await pluginService.setMachineControlGrant(id, granted);
+    return jsonOk({'id': id, 'machineControl': granted});
   }
 
   Future<Response> _handlePluginSourceWrite(Request request, String id) async {
@@ -275,6 +330,7 @@ final class PluginsHandler {
         id,
         manifestJson: manifestJson,
         pluginJs: pluginJs,
+        authorized: holdsExtensionManagementCredential(request),
       );
       return jsonOk({
         'message': 'Plugin source updated',
@@ -283,6 +339,8 @@ final class PluginsHandler {
         'loaded': pluginService.isPluginLoaded(id),
       });
     } on PluginDowngradeException catch (e) {
+      return jsonConflict({'error': e.message});
+    } on PluginPermissionApprovalRequiredException catch (e) {
       return jsonConflict({'error': e.message});
     } on FormatException catch (e) {
       return jsonBadRequest({'error': e.message});

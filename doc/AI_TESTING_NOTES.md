@@ -11,6 +11,72 @@ flutter test --name "test pattern"        # Specific test
 flutter analyze                           # Static analysis (required before commit)
 ```
 
+## Stalled Test Runs
+
+`flutter test` can stall with no output, no failure line and no error. Do not judge liveness by the log:
+output redirected to a file is buffered, so a healthy run can look frozen for minutes. Check for a live
+worker and for disk headroom instead.
+
+```bash
+ps -Ao pid,etime,%cpu,command | grep flutter_tester   # empty => no worker ever started
+df -h /System/Volumes/Data                            # full volume => the worker cannot write
+```
+
+| Signature | Cause | Action |
+|-----------|-------|--------|
+| No `flutter_tester` child, tool at `0.0%` CPU | Blocked before the first test, almost always on writes | Check free space; a full data volume reproduces this exactly (observed at 405 MiB free of 460 GiB) and hangs every worktree identically |
+| `ENOSPC` while writing `output.dill` | The compile step wrote nothing, so the tool waits for a result that never arrives | Free space and rerun; nothing about the code is wrong |
+| `flutter_tester` processes with `PPID 1` | Workers leaked from earlier killed runs; they stay resident for days | Kill them before diagnosing a new stall |
+
+Run long suites detached with an exit-status file instead of inside a command timeout, so a stall is
+visible rather than reported as a timeout:
+
+```bash
+( flutter test > /tmp/flutter-test.log 2>&1; echo $? > /tmp/flutter-test.exit ) &
+```
+
+## Non-Loopback Socket Tests Fail on Some Hosts (`errno 22`)
+
+Two suites open real sockets to a **non-loopback** address because the peer address is the subject:
+`test/plugins/plugin_extension_management_bypass_test.dart` (5 tests) and
+`test/webserver/extension_management_pipeline_test.dart` (6 tests). On a host whose TCP stack refuses
+`setsockopt(TCP_NODELAY)` on those accepted connections, all 11 fail like this:
+
+```
+OS Error: Invalid argument, errno = 22
+dart:_http                                       _HttpServer.listen
+package:shelf/shelf_io.dart 92:14                serveRequests.<fn>
+```
+
+Loopback is unaffected. Reproduce it outside the repo — plain `dart:io`, no test framework:
+
+```dart
+final server = await ServerSocket.bind(InternetAddress.anyIPv4, 0);
+server.listen((socket) {
+  try {
+    socket.setOption(SocketOption.tcpNoDelay, true);
+    print('setsockopt OK');
+  } catch (error) {
+    print('setsockopt FAIL: $error');
+  }
+  socket.destroy();
+});
+final client = await Socket.connect('192.168.178.125', server.port); // a local en0 address
+// prints: setsockopt FAIL: OS Error: Invalid argument, errno = 22
+// connecting to 127.0.0.1 instead prints: setsockopt OK
+```
+
+Observed on macOS arm64 with `en0` `192.168.178.125` and `bridge100` `192.168.139.3`; the same
+suites pass on GitHub's `ubuntu-latest`. This is the host, not the code under test: leave the tests
+alone. Do not skip them and do not point them at loopback — they must fail loudly on a host that
+cannot complete a LAN connection and pass on one that can.
+
+**This working copy is shared, so a checked-out branch proves nothing about Decaid.** Verify any
+claim about host behaviour against a ref the repo pins (`.github/workflows/pr-checks.yml`, Flutter
+`3.47.9`) or `origin/main` before repeating it — never against whatever branch happens to be checked
+out. The `errno 22` finding above was once read off an unmerged `fix/*` branch that a previous
+session had left checked out here, and the claim built on it had to be retracted.
+
 ## Test Tiers
 
 | Tier | What | Mock boundary |

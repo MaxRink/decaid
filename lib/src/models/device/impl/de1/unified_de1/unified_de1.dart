@@ -60,7 +60,7 @@ final class _FirmwareCancellationToken {
 class UnifiedDe1 implements De1Interface, CanonicalDeviceIdentity {
   static final BleServiceIdentifier advertisingIdentifier =
       BleServiceIdentifier.short('ffff');
-  final UnifiedDe1Transport _transport;
+  late final UnifiedDe1Transport _transport;
   final CanonicalDeviceIdentity? _transportIdentity;
   final _firmwareMmrGate = _FirmwareMmrGate();
   final Duration firmwareEraseTimeout;
@@ -71,62 +71,62 @@ class UnifiedDe1 implements De1Interface, CanonicalDeviceIdentity {
 
   final Logger _log = Logger("DE1");
 
-  Stream<ByteData>? _cachedMmrStream;
-
   UnifiedDe1({
     required DataTransport transport,
     this.firmwareEraseTimeout = const Duration(seconds: 60),
     this.firmwareVerificationTimeout = const Duration(seconds: 120),
     this.calibrationTimeout = const Duration(seconds: 4),
-  }) : _transport = UnifiedDe1Transport(transport: transport),
-       _transportIdentity = transport is CanonicalDeviceIdentity
+  }) : _transportIdentity = transport is CanonicalDeviceIdentity
            ? transport as CanonicalDeviceIdentity
-           : null;
+           : null {
+    _transport = UnifiedDe1Transport(
+      transport: transport,
+      onNotification: notifyFrom,
+    );
+  }
 
   @override
   Stream<ConnectionState> get connectionState => _transport.connectionState;
 
-  late final Stream<MachineSnapshot> _de1Snapshot = _buildSnapshotStream(
-    _transport.shotSample,
-    Endpoint.shotSample,
-    _parseStateAndShotSample,
-  );
+  @visibleForTesting
+  bool get debugHasCalibrationListener =>
+      _transport.debugHasCalibrationListener;
 
-  late final Stream<MachineSnapshot> _bengleSnapshot = _buildSnapshotStream(
-    _transport.bengleShotSample,
-    Endpoint.bengleShotSample,
-    _parseStateAndBengleShotSample,
-  );
+  Stream<MachineSnapshot>? _snapshot;
+  int _snapshotGeneration = -1;
 
   Stream<MachineSnapshot> _buildSnapshotStream(
     Stream<ByteData> source,
-    Endpoint endpoint,
     MachineSnapshot? Function(ByteData, ByteData) parse,
   ) => source
-      .map((data) {
-        notifyFrom(endpoint, data.buffer.asUint8List());
-        return data;
+      .withLatestFrom(_transport.state, (shot, state) {
+        final snapshot = parse(state, shot);
+        if (snapshot != null) {
+          _log.finest("new state: ${snapshot.toJson()}");
+        }
+        return snapshot;
       })
-      .withLatestFrom(
-        _transport.state.map((data) {
-          notifyFrom(Endpoint.stateInfo, data.buffer.asUint8List());
-          return data;
-        }),
-        (shot, state) {
-          final snapshot = parse(state, shot);
-          if (snapshot != null) {
-            _log.finest("new state: ${snapshot.toJson()}");
-          }
-          return snapshot;
-        },
-      )
       .where((snapshot) => snapshot != null)
       .map((snapshot) => snapshot!)
       .shareReplay(maxSize: 1);
 
   @override
-  Stream<MachineSnapshot> get currentSnapshot =>
-      implementation == .bengle ? _bengleSnapshot : _de1Snapshot;
+  Stream<MachineSnapshot> get currentSnapshot {
+    final generation = _transport.connectionGeneration;
+    if (_snapshotGeneration != generation) {
+      _snapshotGeneration = generation;
+      _snapshot = implementation == .bengle
+          ? _buildSnapshotStream(
+              _transport.bengleShotSample,
+              _parseStateAndBengleShotSample,
+            )
+          : _buildSnapshotStream(
+              _transport.shotSample,
+              _parseStateAndShotSample,
+            );
+    }
+    return _snapshot!;
+  }
 
   MachineState? get latestMachineState {
     final stateInfo = _transport.latestStateInfo;
@@ -497,8 +497,22 @@ class UnifiedDe1 implements De1Interface, CanonicalDeviceIdentity {
     tankTemperature: 0,
   );
 
+  static const _groupHeadStartStates = {
+    MachineState.espresso,
+    MachineState.steam,
+    MachineState.hotWater,
+    MachineState.flush,
+  };
+
   @override
   Future<void> requestState(MachineState newState) async {
+    if (machineInfo.groupHeadControllerPresent &&
+        _groupHeadStartStates.contains(newState)) {
+      _log.info(
+        'Remote ${newState.name} request on a machine with an active group '
+        'head controller: the DE1 only arms the group head; start it there',
+      );
+    }
     await _prepareColdMaintenanceWorkaround(newState);
     final Uint8List data = Uint8List(1);
     data[0] = De1StateEnum.fromMachineState(newState).hexValue;
@@ -708,13 +722,8 @@ class UnifiedDe1 implements De1Interface, CanonicalDeviceIdentity {
   }
 
   @override
-  Stream<De1ShotSettings> get shotSettings => _transport.shotSettings
-      .map((d) {
-        notifyFrom(Endpoint.shotSettings, d.buffer.asUint8List());
-        return d;
-      })
-      .map(_parseShotSettings)
-      .distinct();
+  Stream<De1ShotSettings> get shotSettings =>
+      _transport.shotSettings.map(_parseShotSettings).distinct();
 
   @override
   DeviceType get type => DeviceType.machine;
@@ -790,12 +799,8 @@ class UnifiedDe1 implements De1Interface, CanonicalDeviceIdentity {
   }
 
   @override
-  Stream<De1WaterLevels> get waterLevels => _transport.waterLevels
-      .map((d) {
-        notifyFrom(Endpoint.waterLevels, d.buffer.asUint8List());
-        return d;
-      })
-      .map(_parseWaterLevels);
+  Stream<De1WaterLevels> get waterLevels =>
+      _transport.waterLevels.map(_parseWaterLevels);
 
   @protected
   Logger get log => _log;
@@ -947,13 +952,7 @@ class UnifiedDe1 implements De1Interface, CanonicalDeviceIdentity {
     }
   }
 
-  Stream<ByteData> get _mmr {
-    _cachedMmrStream ??= _transport.mmr.map((d) {
-      notifyFrom(Endpoint.readFromMMR, d.buffer.asUint8List());
-      return d;
-    }).asBroadcastStream();
-    return _cachedMmrStream!;
-  }
+  Stream<ByteData> get _mmr => _transport.mmr;
 
   @override
   Future<De1HeaterVoltage> getHeaterVoltage() async {

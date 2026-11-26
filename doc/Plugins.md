@@ -141,7 +141,8 @@ A Decaid plugin consists of two required files:
   - `proxy.decent_api.write`: Send allowlisted write requests through `host.decentProxy`
   - `network.websocket`: Open outbound WebSocket connections (`ws://` and `wss://`) through `host.transport`
   - `network.tcp`: Open outbound raw TCP connections through `host.transport`
-  - `network.tls`: Open outbound TLS connections (platform trust store) through `host.transport`
+  - `network.tls`: Open outbound TLS connections (platform trust store, or an
+    explicit per-connection [certificate pin](#certificate-pinning)) through `host.transport`
   - `manage.extensions`: Call `host.localApi`, which reaches the plugin and skin
     management routes. A plugin holding it can install, replace, configure,
     enable, disable and remove any plugin or skin, change the default skin, start
@@ -162,11 +163,25 @@ A Decaid plugin consists of two required files:
     See
     [`host.localApi`](#hostlocalapipath-options).
 - **drivers**: Device classes the plugin may register. Each declaration has a plugin-local `id` and a `type`: `sensor`, `scale`, or `grinder`. A manifest may declare at most 8 drivers. Driver declarations authorize registration; they do not grant transport access. For example, a WebSocket-backed device also needs `network.websocket`. A driver may declare up to 8 `surfaces`, each with a unique safe `id`, `role` (`settings` or `diagnostics`), and a safe non-reserved `endpoint` naming a declared same-plugin HTTP endpoint. At most one surface has role `settings`. Surfaces require the `api` permission; optional `label` is display text. Plugins cannot supply URLs, authority, credentials, or routes through surfaces. Surface endpoints must not contain unpaired UTF-16 surrogates, which cannot round-trip through URI encoding; valid surrogate pairs remain supported.
+- **surfaces** (optional): Plugin-level pages with role `setup`, `settings` or `diagnostics`, not tied to a device. See [Plugin surfaces](#plugin-surfaces).
+- **discovery** (optional): Local-network service types the plugin may browse with `host.discovery`. See [Network discovery](#network-discovery-hostdiscovery).
 - **settings**: User-configurable options with `type` (`string`, `number`, `boolean`, `enum`), an optional `label` giving the setting a human-friendly name, an optional `description` explaining what the setting does, an optional `default`, and an optional `secure` flag for credentials such as passwords. Enum `values` are a JSON array of strings. Secure values use platform credential storage, are supplied in memory to `onLoad(settings)`, and are never returned by the REST API.
 
   `GET /api/v1/plugins` returns this schema verbatim under `settings`, so a skin can render a settings form — labels, help text and defaults included — without reading the plugin's repository. `GET /api/v1/plugins/:id/settings` returns the stored values only.
 
   Write a `label` and a `description` for every setting. Without a `label`, clients fall back to the storage key, so a user sees `LengthThreshold` rather than "Minimum shot length"; the `description` is the only explanation they get.
+
+  Optional presentation hints shape generated forms (the native Plugins screen honours all of them; skins may):
+
+  | Hint | Applies to | Effect |
+  |---|---|---|
+  | `hidden: true` | any | Not shown. The stored value is kept on save. Use it for structured or internal values that the plugin's own setup page owns. |
+  | `advanced: true` | any | Shown in a collapsed "Advanced" section. |
+  | `multiline: true` | `string` | Multi-line field. The native form refuses to save a value that starts with `{` or `[` but is not valid JSON. |
+  | `valueLabels: {"raw": "Label"}` | `enum` | Display label per value; values without one show raw. The stored value stays raw. |
+  | `valueDescriptions: {"raw": "One line"}` | `enum` | One explanatory line per value. When any value has one, the native form shows the enum as a list of choices with subtitles. |
+
+  Hosts that do not know a hint ignore it, because setting schemas are passed through verbatim, so the hints are safe on older hosts. Hints are presentation only: they never change validation of the stored value.
 - **api**: HTTP and WebSocket endpoints exposed by the plugin
 
 Unknown permission names make the manifest invalid. Calls without their required
@@ -215,6 +230,27 @@ The `host` object provides these methods:
 ### `host.log(message)`
 Log messages to the Flutter app's logger. Requires `log`.
 
+Lines are written at INFO as `[JS:<plugin id>] <message>`, so they land in the
+app log at the default log level, which any client on the network can read
+with `GET /api/v1/logs` and which feedback reports include. Never log secrets:
+passwords, tokens, API keys or request bodies and headers that carry them.
+
+As a safety net the host rewrites each line before writing it:
+
+- every current value (4 characters or longer) of the plugin's `secure`
+  settings becomes `***`;
+- `Authorization: Basic <x>` and `Authorization: Bearer <x>` values (also as
+  JSON or object pairs), `vzu_...` tokens and `"password": "..."` JSON pairs
+  are masked;
+- line breaks are written as `\n`, so one call is one log line.
+
+This catches only those shapes; it is not a reason to log credentials.
+
+Each plugin may write 60 lines per minute. Further lines in that minute are
+dropped, and when the next line arrives after the minute (or the plugin
+unloads) the host writes one `[JS:<plugin id>] suppressed N plugin log lines`
+line. Log file rotation bounds the disk space.
+
 ### `host.emit(eventName, payload)`
 Emit events to the Flutter app. Requires `emit`.
 
@@ -249,10 +285,56 @@ valid. Acceptance means retained for presentation, not displayed, read, or
 acknowledged. A plugin can retry capacity or storage rejection while its
 condition remains relevant; it must correlate each result with its request ID.
 
-Only two action types are supported: `openExternalUrl` opens an absolute HTTPS
+Three action types are supported: `openExternalUrl` opens an absolute HTTPS
 URL without embedded credentials in the external browser; `openDecentAccount`
-opens native account settings and additionally requires `proxy.decent_api`.
-Both require an explicit user tap. Plugins cannot supply native routes, custom
+opens native account settings and additionally requires `proxy.decent_api`;
+`openPluginSurface` opens one of the plugin's own declared surfaces in the
+[native surface sheet](#native-surface-sheet). All require an explicit user tap.
+
+```javascript
+host.notify({
+  id: "setup",
+  message: "E64 needs its password again.",
+  action: { id: "setup", label: "Set up", type: "openPluginSurface", surfaceId: "setup" }
+});
+```
+
+`openPluginSurface` names its target with exactly one of `surfaceId` or
+`endpoint`, and accepts only the keys `id`, `label`, `type`, `pluginId`,
+`surfaceId`, `endpoint` and `deviceId`:
+
+- Without `deviceId` the target must be a top-level
+  [plugin surface](#plugin-surfaces); the host opens
+  `/api/v1/plugins/<id>/<endpoint>?ui=1&surface=<surfaceId>`.
+- With `deviceId` (1-256 characters) the target must be a driver surface; the
+  host opens it with `ui=1&deviceId=<deviceId>` like device management does.
+  The page validates the device identity, as for any device surface.
+- `pluginId`, when present, must be the posting plugin's own ID. A plugin can
+  never open another plugin's pages or an arbitrary URL; the host resolves the
+  href when the notice is published.
+
+An undeclared target, another plugin's ID or an unknown key rejects the notice
+with `reason: "validation"`. Hosts without this action reject it the same way,
+so feature-detect from `notificationResult` and republish without the action:
+
+```javascript
+onEvent(event) {
+  if (event.name === "notificationResult" && event.payload.id === "setup" &&
+      event.payload.reason === "validation") {
+    host.notify({ id: "setup", message: "Open Decaid > Settings > Plugins > E64 > Set up." });
+  }
+}
+```
+
+The host's own machine-control notice (`id: "host.machine-control"`, raised when
+a plugin without the grant writes a machine route) carries a host-only
+**Review** action. It opens a native dialog, "Allow <name> to control the
+machine?", with **Allow** (grants, like the switch on the Plugins screen, and
+removes the notice) and **Not now**. Plugins cannot post this action type.
+
+For `openPluginSurface` the plugin receives `notificationAction` with phase
+`activated`, or `failed` when the page cannot be opened; there is no
+`returned` phase. Plugins cannot supply native routes, custom
 URL schemes, executable callbacks, automatic actions, or UI priority. The host
 displays the plugin name/ID and external destination hostname alongside the copy.
 
@@ -297,8 +379,10 @@ There is no generic user dismissal, trash control, Dismiss all, or user-dismissa
 event. `host.dismissNotification(id?)` remains the originating plugin's operation
 for withdrawing resolved conditions, isolated to that plugin. Reading retains
 the condition and never runs an action. Only explicit domain actions may change
-application state; the trusted app update has a separate Skip this version
-action. Resolved conditions are removed without a history entry.
+application state. The trusted app-update notice has a single View action that
+opens the existing Settings updater; it does not download in Notification
+Center. This host-only action does not change plugin action routing. Resolved
+conditions are removed without a history entry.
 
 Hosts that reject unknown manifest permissions cannot load a plugin declaring
 `notifications` until they support this contract. No new REST or WebSocket route
@@ -627,28 +711,42 @@ is not under-reported. On the recorded DE1 cold start that moved the mid-ramp
 error from -47 s to +5 s. If machine info is unavailable the plugin stays on the
 conservative ceiling with no allowance.
 
-Stall detection keeps its own 60 second history, separate from the 18 second rate
-window, so it judges a real minute of observations; the history retains the sample
-just before the cutoff, so ordinary sampling jitter cannot make the window look
-incomplete and suppress a stall indefinitely. The continued-heating threshold is
-derived from the same numbers - a rise of `0.5 K * 18 / 60` over the rate window -
-so there is no band of slow-but-real heating that neither publishes nor stalls. An established session whose
-temperature stops climbing reports `status: "not_heating"` - not
-`insufficient_data` - once that minute gained less than 0.5 K, and the display cap
-is released so a later resume starts clean. Short pauses stay in the countdown.
+Stall detection keeps its own 30 second history, separate from the 18 second rate
+window, and answers one question: did the group climb at least 0.25 K above its
+coldest reading in the past 30 seconds? Measuring from the coldest reading keeps a
+machine recovering from a temperature dip in the countdown. The history retains the sample just before the cutoff, so ordinary
+sampling jitter cannot make the window look incomplete and suppress a stall
+indefinitely. The continued-heating threshold is derived from the same numbers - a
+rise of `0.25 K * 18 / 30` over the rate window - so there is no band of
+slow-but-real heating that neither publishes nor stalls. A machine that is not
+heating, such as one whose standby switch is on, reports `status: "not_heating"`
+as soon as a full window gained less than 0.25 K. That check runs before the rate
+is measured, so it also ends a countdown already in progress, and the display cap
+is released so a later resume starts clean. Continued cooling past the 2 K session
+reset keeps the history and stays `not_heating`. Short pauses stay in the countdown.
+
+The 30 second rise is deliberately not used as the ETA rate. Heaters ramp slowly at
+first, so a 30 second average lags the current rate: on the recorded Bengle cold
+start it put the first estimate 98 s off, against 9 s for the recent rate.
 
 Once a session has published, the five-kelvin start gate is no longer required:
 a slow positive ramp keeps its countdown as long as the window gained more than
-0.2 K, which is what a decelerating DE1 approaches near target. Below that, the
+0.15 K, which is what a decelerating DE1 approaches near target. Below that, the
 stall detector decides between `not_heating` and continued measurement.
+
+A session that published and then stalled can publish again without the start gate
+once the newer half of the rate window averages more than 0.075 K above the older
+half. Averaging keeps a single noisy reading on standby from starting a countdown,
+while a slow reheat such as 0.03 K/s regains it. A session that never published
+still has to pass the start gate.
 
 That ceiling is stricter than de1app, whose own monotonic guard is unreachable: its
 `force_update` flag is set to `1` immediately before the comparison, so the guard
 never runs.
 
 `status: "insufficient_data"` with `remainingTimeMs: null` is published until the
-recent rate is established, or while the machine is not heating. The heating skin
-renders that state as "Heating" without a countdown.
+recent rate is established. The heating skin renders that state and `not_heating`
+as "Heating" without a countdown.
 
 Example:
 
@@ -669,8 +767,51 @@ Decaid dispatches a request to the plugin.
 but it does so as an ordinary network client with no authority: the plugin and
 skin management routes answer 401 to it, whatever headers the plugin sets. Use
 [`host.localApi`](#hostlocalapipath-options) with the `manage.extensions`
-permission for those routes. The rest of the API stays open to `fetch`, as it is
-to any client on the network.
+permission for those routes. Writes to the host's own `/api/v1/machine/*`
+routes need the user's [machine control grant](#machine-control-grant); machine
+reads and the rest of the API stay open to `fetch`, as they are to any client on
+the network.
+
+### Machine control grant
+
+A plugin `fetch` that writes (any method but `GET`/`HEAD`) to the host's own
+`/api/v1/machine/*` routes, for example
+`PUT /api/v1/machine/state/espresso`, reaches the API only after the user has
+allowed that plugin to control the machine. There is no manifest permission for
+it: a stock Decaid rejects unknown permission names, so the grant is a
+host-side, per-plugin setting the user turns on.
+
+- Without the grant the call does not reach the API. `fetch` resolves (it does
+  not reject) with `status` 403 and a JSON body
+  `{"error": "Plugin <id> is not allowed to control the machine; ...",
+  "code": "machine_control_not_granted"}`, and Decaid shows a notice
+  "Allow <plugin name> to control the machine?" under the plugin's name. Handle
+  the 403 by telling the user to allow it; retrying does not help.
+- The user allows or forbids it with the "Allow machine control" switch on the
+  plugin's card in Settings > Plugins (shown for plugins holding `api`), or a
+  client calls `PUT /api/v1/plugins/<id>/machine-control` with
+  `{"granted": true}` or `{"granted": false}` (an extension-management route:
+  `extensions:manage` token while protection is ON). `GET /api/v1/plugins`
+  reports it as `machineControl`.
+- The grant is stored per plugin id. It survives restarts and installed
+  updates, and is cleared when the plugin is removed or a source write changes
+  its `plugin.js`.
+- Firmware (`/api/v1/machine/firmware`, `/api/v1/machine/firmware/apply`) is
+  refused for every plugin, with or without the grant, as 403
+  `{"code": "machine_control_forbidden"}`. `host.transport` still refuses the
+  raw machine socket `/ws/v1/machine/raw` and raw `tcp`/`tls` to the API port
+  for every plugin.
+- The target counts as the host when it resolves to loopback, `0.0.0.0` or an
+  address of this device, on the API port.
+- The grant does not let a plugin start a machine that requires starts at the
+  group head. When `GET /api/v1/machine/info` reports `"GHC": true` (an active
+  group head controller), DE1 firmware ignores a remote start of `espresso`,
+  `steam`, `hotWater` or `flush`: the request only arms the group head (white
+  indication) and the user must start the operation there. The host still sends
+  the request and answers 200, so a 200 does not mean the shot started; follow
+  `/ws/v1/machine/snapshot` for the real state and tell the user to press the
+  group head. Stopping (`PUT /api/v1/machine/state/idle`) works remotely. See
+  [the DE1 device note](device-notes/de1.md#group-head-controller-start-restriction).
 
 ```javascript
 // Basic GET request
@@ -689,9 +830,93 @@ const upload = await fetch("https://api.example.com/upload", {
 });
 ```
 
+### Binary responses
+
+`fetch` returns the body as text by default (decoded as UTF-8, with invalid
+sequences replaced). To receive raw bytes, ask for base64:
+
+```javascript
+const response = await fetch("https://192.168.1.40/api/backup", {
+  responseType: "base64",
+  tlsPinSha256: pin // optional, combines with any other option
+});
+const bytes = await response.base64(); // standard base64 of the exact body
+```
+
+- `responseType` is `"base64"` or omitted (`"text"` is accepted as the
+  default); any other value rejects the call before a request is sent.
+- A base64 response has `base64()`, which resolves to the exact body bytes as
+  a standard base64 string, including `0x00` and bytes that are not valid
+  UTF-8. Its `text()` and `json()` reject with a `TypeError` telling you to use
+  `base64()`. A default response has no `base64()`.
+- The response size limit (`maxFetchResponseBytes`, 10 MiB by default) applies
+  to the raw body in both modes; a larger body rejects the call.
+- `status`, `ok` and `headers` are the same in both modes.
+
+### Certificate pinning
+
+A device on the local network often serves HTTPS or WSS with a self-signed
+certificate that no platform trust store accepts, and Dart on Android ignores
+user-installed CAs. Installing such a certificate as a root would trust it for
+every host, so instead a plugin can pin the exact certificate it expects for
+one request or connection:
+
+```javascript
+const pin = "3f1c...e9a0"; // SHA-256 of the leaf certificate DER, 64 hex digits
+const response = await fetch("https://192.168.1.40/api/login", {
+  method: "POST",
+  body: JSON.stringify({ user, password }),
+  tlsPinSha256: pin
+});
+
+const { handle } = await host.transport.open({
+  kind: "websocket", // or kind: "tls" with host and port
+  url: "wss://192.168.1.40/ws",
+  tlsPinSha256: pin
+});
+```
+
+- `tlsPinSha256` is the SHA-256 digest of the server's leaf certificate in DER
+  form, as 64 hex digits. Case is ignored and `:` separators are stripped, so
+  the `openssl x509 -noout -fingerprint -sha256` output works as is.
+- Normal platform validation runs first. The pin is consulted only when that
+  validation fails, and then only the presented leaf certificate whose digest
+  equals the pin is accepted; any other certificate, including a different one
+  for the same host, still fails with a `HandshakeException`.
+- The pin applies to that one `fetch` call or that one connection. It uses a
+  dedicated HTTP client or TLS context that is never shared, so it never
+  affects other requests from the same plugin, other plugins, or the host.
+- A malformed pin rejects the request or `open()` before any connection is
+  made. A pin is only valid for `https://` (`fetch`), `wss://` (`websocket`) and
+  `kind: "tls"`; on `http://`, `ws://` or `kind: "tcp"` it is rejected rather
+  than silently ignored.
+- Pinning needs no extra permission and grants none: `fetch` still requires
+  `api`, and each transport still requires its `network.*` permission.
+- A pinned certificate that is rotated by the server stops working until the
+  plugin is given the new pin.
+- When the pin does not match the certificate the platform rejected, the
+  rejected `fetch` or `open()` error carries `code: "tls_pin_mismatch"` and
+  `peerSha256`, the presented certificate's SHA-256 as 64 lowercase hex
+  digits. A setup page can show that fingerprint and ask the user to confirm
+  it before storing it as the new pin. The host never trusts it by itself, and
+  no request is sent over the refused connection. Other failures, including an
+  unpinned handshake failure, carry neither field. Older hosts reject without
+  them, so feature-detect with `error.code === "tls_pin_mismatch"`:
+
+  ```javascript
+  try {
+    await fetch(url, { tlsPinSha256: storedPin });
+  } catch (error) {
+    if (error.code === "tls_pin_mismatch") {
+      showFingerprintForConfirmation(error.peerSha256);
+    }
+  }
+  ```
+
 **Note**: The JavaScript environment has limited APIs. Currently available:
 
-- `fetch()` for HTTP requests
+- `fetch()` for HTTP requests (text by default, `responseType: "base64"` for
+  binary bodies)
 - `btoa()` for base64 encoding (polyfilled)
 - Standard JavaScript language features
 
@@ -864,6 +1089,8 @@ Device management consumes the driver's declared surface with `role: "settings"`
 through `PluginDeviceSurfaceAuthority`. This applies to Scale, Sensor, Grinder,
 and other plugin-backed devices, without requiring a connection or filtering by
 session availability. Devices with no settings-role surface have no settings action.
+A declared `role: "diagnostics"` surface adds a separate **Device diagnostics**
+action next to it, resolved, gated and launched the same way.
 The host validates surfaces against declared same-plugin HTTP endpoints and the
 `api` permission when parsing the manifest.
 
@@ -884,7 +1111,10 @@ in the platform in-app browser, preserving its `ui=1`, `deviceId`, and optional
 display-only `deviceName` query. Native device management supplies the name to the
 shared authority, which encodes all query values once; the UI does not rebuild
 the query. The name is not identity, and ownership is not inferred from device IDs.
-Other authority callers that omit the name retain their existing hrefs. Only
+`GET /api/v1/scale/info` exposes the same name-carrying hrefs for a connected
+plugin scale as `surfaces` (only while the owning runtime is active), so skins
+can link to the per-device settings page. Other authority callers that omit the
+name retain their existing hrefs. Only
 the current device instance may launch; retired, replaced, and unloaded instances
 are fenced. The plugin owns identity validation and per-device persistence through
 its namespaced KV store (`pluginStorage` permission), separate from plugin-global
@@ -937,6 +1167,57 @@ Unsupported controls fail with `unsupported_operation` before a plugin handler
 is invoked. Runtime control uses the singular `/api/v1/grinder/*` API and the
 generic device connect/disconnect routes.
 
+## Network discovery (`host.discovery`)
+
+A plugin can browse mDNS/DNS-SD services on the local network, for example to
+offer "Search the network" in a setup page. It declares what it may see in the
+manifest's top-level `discovery` key:
+
+```json
+"discovery": {
+  "mdns": [
+    { "type": "_https._tcp", "namePrefix": "Mahlkoenig grinder" }
+  ]
+}
+```
+
+```javascript
+if (typeof host.discovery?.browse === "function") {
+  const services = await host.discovery.browse({
+    serviceType: "_https._tcp",
+    namePrefix: "Mahlkoenig grinder", // optional; defaults to the declared prefixes
+    timeoutMs: 3000                    // optional; default 3000, clamped to 250-10000
+  });
+  // [{ name, host, port, addresses, txt }]
+}
+```
+
+- `mdns` holds 1-8 entries with exactly `type` (`_<name>._tcp` or
+  `_<name>._udp`) and `namePrefix` (1-63 characters). An invalid entry makes the
+  manifest invalid. Other keys under `discovery` are ignored.
+- `browse` resolves only instances whose name starts with a declared
+  `namePrefix` for that `serviceType` (case-insensitive), so a plugin never sees
+  unrelated devices such as printers. A requested `namePrefix` may narrow a
+  declared one but not widen or replace it. Undeclared types and other
+  prefixes reject with `code: "validation"` without browsing.
+- Each result has the instance `name`, `host` (the advertised host name without
+  the trailing dot, or the first address), `port`, `addresses` (IPv4 first) and
+  `txt` (the TXT record as a string map). At most 32 results are returned.
+  Prefer storing an address: `.local` resolution is not guaranteed on Android.
+- There is no new permission name, because hosts reject unknown permissions.
+  `browse` requires `api` or any `network.*` permission and rejects with
+  `code: "permission"` otherwise. One browse runs per plugin at a time; a
+  concurrent call rejects with `code: "busy"`.
+- Browsing is passive and read-only; discovery grants no connection. Opening
+  the found device still needs the usual `fetch` or `host.transport`
+  permission.
+- iOS and macOS browse only service types listed in the app's
+  `NSBonjourServices` (`_decentscale._tcp` and `_https._tcp` today); other types
+  return no results there.
+
+Hosts without this API have no `host.discovery` and ignore the manifest key,
+so feature-detect and fall back to manual address entry.
+
 ## Network Transports (`host.transport`)
 
 `host.transport` exposes permission-gated outbound network transports: WebSocket
@@ -951,7 +1232,7 @@ Each transport requires its own manifest permission:
 |--------|------------|-------|
 | `websocket` | `network.websocket` | `ws://` and `wss://`; `wss://` uses normal platform certificate validation and does **not** require `network.tls` |
 | `tcp` | `network.tcp` | raw byte stream |
-| `tls` | `network.tls` | raw byte stream over TLS using the platform trust store only |
+| `tls` | `network.tls` | raw byte stream over TLS using the platform trust store, or a per-connection [certificate pin](#certificate-pinning) |
 
 Permission failure rejects the `open()` call with a `PluginPermissionError`
 before any DNS lookup or connection attempt. No unrestricted global `WebSocket`
@@ -991,7 +1272,10 @@ headers are not supported.
 
 TCP/TLS options: `kind: "tcp"`/`"tls"`, `host` (required hostname/IP),
 `port` (required integer 1..65535). Custom CA material and client
-certificates are out of scope; TLS uses the platform trust store only.
+certificates are out of scope; TLS uses the platform trust store, except that
+`kind: "tls"` and `wss://` WebSocket connections accept an optional
+`tlsPinSha256` (see [Certificate pinning](#certificate-pinning)). A pin on
+`kind: "tcp"` or a `ws://` url rejects the `open()`.
 
 Connection failures before establishment reject the `open()` Promise.
 
@@ -1406,6 +1690,18 @@ const shotId = new URLSearchParams(location.search).get("shotId");
 Prefer this for a page that fetches its data over the REST API; it keeps the
 value out of the generated HTML.
 
+A plugin page or surface response (HTML under `/api/v1/plugins/<id>/`) carries
+`Content-Security-Policy: frame-ancestors 'self'` plus the device's own skin
+origins: `http` on the live skin page port (and the API docs port), on the
+numeric IPv4 device address the request used and on `localhost` and
+`127.0.0.1`. IPv6 literals such as `[::1]` are left out because CSP
+source expressions cannot name them (Chrome rejects the whole source), so a
+skin opened on an IPv6 address cannot frame plugin pages. It is appended to a `Content-Security-Policy` the plugin sets itself
+and sends no `X-Frame-Options`, which cannot name a second origin. So the
+active skin may show a plugin page in an `<iframe>` (for example a popup), and
+any other site may not. The bundled settings page and the host's other HTML
+stay `frame-ancestors 'self'` with `X-Frame-Options: SAMEORIGIN`.
+
 Skins are served from a different browser origin than plugin pages, so a skin
 cannot write a plugin page's `sessionStorage` or `localStorage`. A query
 parameter on a top-level navigation is how a skin hands a plugin page its
@@ -1416,6 +1712,92 @@ HTML unescaped, and fall back to the page's normal empty state when the value
 names nothing. Most parameters are then used as a lookup key against the REST
 API. **`return` is the exception, and it needs its own rule**, because it is a
 navigation target rather than a lookup key.
+
+### Plugin surfaces
+
+A plugin can declare plugin-level pages in a top-level `surfaces` array. They
+are not tied to a device, so a setup page works before any device exists:
+
+```json
+"surfaces": [
+  { "id": "setup", "role": "setup", "endpoint": "setup", "label": "Set up E64" },
+  { "id": "diagnostics", "role": "diagnostics", "endpoint": "diagnostics" }
+]
+```
+
+- `role` is `setup`, `settings` or `diagnostics`; at most one `setup` and one
+  `settings` surface, at most 8 surfaces, unique `id`s.
+- Each entry has exactly the keys `id`, `role`, `endpoint` and optional
+  `label`, validated like driver surfaces: a safe `id`, a safe non-reserved
+  `endpoint` naming a declared HTTP endpoint of the same plugin, and the `api`
+  permission. An invalid declaration makes the manifest invalid.
+- The host builds the URL: `/api/v1/plugins/<id>/<endpoint>?ui=1&surface=<id>`.
+  Plugins cannot supply URLs, hosts or routes.
+- `GET /api/v1/plugins` lists them per plugin as `surfaces: [{id, role,
+  label?, href}]`. The native Plugins screen shows **Set up**, **Settings** and
+  **Diagnostics** buttons on a loaded plugin's card and opens them in the
+  [native surface sheet](#native-surface-sheet). The generated settings form
+  stays in the card's menu.
+- Driver surfaces keep the roles `settings` and `diagnostics` only. Do not put
+  `setup` in a driver surface: hosts reject the whole manifest.
+
+Hosts without this contract ignore the unknown top-level key, so the plugin
+still loads there; such a plugin should keep its pages reachable another way
+(for example a `ui` endpoint).
+
+#### Reporting "needs setup"
+
+A plugin reports that it needs setup with an ordinary notice whose action
+opens its `setup` surface, and clears the state by dismissing that notice. No
+extra API or permission is involved beyond `notifications`:
+
+```javascript
+host.notify({
+  id: "setup",
+  message: "Enter your grinder's address and Owner password.",
+  action: { id: "setup", label: "Set up", type: "openPluginSurface", surfaceId: "setup" }
+});
+// after a successful configuration:
+host.dismissNotification("setup");
+```
+
+While such a notice is current, `GET /api/v1/plugins` reports
+`needsSetup: true` and `setupReason` (the notice message) for the plugin, and
+the native Plugins card shows a **Needs setup** badge with the reason. The
+state follows the notice: it survives a restart with the retained notice and
+disappears when the plugin dismisses it, is unloaded, disabled or removed.
+`needsSetup` is always present (`false` otherwise) on hosts that support it;
+its absence means an older host. On hosts that reject the action, the plugin
+falls back to a plain notice (see `host.notify`) and no badge is shown. A
+plugin should load in this state rather than throw from `onLoad` on an
+incomplete configuration, because a plugin that fails to load serves no pages.
+
+### Native surface sheet
+
+Native Decaid opens plugin surfaces in a themed bottom sheet
+that hosts a WebView instead of a full-screen browser tab. The sheet draws its
+own title, a close button and an **Open in browser** button, and adds these
+query parameters to the surface URL:
+
+| Parameter | Value |
+|---|---|
+| `embed` | `1`: the page is embedded; do not draw an own header or back button. |
+| `theme` | `light` or `dark`, from the app's current theme. |
+| `lang` | The app locale as a BCP 47 tag, for example `en-US`. |
+
+Pages ignore parameters they do not know, so a page written for stock hosts
+keeps working. A page can close the sheet itself, for example after a
+successful save:
+
+```javascript
+window.flutter_inappwebview?.callHandler("pluginSurface", { type: "close" });
+```
+
+Only `{type: "close"}` is understood. Main-frame navigation to another origin
+is not loaded in the sheet; `http` and `https` targets open in the external
+browser. On Linux, where the WebView is a no-op, and for **Open in browser**,
+the page opens in the platform browser with `theme` and `lang` but without
+`embed`.
 
 ### The `return` parameter
 
@@ -1625,7 +2007,7 @@ it in Decaid UI.
 - **Global Functions**: `fetch()`, `btoa()`, `setTimeout()`, `clearTimeout()`
 - **Objects**: `Promise`, `JSON`, `Math`, `Date`, `Array`, `Object`
 - **Constants**: `undefined`, `null`, `Infinity`, `NaN`
-- **Host API**: `host.log()`, `host.emit()`, `host.storage()`, `host.decentProxy()`, `host.localApi()`, `host.transport`, `host.devices`
+- **Host API**: `host.log()`, `host.emit()`, `host.storage()`, `host.decentProxy()`, `host.localApi()`, `host.transport`, `host.devices`, `host.discovery`
 
 ### Not Available
 
@@ -1643,24 +2025,64 @@ it in Decaid UI.
   permission, enforces per-plugin connection and byte limits, and closes all
   connections on plugin unload or app shutdown. There is no unrestricted
   global `WebSocket` or socket API in the plugin runtime.
-- TLS uses the platform trust store only; custom CA material and client
-  certificates are not supported
-- Storage is kept per plugin, but it is not private: the key-value store routes
-  (`/api/v1/store/<namespace>/<key>`), which need no token, read and write the
-  same data when the namespace is the plugin id, and backup import and sync
-  restore it. A plugin holding `manage.extensions` must not take instructions,
+- TLS uses the platform trust store; custom CA material and client
+  certificates are not supported. The one exception is an explicit
+  per-request or per-connection `tlsPinSha256`
+  ([Certificate pinning](#certificate-pinning)), which accepts exactly one
+  leaf certificate for that request or connection and nothing else
+- Storage is kept per plugin. The key-value store routes
+  (`/api/v1/store/<namespace>/<key>`) refuse a namespace equal to an installed
+  plugin's id (compared case-insensitively) with 403 to requests from other
+  machines unless they carry an `extensions:manage` credential, so LAN clients
+  cannot read or overwrite it over REST. Requests whose socket peer is the
+  device itself (loopback or one of its own addresses) may use the namespace:
+  the plugin's own page in the app WebView reads and writes its data there,
+  the plugin's `fetch` to `localhost:8080` reaches the same data as
+  `host.storage`, and so can skins, other plugins and other apps on the same
+  device. A backup made
+  from the app's own Data Management screen, or by a client with an
+  `extensions:manage` token, includes every installed plugin's storage in
+  `store.json`, and restoring such a backup the same way writes it back and
+  reloads each affected running plugin. A tokenless export leaves plugin
+  storage out, a tokenless import skips it with a warning in the `store`
+  section result, and sync never transfers it. It is still not secret: a token
+  holder can read it. A plugin holding `manage.extensions` must not take instructions,
   server addresses or credentials from `host.storage`; keep them in plugin
   settings, whose POST route is gated and whose secure values are never returned
 - No filesystem access beyond the plugin's own directory
-- `fetch` and `host.transport` are not limited by destination, so they can
-  reach Decaid's own API like any client on the network. They carry no
+- Apart from the machine control limits below, `fetch` and `host.transport`
+  are not limited by destination, so they can reach Decaid's own API like any
+  client on the network. They carry no
   authority: the plugin and skin management routes answer 401 to them. Only
   `host.localApi`, with the `manage.extensions` permission, carries that
   authority, and only for the plugin's current loaded generation
 - All loaded plugins share one JavaScript runtime and are not isolated from each
   other. A plugin's permissions, `manage.extensions` included, should be treated
   as available to every plugin loaded beside it, so grant `manage.extensions`
-  only on a device whose other plugins you trust as well
+  only on a device whose other plugins you trust as well. As a partial
+  mitigation, before the first plugin is evaluated the host freezes the shared
+  built-ins (`Object`, `Function`, `Array`, `JSON`, `Promise`, `Map`, `Set`,
+  `WeakMap`, `WeakSet`, `String`, `Number`, `Boolean`, `Symbol`, `Reflect`,
+  `Math`, `Date`, `RegExp`, `BigInt`, `Proxy`, `ArrayBuffer`, `DataView`, every
+  typed array and the shared typed-array prototype, `TextEncoder`,
+  `TextDecoder`, `btoa` and `atob`, with their prototypes, plus the `Error` and
+  `TypeError` constructors) and makes the host's own globals (`host`, `fetch`,
+  `sendMessage` and every `__`-prefixed host function) read-only, so one
+  plugin cannot hook another plugin's `JSON.stringify`, `btoa`, byte buffers,
+  promise callbacks or fetch responses. Loaded plugin objects are kept in a
+  registry that is not reachable from plugin code and is keyed by each
+  plugin's private bridge token, so a plugin cannot read, replace or remove
+  another plugin's `onEvent` or HTTP handler. `atob` is provided when the
+  engine has none. Assigning to a frozen built-in throws in strict code and is
+  ignored otherwise; plugins must not patch or polyfill built-ins.
+  `Error.prototype` stays writable so subclasses can set `this.name`
+- `fetch` cannot send a non-`GET`/`HEAD` request to the host's own
+  `/api/v1/machine/*` routes unless the user granted the plugin
+  [machine control](#machine-control-grant) (it then resolves with 403), and
+  never to the firmware routes. Reads such as `GET /api/v1/machine/info` keep
+  working. `host.transport` likewise refuses a
+  WebSocket to `/ws/v1/machine/raw` on the host API and raw `tcp`/`tls`
+  connections to the host API port
 - An `Authorization` header that carries a token Decaid recognises is removed
   from a request before it reaches a plugin-defined endpoint, so a client that
   sends its token to a plugin endpoint does not hand that token to the plugin
@@ -1811,6 +2233,26 @@ curl -X POST http://tablet:8080/api/v1/plugins/my.reaplugin/update/approve \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+The background update check (the scheduled one that runs while automatic
+update checks are on) is stricter than a manual check from the Plugins screen
+or `POST /api/v1/plugins/update`:
+
+- it records a `pendingUpdate` instead of installing whenever the plugin has
+  stored secure settings (passwords, tokens), even if no permission is added,
+  so new code never receives those secrets without review. Such a pending
+  update has an empty `addedPermissions`;
+- it skips plugins installed from a GitHub branch entirely. A branch has no
+  release to review, so branch installs only move on a manual check.
+
+A REST install (`POST /api/v1/plugins/install/github-release` or
+`/github-branch`) whose package carries the id of an already installed plugin
+is treated like a source write when the request has no `extensions:manage`
+credential: added permissions are refused with 409, and a changed `plugin.js`
+clears the plugin's stored secure settings and its
+[machine control grant](#machine-control-grant). Approving a pending update of
+a plugin that has stored secure settings needs the native Plugins screen or an
+`extensions:manage` credential in both modes; a request without one gets 403.
+
 A pending update can be approved by:
 
 - the user, in the Plugins settings screen;
@@ -1873,6 +2315,7 @@ OFF):
 | POST | `/api/v1/plugins/:id/enable` | yes | Load plugin + enable auto-load on startup |
 | POST | `/api/v1/plugins/:id/disable` | yes | Unload plugin + disable auto-load |
 | PUT | `/api/v1/plugins/:id/source` | yes | Create or overwrite `manifest.json` + `plugin.js` |
+| PUT | `/api/v1/plugins/:id/machine-control` | yes | Allow (`{"granted": true}`) or forbid machine control for the plugin |
 | DELETE | `/api/v1/plugins/:id` | yes | Remove plugin (unload + delete files) |
 | POST | `/api/v1/plugins/install` | yes | Not supported (501); use the GitHub endpoints below |
 | POST | `/api/v1/plugins/install/github-release` | yes | Install from a GitHub release asset |
@@ -1989,6 +2432,18 @@ Rules:
 - The update is partial. Only `manifest.json` and `plugin.js` are written; any
   other file in the plugin directory survives. Plugins that need new extra
   files still have to be installed from a directory.
+- Without an `extensions:manage` credential (a bearer with that scope, or a
+  `manage.extensions` plugin calling `host.localApi`), a write whose manifest
+  adds permissions to an installed plugin is rejected with 409: give the plugin new permissions
+  with a token, from the native Plugins screen, or through an install or
+  update that goes through approval. This applies in both modes: in
+  compatibility mode no token is needed for the route itself, but one is
+  still needed to add permissions.
+- Without that credential, a write whose `plugin.js` differs from the installed
+  one also clears the plugin's stored secure settings (passwords, tokens), so
+  replacement code never receives secrets the user entered for the old code;
+  the plugin has to be configured again. Ordinary settings are kept, and a
+  manifest-only write keeps secure settings too.
 - Downgrades are rejected with 409. The submitted version must be greater than
   or equal to the installed version; installing an older version requires
   removing the plugin first. Versions compare as semantic versions, so

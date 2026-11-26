@@ -99,6 +99,7 @@ class PluginSourceService {
     String? assetName,
     bool includePrerelease = false,
     ExtensionManagementApproval? approveExtensionManagement,
+    bool authorized = true,
   }) async {
     final release = await fetchLatestGitHubRelease(
       repo,
@@ -128,6 +129,7 @@ class PluginSourceService {
           lastChecked: now,
         ),
         approveExtensionManagement: approveExtensionManagement,
+        authorized: authorized,
       );
     });
   }
@@ -136,6 +138,7 @@ class PluginSourceService {
     String repo, {
     String branch = 'main',
     ExtensionManagementApproval? approveExtensionManagement,
+    bool authorized = true,
   }) async {
     final commit = await fetchGitHubBranchCommit(
       repo,
@@ -163,6 +166,7 @@ class PluginSourceService {
           lastChecked: now,
         ),
         approveExtensionManagement: approveExtensionManagement,
+        authorized: authorized,
       );
     });
   }
@@ -205,6 +209,7 @@ class PluginSourceService {
     PluginPackage package,
     PluginSource source, {
     ExtensionManagementApproval? approveExtensionManagement,
+    bool authorized = true,
   }) async {
     final candidate = package.manifest;
     final installed = _loader.getPluginManifest(candidate.id);
@@ -217,7 +222,10 @@ class PluginSourceService {
         !await approveExtensionManagement(candidate)) {
       throw PluginInstallDeclinedException(candidate.id);
     }
-    final manifest = await _loader.installPluginPackage(package.root);
+    final manifest = await _loader.installPluginPackage(
+      package.root,
+      authorized: authorized,
+    );
     _writeSource(manifest.id, source);
     return manifest;
   }
@@ -275,8 +283,8 @@ class PluginSourceService {
     }
   }
 
-  Future<void> updateAllPlugins() async {
-    final report = await checkForPluginUpdates();
+  Future<void> updateAllPlugins({bool automatic = false}) async {
+    final report = await checkForPluginUpdates(automatic: automatic);
     if (report.hasFailures) {
       throw RemoteUpdateException(
         attemptedCount: report.results.length,
@@ -285,10 +293,10 @@ class PluginSourceService {
     }
   }
 
-  Future<RemoteUpdateReport> checkForPluginUpdates() {
+  Future<RemoteUpdateReport> checkForPluginUpdates({bool automatic = false}) {
     final existing = _updateCheckReport;
     if (existing != null) return existing;
-    final report = _runPluginUpdates().whenComplete(() {
+    final report = _runPluginUpdates(automatic).whenComplete(() {
       _updateCheckReport = null;
       _updateCheck.value = null;
     });
@@ -297,7 +305,7 @@ class PluginSourceService {
     return report;
   }
 
-  Future<RemoteUpdateReport> _runPluginUpdates() async {
+  Future<RemoteUpdateReport> _runPluginUpdates(bool automatic) async {
     _log.info('Starting update check for managed plugins');
     seedBundledSources();
     final results = <RemoteUpdateItemResult>[];
@@ -305,12 +313,13 @@ class PluginSourceService {
     for (final manifest in _loader.availablePlugins) {
       final source = sourceFor(manifest.id);
       if (source == null || !source.kind.isManaged) continue;
+      if (automatic && source.kind == PluginSourceKind.githubBranch) continue;
 
       try {
         results.add(
           RemoteUpdateItemResult(
             item: manifest.id,
-            status: await _updatePlugin(manifest, source),
+            status: await _updatePlugin(manifest, source, automatic),
           ),
         );
       } catch (e, st) {
@@ -347,6 +356,7 @@ class PluginSourceService {
   Future<RemoteUpdateStatus> _updatePlugin(
     PluginManifest installed,
     PluginSource source,
+    bool automatic,
   ) async {
     final now = DateTime.now();
 
@@ -376,10 +386,12 @@ class PluginSourceService {
 
         final added = _addedPermissions(installed, package.manifest);
         if (!await _mayAutoApproveAddedPermissions(
-          installed.id,
-          source,
-          added,
-        )) {
+              installed.id,
+              source,
+              added,
+            ) ||
+            (automatic &&
+                await _loader.hasStoredSecureSettings(installed.id))) {
           _log.info(
             'Update of ${installed.id} to ${release.tag} needs approval for: '
             '${added.join(', ')}',
@@ -440,7 +452,8 @@ class PluginSourceService {
       _requireSamePlugin(installed, package);
 
       final added = _addedPermissions(installed, package.manifest);
-      if (!await _mayAutoApproveAddedPermissions(installed.id, source, added)) {
+      if (!await _mayAutoApproveAddedPermissions(installed.id, source, added) ||
+          (automatic && await _loader.hasStoredSecureSettings(installed.id))) {
         _log.info(
           'Update of ${installed.id} to $commit needs approval for: '
           '${added.join(', ')}',
