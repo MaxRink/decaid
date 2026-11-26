@@ -111,6 +111,9 @@ The dry run exercises the build jobs, so it costs the same runner time as a real
 
 ### Step 1: Tag Your Release
 
+First bump the Android `versionCode` in `android/version.properties` and commit
+it with the release change — see [Android versionCode](#android-versioncode).
+
 ```bash
 # For a stable release
 git tag v1.0.0
@@ -156,6 +159,59 @@ Decaid follows [Semantic Versioning](https://semver.org/):
 - **Beta**: `v1.0.0-beta.1` - Feature complete, testing phase
 - **Alpha**: `v1.0.0-alpha.1` - Early testing, incomplete features
 - **RC**: `v1.0.0-rc.1` - Release candidate, final testing
+
+### Android versionCode
+
+Android's `versionCode` is a committed counter in
+[`android/version.properties`](../android/version.properties), read by
+`android/app/build.gradle.kts` and passed as `--build-number` by
+`flutter_with_commit.sh`. It is deliberately not derived from git history, so the
+same commit yields the same versionCode in a full clone, a `git clone --depth 1`
+checkout and an exported source tree.
+
+**Bump it in the release commit**, before tagging: increase the integer by at
+least 1 and commit the file with the release change.
+
+```properties
+# android/version.properties
+versionCode=3601
+```
+
+Never decrease or reuse a value. Android refuses to install an APK whose
+versionCode is lower than the installed one, so shipping a lower number breaks
+in-place updates for everyone who already installed the previous build.
+
+The counter may be set ahead of the minimum (headroom) when a change will stay
+unmerged for a while, so that builds of `main` produced by the previous
+git-count-based formula cannot overtake it. The only rule CI enforces is that the
+committed value is **strictly greater than the highest versionCode among the
+published release APKs**, pre-releases included — a beta is an APK someone has
+installed, and Android compares against the device, not against a release channel.
+
+`scripts/check_version_code_bump.sh` enforces that rule in two places: the
+`version-code-guard` job of `pr-checks.yml`, which runs on **every** PR (the
+workflow is deliberately not filtered by base branch), and a pre-build step of
+`release.yml`, which runs before the keystore is decoded and the APK is built. It
+reads the versionCode of the newest published release APKs of
+`decentespresso/decaid` with `aapt2 dump badging` and fails with both numbers when
+the committed counter is not greater.
+
+It fails closed. If `gh`, `aapt2`, the token or the network is missing, or a
+release carries no `decaid-android-<version>.apk`, the step fails instead of
+reporting success without a reference. The one case it cannot decide — a
+repository that publishes no releases at all — fails too, unless skipping is
+explicitly opted into with `--allow-skip` or `VERSION_CODE_GUARD_ALLOW_SKIP=1`.
+It reads the newest 5 releases by default (`VERSION_CODE_GUARD_SCAN`). Run it
+before tagging:
+
+```bash
+./scripts/check_version_code_bump.sh
+```
+
+(The offline unit test for the guard is
+`./scripts/test_check_version_code_bump.sh`; CI runs both. Its stub `gh`/`aapt2`
+cases cover the fail-closed paths, so a guard that skips on a missing tool fails
+the test suite.)
 
 ## Update Channels
 

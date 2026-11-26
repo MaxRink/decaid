@@ -31,13 +31,29 @@ Requirements: the Flutter SDK pinned in `.github/workflows/pr-checks.yml` (resta
 
 ```bash
 flutter pub get
-./scripts/fetch_dye2_plugin.sh   # installs assets/plugins/dye2.reaplugin/ from the latest decentespresso/dye2 release (DYE2_VERSION=vX.Y.Z pins one)
+./scripts/fetch_dye2_plugin.sh          # assets/plugins/dye2.reaplugin/ (latest decentespresso/dye2 release; DYE2_VERSION=vX.Y.Z pins one)
+./scripts/fetch_shot_upload_plugin.sh   # assets/plugins/shot-upload.reaplugin/ (pinned release)
+./scripts/fetch_dcamp_plugin.sh         # assets/plugins/dcamp.reaplugin/ (pinned release)
+./bundle_skins.sh                       # assets/bundled_skins/ (CI runs this via flutter_with_commit.sh)
 
 # Run with simulated hardware (no DE1 / scale required):
 flutter run --dart-define=simulate=1
 ```
 
+All four are required before any build: `assets/plugins/dye2.reaplugin/`,
+`assets/plugins/shot-upload.reaplugin/`, `assets/plugins/dcamp.reaplugin/` and
+`assets/bundled_skins/` are listed
+under `assets:` in `pubspec.yaml` but are generated, so a clean clone builds
+neither an APK nor an app bundle without them.
+
 See [`CLAUDE.md`](CLAUDE.md) for the full command reference.
+
+### Android versionCode
+
+`versionCode` is a committed counter in [`android/version.properties`](android/version.properties),
+not a value derived from git history. It only ever increases; the bump procedure
+and the CI guard that enforces it live in
+[`doc/RELEASE.md`](doc/RELEASE.md#android-versioncode).
 
 ## Branching & PRs
 
