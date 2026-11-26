@@ -236,6 +236,157 @@ void main() {
         .stringResult;
   });
 
+  // Is a JS runtime shared across PluginManager instances on THIS platform?
+  // The macOS answer was "no"; Linux is what matters.
+  test('04 is the runtime shared across managers', () async {
+    final a = PluginManager(kvStore: FakeKeyValueStoreService());
+    final b = PluginManager(kvStore: FakeKeyValueStoreService());
+    addTearDown(() {
+      a.dispose();
+      b.dispose();
+    });
+    final shared = <String, Object?>{};
+    a.js.evaluate('globalThis.__sharedProbe = "from-a";');
+    shared['seenByOtherManager'] = b.js
+        .evaluate('String(globalThis.__sharedProbe)')
+        .stringResult;
+    a.js.evaluate('globalThis.__lockPluginHostBridge();');
+    shared['otherBridgeAfterLock'] = b.js
+        .evaluate('typeof globalThis.__reaprimePluginHostBridge')
+        .stringResult;
+    findings['sharedAcrossManagers'] = shared;
+  });
+
+  // THE decisive experiment: run the preceding test's hooker on its own manager
+  // (disposing it), then the base64 sequence on a fresh manager. If this leaks,
+  // leftover cross-instance state is the cause.
+  test('05 preceding test then base64, separate managers', () async {
+    const hookerBody = '''
+      const attempts = {};
+      const tryIt = (name, fn) => {
+        try { fn(); attempts[name] = "changed"; } catch (e) { attempts[name] = "refused"; }
+      };
+      tryIt("JSON.stringify", () => { JSON.stringify = () => "stolen"; });
+      tryIt("JSON.parse", () => { JSON.parse = () => ({}); });
+      tryIt("Promise.prototype.then", () => { Promise.prototype.then = () => {}; });
+      tryIt("Function.prototype.call", () => { Function.prototype.call = () => {}; });
+      tryIt("Array.prototype.push", () => { Array.prototype.push = () => 0; });
+      tryIt("Object.defineProperty", () => { Object.defineProperty = () => {}; });
+      tryIt("Object.prototype setter", () => {
+        Object.defineProperty(Object.prototype, "token", { set(v) {} });
+      });
+      tryIt("Map.prototype.get", () => { Map.prototype.get = () => undefined; });
+      tryIt("fetch response hook", () => { globalThis.__handleFetchResponse = () => {}; });
+      tryIt("fetch request hook", () => { globalThis.__fetchFor = () => {}; });
+      host.emit("result", JSON.stringify(attempts));
+    ''';
+    const hookerVictimBody = '''
+      const seen = [];
+      seen.push(JSON.stringify({ a: 1 }));
+      seen.push(typeof Promise.prototype.then);
+      const box = {};
+      box.token = "secret";
+      seen.push(Object.getOwnPropertyDescriptor(box, "token").value);
+      report(seen);
+    ''';
+    const snifferBody = '''
+      globalThis.__stolen = [];
+      const steal = (value) => { globalThis.__stolen.push(String(value)); };
+      const attempt = (fn) => { try { fn(); } catch (e) {} };
+      const realBtoa = globalThis.btoa;
+      attempt(() => { globalThis.btoa = (v) => { steal(v); return realBtoa(v); }; });
+      attempt(() => {
+        Object.defineProperty(globalThis, "btoa", {
+          value: (v) => { steal(v); return realBtoa(v); }, writable: true, configurable: true
+        });
+      });
+      attempt(() => { globalThis.atob = (v) => { steal(v); return ""; }; });
+      attempt(() => { Uint8Array.prototype.set = function () { steal("set"); }; });
+      attempt(() => {
+        const typedArray = Object.getPrototypeOf(Uint8Array);
+        typedArray.prototype.subarray = function () { steal("subarray"); return this; };
+      });
+      attempt(() => { ArrayBuffer.prototype.slice = function () { steal("slice"); return this; }; });
+      attempt(() => { DataView.prototype.getUint8 = function () { steal("getUint8"); return 0; }; });
+      if (typeof TextEncoder === "function") {
+        attempt(() => { TextEncoder.prototype.encode = function (v) { steal(v); return new Uint8Array(); }; });
+      }
+      host.emit("result", JSON.stringify(true));
+    ''';
+    const credentialsBody = '''
+      const auth = btoa("user:pass");
+      const bytes = new Uint8Array([1, 2, 3]);
+      bytes.set([9], 0);
+      const tail = bytes.subarray(1);
+      const view = new DataView(new ArrayBuffer(2).slice(0));
+      report({ auth, decoded: atob(auth), first: bytes[0], tail: tail.length, view: view.getUint8(0) });
+    ''';
+
+    final first = PluginManager(kvStore: FakeKeyValueStoreService());
+    findings['hookerAttempts'] = await run(
+      first,
+      id: 'hooker.plugin',
+      jsBody: hookerBody,
+    );
+    findings['hookerVictim'] = await run(
+      first,
+      id: 'victim.plugin',
+      jsBody: hookerVictimBody,
+    );
+    first.dispose();
+
+    final second = PluginManager(kvStore: FakeKeyValueStoreService());
+    addTearDown(() => second.dispose());
+    await run(second, id: 'sniffer.plugin', jsBody: snifferBody);
+    findings['crossManagerVictim'] = await run(
+      second,
+      id: 'credentials.plugin',
+      jsBody: credentialsBody,
+    );
+    findings['crossManagerStolen'] = second.js
+        .evaluate('JSON.stringify(globalThis.__stolen)')
+        .stringResult;
+  });
+
+  // Same-manager variant, so a same-realm effect is distinguishable from a
+  // cross-instance one.
+  test('06 preceding test then base64, same manager', () async {
+    final m = PluginManager(kvStore: FakeKeyValueStoreService());
+    addTearDown(() => m.dispose());
+    await run(
+      m,
+      id: 'hooker.plugin',
+      jsBody: 'host.emit("result", JSON.stringify(true));',
+    );
+    await run(
+      m,
+      id: 'sniffer.plugin',
+      jsBody: '''
+        globalThis.__stolen = [];
+        const steal = (value) => { globalThis.__stolen.push(String(value)); };
+        const realBtoa = globalThis.btoa;
+        try { globalThis.btoa = (v) => { steal(v); return realBtoa(v); }; } catch (e) {}
+        try {
+          Object.defineProperty(globalThis, "btoa", {
+            value: (v) => { steal(v); return realBtoa(v); }
+          });
+        } catch (e) {}
+        host.emit("result", JSON.stringify(true));
+      ''',
+    );
+    await run(
+      m,
+      id: 'credentials.plugin',
+      jsBody: '''
+        const auth = btoa("user:pass");
+        report({ auth, decoded: atob(auth) });
+      ''',
+    );
+    findings['sameManagerStolen'] = m.js
+        .evaluate('JSON.stringify(globalThis.__stolen)')
+        .stringResult;
+  });
+
   tearDownAll(() {
     fail('RESIDUAL-PROBE ${jsonEncode(findings)}');
   });
