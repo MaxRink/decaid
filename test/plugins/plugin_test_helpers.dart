@@ -1,5 +1,9 @@
+import 'dart:convert';
+
+import 'package:flutter/services.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
 import 'package:reaprime/src/services/storage/kv_store_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class FakeKeyValueStoreService implements KeyValueStoreService {
   final Map<String, Map<String, Object>> _store = {};
@@ -43,6 +47,42 @@ class FakeKeyValueStoreService implements KeyValueStoreService {
   @override
   Future<Map<String, Object>> getAll({String namespace = 'default'}) async {
     return Map<String, Object>.from(_store[namespace] ?? {});
+  }
+}
+
+/// Ids of every plugin shipped in `assets/plugins/`.
+///
+/// Read from the asset manifest so the list follows the bundle instead of
+/// drifting behind it.
+Future<List<String>> bundledPluginIds() async {
+  final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
+  final ids = <String>[];
+  for (final asset in manifest.listAssets()) {
+    if (!asset.startsWith('assets/plugins/') ||
+        !asset.endsWith('/manifest.json')) {
+      continue;
+    }
+    final json = jsonDecode(await rootBundle.loadString(asset));
+    ids.add((json as Map<String, dynamic>)['id'] as String);
+  }
+  return ids;
+}
+
+/// Keeps the shipped plugins out of a test's PluginLoaderService.
+///
+/// `initialize` copies and auto-loads the whole bundled set, and a few of those
+/// plugins act on load: Mahlkönig E64 publishes its "needs setup" notice and
+/// Skale registers a BLE driver. A test that asserts on its own notification
+/// centre or BLE registry must silence them first, exactly as a real profile
+/// does when the user turns auto-load off.
+///
+/// Call after `SharedPreferences.setMockInitialValues` and before
+/// `initialize`: the loader only defaults a bundled plugin to auto-load when
+/// the preference is absent.
+Future<void> disableBundledPluginAutoLoad() async {
+  final preferences = await SharedPreferences.getInstance();
+  for (final id in await bundledPluginIds()) {
+    await preferences.setBool('plugin.autoload.$id', false);
   }
 }
 
