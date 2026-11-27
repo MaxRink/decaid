@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter_js/flutter_js.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reaprime/src/controllers/device_controller.dart';
 import 'package:reaprime/src/controllers/sensor_controller.dart';
@@ -12,6 +14,36 @@ import 'package:reaprime/src/plugins/plugin_manifest.dart';
 
 import 'plugin_test_helpers.dart';
 
+/// The realm of the test's only loaded plugin.
+JavascriptRuntime _js(PluginManager manager) =>
+    manager.jsRealmOf(manager.loadedPlugins.single.pluginId);
+
+/// Mirrors writes to the named JS globals into [values], so a test can still
+/// read what a plugin recorded after unload has disposed its realm.
+void Function(String, JavascriptRuntime) _recordGlobals(
+  List<String> names,
+  Map<String, Object?> values,
+) => (_, js) {
+  js.onMessage('recordedGlobal', (message) {
+    final entry = message as Map<String, dynamic>;
+    values[entry['name'] as String] = entry['value'];
+  });
+  final result = js.evaluate('''
+    for (const name of ${jsonEncode(names)}) {
+      let value;
+      Object.defineProperty(globalThis, name, {
+        configurable: true,
+        get: () => value,
+        set: (next) => {
+          value = next;
+          sendMessage("recordedGlobal", JSON.stringify({ name, value: next }));
+        },
+      });
+    }
+  ''');
+  expect(result.isError, isFalse, reason: result.stringResult);
+};
+
 void main() {
   test(
     'declared plugin sensor connects, publishes, and executes commands',
@@ -20,9 +52,11 @@ void main() {
       final deviceController = DeviceController([deviceService]);
       await deviceController.initialize();
       final sensorController = SensorController(controller: deviceController);
+      final recorded = <String, Object?>{};
       final manager = PluginManager(
         kvStore: FakeKeyValueStoreService(),
         deviceService: deviceService,
+        debugPrepareRealm: _recordGlobals(['disconnectCalls'], recorded),
       );
       addTearDown(() async {
         await manager.dispose();
@@ -114,7 +148,7 @@ void main() {
         ),
       );
       final snapshot = sensor.data.first;
-      manager.js.evaluate(
+      _js(manager).evaluate(
         'globalThis.testHumidityDevice.publish({ relativeHumidity: 52.4 });',
       );
       expect(await snapshot.timeout(const Duration(seconds: 2)), {
@@ -137,10 +171,7 @@ void main() {
           .where((sensors) => !sensors.containsKey(deviceId))
           .first;
       expect(deviceController.devices, isEmpty);
-      expect(
-        manager.js.evaluate('globalThis.disconnectCalls').stringResult,
-        '1',
-      );
+      expect(recorded['disconnectCalls'], 1);
     },
   );
 
@@ -359,17 +390,17 @@ void main() {
       final disconnected = sensor.connectionState
           .where((state) => state == ConnectionState.disconnected)
           .first;
-      manager.js.evaluate('globalThis.performReportDisconnected();');
+      _js(manager).evaluate('globalThis.performReportDisconnected();');
       await disconnected.timeout(const Duration(seconds: 2));
 
       final unregistered = manager.emitStream
           .where((event) => event['event'] == 'unregistered')
           .map((event) => event['payload'] as String)
           .first;
-      manager.js.evaluate('globalThis.performUnregister();');
+      _js(manager).evaluate('globalThis.performUnregister();');
       expect(await unregistered.timeout(const Duration(seconds: 2)), deviceId);
       expect(
-        manager.js
+        _js(manager)
             .evaluate('String(globalThis.disconnectCalls || 0)')
             .stringResult,
         '1',
@@ -459,13 +490,13 @@ void main() {
         .where((event) => event['event'] == 'unregistered-failed')
         .map((event) => event['payload'] as String)
         .first;
-    manager.js.evaluate('globalThis.performFailingUnregister();');
+    _js(manager).evaluate('globalThis.performFailingUnregister();');
     expect(
       await failure.timeout(const Duration(seconds: 2)),
       contains('transport busy'),
     );
     expect(
-      manager.js
+      _js(manager)
           .evaluate('String(globalThis.disconnectCalls || 0)')
           .stringResult,
       '1',
@@ -486,9 +517,11 @@ void main() {
       final deviceController = DeviceController([deviceService]);
       await deviceController.initialize();
       final sensorController = SensorController(controller: deviceController);
+      final recorded = <String, Object?>{};
       final manager = PluginManager(
         kvStore: FakeKeyValueStoreService(),
         deviceService: deviceService,
+        debugPrepareRealm: _recordGlobals(['disconnectClosed'], recorded),
       );
       addTearDown(() async {
         await manager.dispose();
@@ -571,12 +604,7 @@ void main() {
 
       await manager.unloadPlugin('cleanup-transport.plugin');
 
-      expect(
-        manager.js
-            .evaluate('String(globalThis.disconnectClosed || 0)')
-            .stringResult,
-        '1',
-      );
+      expect(recorded['disconnectClosed'] ?? 0, 1);
       expect(manager.liveTransportCount, 0);
       await sensorController.sensorRegistry
           .where((sensors) => !sensors.containsKey(deviceId))
@@ -683,20 +711,19 @@ void main() {
       final disconnected = sensor.connectionState
           .where((state) => state == ConnectionState.disconnected)
           .first;
-      manager.js.evaluate(
-        'globalThis.directCleanupDevice.reportDisconnected();',
-      );
+      _js(manager)
+          .evaluate('globalThis.directCleanupDevice.reportDisconnected();');
       await disconnected.timeout(const Duration(seconds: 2));
 
       final unregistered = manager.emitStream
           .where((event) => event['event'] == 'unregistered')
           .map((event) => event['payload'] as String)
           .first;
-      manager.js.evaluate('globalThis.performDirectUnregister();');
+      _js(manager).evaluate('globalThis.performDirectUnregister();');
       expect(await unregistered.timeout(const Duration(seconds: 2)), deviceId);
       expect(manager.liveTransportCount, 0);
       expect(
-        manager.js
+        _js(manager)
             .evaluate('String(globalThis.directDisconnectClosed || 0)')
             .stringResult,
         '1',
@@ -718,9 +745,15 @@ void main() {
       final deviceController = DeviceController([deviceService]);
       await deviceController.initialize();
       final sensorController = SensorController(controller: deviceController);
+      final recorded = <String, Object?>{};
       final manager = PluginManager(
         kvStore: FakeKeyValueStoreService(),
         deviceService: deviceService,
+        debugPrepareRealm: _recordGlobals([
+          'openRejected',
+          'openAllowed',
+          'disconnectCalls',
+        ], recorded),
         deviceInvocationTimeout: const Duration(seconds: 20),
       );
       addTearDown(() async {
@@ -819,9 +852,8 @@ void main() {
         i < 100 && manager.lifecycle == PluginManagerLifecycle.active;
         i++
       ) {
-        final result = manager.js.evaluate(
-          'String(globalThis.unloadStarted || false)',
-        );
+        final result = _js(manager)
+            .evaluate('String(globalThis.unloadStarted || false)');
         if (!result.isError && result.stringResult == 'true') {
           unloadStarted = true;
           break;
@@ -830,30 +862,15 @@ void main() {
       }
       expect(unloadStarted, isTrue);
 
-      manager.js.evaluate('globalThis.releaseConnect();');
-      while (manager.js.executePendingJob() > 0) {}
+      _js(manager).evaluate('globalThis.releaseConnect();');
+      while (_js(manager).executePendingJob() > 0) {}
       await expectLater(
         unloading.timeout(const Duration(seconds: 2)),
         completes,
       );
-      expect(
-        manager.js
-            .evaluate('String(globalThis.openRejected || false)')
-            .stringResult,
-        'true',
-      );
-      expect(
-        manager.js
-            .evaluate('String(globalThis.openAllowed || false)')
-            .stringResult,
-        'false',
-      );
-      expect(
-        manager.js
-            .evaluate('String(globalThis.disconnectCalls || 0)')
-            .stringResult,
-        '1',
-      );
+      expect(recorded['openRejected'] ?? false, true);
+      expect(recorded['openAllowed'] ?? false, false);
+      expect(recorded['disconnectCalls'] ?? 0, 1);
       expect(manager.liveTransportCount, 0);
       await sensorController.sensorRegistry
           .where((sensors) => !sensors.containsKey(deviceId))
@@ -977,11 +994,11 @@ void main() {
         .where((event) => event['event'] == 'unregistered')
         .map((event) => event['payload'] as String)
         .first;
-    manager.js.evaluate('globalThis.performUnregister();');
+    _js(manager).evaluate('globalThis.performUnregister();');
     expect(await unregistered.timeout(const Duration(seconds: 2)), deviceId);
     expect(manager.liveTransportCount, 0);
     expect(
-      manager.js
+      _js(manager)
           .evaluate('String(globalThis.disconnectCalls || 0)')
           .stringResult,
       '1',
@@ -995,10 +1012,10 @@ void main() {
     final socket = await WebSocket.connect('ws://127.0.0.1:${server.port}/x');
     nativeOpen.complete(socket);
     await Future<void>.delayed(const Duration(milliseconds: 50));
-    while (manager.js.executePendingJob() > 0) {}
+    while (_js(manager).executePendingJob() > 0) {}
     expect(manager.liveTransportCount, 0);
     expect(
-      manager.js
+      _js(manager)
           .evaluate('String(globalThis.connectRejected || false)')
           .stringResult,
       'true',
@@ -1123,25 +1140,24 @@ void main() {
           .where((event) => event['event'] == 'unregistered')
           .map((event) => event['payload'] as String)
           .first;
-      manager.js.evaluate('globalThis.performAsyncUnregister();');
+      _js(manager).evaluate('globalThis.performAsyncUnregister();');
       expect(await unregistered.timeout(const Duration(seconds: 2)), deviceId);
       expect(manager.liveTransportCount, 0);
       await deviceService.devices.where((devices) => devices.isEmpty).first;
       expect(deviceController.devices, isEmpty);
       expect(
-        manager.js
+        _js(manager)
             .evaluate('String(globalThis.disconnectCalls || 0)')
             .stringResult,
         '1',
       );
 
-      manager.js.evaluate('globalThis.releaseAsyncConnect();');
+      _js(manager).evaluate('globalThis.releaseAsyncConnect();');
       var connectRejected = false;
       for (var i = 0; i < 100 && !connectRejected; i++) {
-        while (manager.js.executePendingJob() > 0) {}
-        final result = manager.js.evaluate(
-          'String(globalThis.connectRejected || false)',
-        );
+        while (_js(manager).executePendingJob() > 0) {}
+        final result = _js(manager)
+            .evaluate('String(globalThis.connectRejected || false)');
         connectRejected = !result.isError && result.stringResult == 'true';
         if (!connectRejected) {
           await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -1149,13 +1165,13 @@ void main() {
       }
       expect(connectRejected, isTrue);
       for (var i = 0; i < 100 && manager.liveTransportCount != 0; i++) {
-        while (manager.js.executePendingJob() > 0) {}
+        while (_js(manager).executePendingJob() > 0) {}
         await Future<void>.delayed(const Duration(milliseconds: 10));
       }
       expect(manager.liveTransportCount, 0);
       expect(states, isNot(contains(ConnectionState.connected)));
       expect(
-        manager.js
+        _js(manager)
             .evaluate('String(globalThis.disconnectCalls || 0)')
             .stringResult,
         '1',
@@ -1311,11 +1327,11 @@ void main() {
           )
           .map((event) => event['payload'] as String)
           .first;
-      manager.js.evaluate('globalThis.performUnregister("office");');
+      _js(manager).evaluate('globalThis.performUnregister("office");');
       expect(await unregistered.timeout(const Duration(seconds: 2)), officeId);
       expect(manager.liveTransportCount, 0);
       expect(
-        manager.js
+        _js(manager)
             .evaluate('String(globalThis.disconnectCounts.office || 0)')
             .stringResult,
         '1',
@@ -1333,14 +1349,13 @@ void main() {
           .where((state) => state == ConnectionState.connecting)
           .first
           .timeout(const Duration(seconds: 2));
-      manager.js.evaluate('globalThis.connectGates.office();');
-      while (manager.js.executePendingJob() > 0) {}
+      _js(manager).evaluate('globalThis.connectGates.office();');
+      while (_js(manager).executePendingJob() > 0) {}
       var officeRejected = false;
       for (var i = 0; i < 100 && !officeRejected; i++) {
-        while (manager.js.executePendingJob() > 0) {}
-        final result = manager.js.evaluate(
-          'String(globalThis.connectOutcomes.office || "")',
-        );
+        while (_js(manager).executePendingJob() > 0) {}
+        final result = _js(manager)
+            .evaluate('String(globalThis.connectOutcomes.office || "")');
         officeRejected = !result.isError && result.stringResult == 'rejected';
         if (!officeRejected) {
           await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -1350,15 +1365,15 @@ void main() {
       expect(manager.liveTransportCount, 0);
       expect(labStates, isNot(contains(ConnectionState.connected)));
       expect(
-        manager.js
+        _js(manager)
             .evaluate('String(globalThis.disconnectCounts.office || 0)')
             .stringResult,
         '1',
       );
       expect(officeStates, isNot(contains(ConnectionState.connected)));
 
-      manager.js.evaluate('globalThis.connectGates.lab();');
-      while (manager.js.executePendingJob() > 0) {}
+      _js(manager).evaluate('globalThis.connectGates.lab();');
+      while (_js(manager).executePendingJob() > 0) {}
       await lab.connectionState
           .where((state) => state == ConnectionState.connected)
           .first
@@ -1533,7 +1548,7 @@ void main() {
         )
         .map((event) => event['payload'] as String)
         .first;
-    manager.js.evaluate('globalThis.performUnregisterOffice();');
+    _js(manager).evaluate('globalThis.performUnregisterOffice();');
     expect(await unregistered.timeout(const Duration(seconds: 2)), officeId);
     await deviceService.devices
         .where(
@@ -1541,13 +1556,12 @@ void main() {
         )
         .first;
 
-    manager.js.evaluate('globalThis.performUnrelatedOpen();');
+    _js(manager).evaluate('globalThis.performUnrelatedOpen();');
     var unrelatedOpened = false;
     for (var i = 0; i < 100 && !unrelatedOpened; i++) {
-      while (manager.js.executePendingJob() > 0) {}
-      final result = manager.js.evaluate(
-        'String(globalThis.unrelatedOpened || false)',
-      );
+      while (_js(manager).executePendingJob() > 0) {}
+      final result = _js(manager)
+          .evaluate('String(globalThis.unrelatedOpened || false)');
       unrelatedOpened = !result.isError && result.stringResult == 'true';
       if (!unrelatedOpened) {
         await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -1556,14 +1570,13 @@ void main() {
     expect(unrelatedOpened, isTrue);
     expect(manager.liveTransportCount, 1);
 
-    manager.js.evaluate('globalThis.connectGates.office();');
-    while (manager.js.executePendingJob() > 0) {}
+    _js(manager).evaluate('globalThis.connectGates.office();');
+    while (_js(manager).executePendingJob() > 0) {}
     var officeRejected = false;
     for (var i = 0; i < 100 && !officeRejected; i++) {
-      while (manager.js.executePendingJob() > 0) {}
-      final result = manager.js.evaluate(
-        'String(globalThis.connectOutcomes.office || "")',
-      );
+      while (_js(manager).executePendingJob() > 0) {}
+      final result = _js(manager)
+          .evaluate('String(globalThis.connectOutcomes.office || "")');
       officeRejected = !result.isError && result.stringResult == 'rejected';
       if (!officeRejected) {
         await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -1573,7 +1586,7 @@ void main() {
     expect(manager.liveTransportCount, 1);
     expect(officeStates, isNot(contains(ConnectionState.connected)));
     expect(
-      manager.js
+      _js(manager)
           .evaluate('String(globalThis.disconnectCounts.office || 0)')
           .stringResult,
       '1',
@@ -1583,13 +1596,13 @@ void main() {
         .where((event) => event['event'] == 'unrelated-roundtrip')
         .map((event) => event['payload'] as String)
         .first;
-    manager.js.evaluate('globalThis.performUnrelatedRoundTrip();');
+    _js(manager).evaluate('globalThis.performUnrelatedRoundTrip();');
     expect(await roundTrip.timeout(const Duration(seconds: 2)), 'still-live');
     expect(manager.liveTransportCount, 1);
 
-    manager.js.evaluate('globalThis.performUnrelatedClose();');
+    _js(manager).evaluate('globalThis.performUnrelatedClose();');
     for (var i = 0; i < 100 && manager.liveTransportCount != 0; i++) {
-      while (manager.js.executePendingJob() > 0) {}
+      while (_js(manager).executePendingJob() > 0) {}
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
     expect(manager.liveTransportCount, 0);
@@ -1693,7 +1706,7 @@ void main() {
     await firstDisconnect;
     expect(manager.liveTransportCount, 0);
     expect(
-      manager.js
+      _js(manager)
           .evaluate('String(globalThis.disconnectCalls || 0)')
           .stringResult,
       '1',
@@ -1702,14 +1715,16 @@ void main() {
     await sensor.onConnect();
     expect(manager.liveTransportCount, 1);
     expect(
-      manager.js.evaluate('String(globalThis.connectCalls || 0)').stringResult,
+      _js(manager)
+          .evaluate('String(globalThis.connectCalls || 0)')
+          .stringResult,
       '2',
     );
 
     await sensor.disconnect();
     expect(manager.liveTransportCount, 0);
     expect(
-      manager.js
+      _js(manager)
           .evaluate('String(globalThis.disconnectCalls || 0)')
           .stringResult,
       '2',
@@ -1828,20 +1843,20 @@ void main() {
           .where((event) => event['event'] == 'unregistered')
           .map((event) => event['payload'] as String)
           .first;
-      manager.js.evaluate('globalThis.performUnregister();');
-      manager.js.evaluate('globalThis.continueConnect();');
-      while (manager.js.executePendingJob() > 0) {}
+      _js(manager).evaluate('globalThis.performUnregister();');
+      _js(manager).evaluate('globalThis.continueConnect();');
+      while (_js(manager).executePendingJob() > 0) {}
 
       expect(await unregistered.timeout(const Duration(seconds: 10)), deviceId);
       expect(manager.liveTransportCount, 0);
       expect(
-        manager.js
+        _js(manager)
             .evaluate('String(globalThis.connectCompleted || 0)')
             .stringResult,
         '1',
       );
       expect(
-        manager.js
+        _js(manager)
             .evaluate('String(globalThis.disconnectCalls || 0)')
             .stringResult,
         '1',
@@ -1929,6 +1944,7 @@ void main() {
         .first
         .timeout(const Duration(seconds: 2));
 
+    final js = _js(manager);
     final disposal = manager.dispose();
     var disconnectStarted = false;
     for (
@@ -1936,7 +1952,7 @@ void main() {
       i < 1000 && manager.lifecycle == PluginManagerLifecycle.disposing;
       i++
     ) {
-      final calls = manager.js.evaluate(
+      final calls = js.evaluate(
         'String(globalThis.disposeDisconnectCalls || 0)',
       );
       if (!calls.isError && calls.stringResult == '1') {
@@ -1947,16 +1963,16 @@ void main() {
     }
     expect(disconnectStarted, isTrue);
     expect(
-      manager.js
+      js
           .evaluate('String(globalThis.disposeDisconnectCalls || 0)')
           .stringResult,
       '1',
     );
 
-    manager.js.evaluate('globalThis.resolveDisposeDisconnect();');
-    while (manager.js.executePendingJob() > 0) {}
+    js.evaluate('globalThis.resolveDisposeDisconnect();');
+    while (js.executePendingJob() > 0) {}
     expect(
-      manager.js
+      js
           .evaluate('String(globalThis.disposeDisconnectCompleted || 0)')
           .stringResult,
       '1',
@@ -2093,13 +2109,13 @@ void main() {
         .where((event) => event['event'] == 'unregistered')
         .map((event) => event['payload'] as String)
         .first;
-    manager.js.evaluate('globalThis.performFirstUnregister();');
-    while (manager.js.executePendingJob() > 0) {}
+    _js(manager).evaluate('globalThis.performFirstUnregister();');
+    while (_js(manager).executePendingJob() > 0) {}
     expect(await unregistered.timeout(const Duration(seconds: 10)), firstId);
     await firstFailure;
-    manager.js.evaluate('globalThis.resolveFirst({});');
-    manager.js.evaluate('globalThis.resolveSecond({});');
-    while (manager.js.executePendingJob() > 0) {}
+    _js(manager).evaluate('globalThis.resolveFirst({});');
+    _js(manager).evaluate('globalThis.resolveSecond({});');
+    while (_js(manager).executePendingJob() > 0) {}
     await secondResult.timeout(const Duration(seconds: 10));
     await sensorController.sensorRegistry
         .where((sensors) => !sensors.containsKey(firstId))

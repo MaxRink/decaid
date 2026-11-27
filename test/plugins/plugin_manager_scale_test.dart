@@ -118,8 +118,10 @@ void main() {
         final rejected = manager.emitStream
             .where((e) => e['event'] == 'stale-send')
             .first;
-        manager.js.evaluate('globalThis.oldScaleSend()');
-        while (manager.js.executePendingJob() > 0) {}
+        manager
+            .jsRealmOf('boundary.scale')
+            .evaluate('globalThis.oldScaleSend()');
+        while (manager.jsRealmOf('boundary.scale').executePendingJob() > 0) {}
         expect(
           (await rejected.timeout(const Duration(seconds: 2)))['payload'],
           true,
@@ -284,8 +286,8 @@ void main() {
       await connecting;
       expect(manager.deviceConnectAttemptCount, 0);
       expect(manager.retiredDeviceConnectCount, 0);
-      manager.js.evaluate('globalThis.resumeScale()');
-      while (manager.js.executePendingJob() > 0) {}
+      manager.jsRealmOf('retiring.scale').evaluate('globalThis.resumeScale()');
+      while (manager.jsRealmOf('retiring.scale').executePendingJob() > 0) {}
       expect(
         (await rejected.timeout(const Duration(seconds: 2)))['payload'],
         true,
@@ -434,22 +436,27 @@ void main() {
       final oldOpen = manager.emitStream
           .where((event) => event['event'] == 'old-open')
           .first;
-      manager.js.evaluate('globalThis.openOldScaleTransport()');
-      while (manager.js.executePendingJob() > 0) {}
+      manager
+          .jsRealmOf('memory.scale')
+          .evaluate('globalThis.openOldScaleTransport()');
+      while (manager.jsRealmOf('memory.scale').executePendingJob() > 0) {}
       expect(
         (await oldOpen.timeout(const Duration(seconds: 2)))['payload'],
         'Plugin device connect retired',
       );
       expect(manager.liveTransportCount, 0);
-      manager.js.evaluate('''
+      manager.jsRealmOf('memory.scale').evaluate('''
       globalThis.previousScaleContext.publish({weight: 99}).catch(error => {
         globalThis.staleScaleError = error.code;
       });
     ''');
-      manager.js.executePendingJob();
+      manager.jsRealmOf('memory.scale').executePendingJob();
       await scale.tare();
       expect(
-        manager.js.evaluate('globalThis.staleScaleError').stringResult,
+        manager
+            .jsRealmOf('memory.scale')
+            .evaluate('globalThis.staleScaleError')
+            .stringResult,
         'stale_session',
       );
       await manager.unloadPlugin('memory.scale');

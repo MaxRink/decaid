@@ -244,6 +244,12 @@ As a safety net the host rewrites each line before writing it:
   are masked;
 - line breaks are written as `\n`, so one call is one log line.
 
+`console.log`, `console.warn` and `console.error` go through the same path at
+FINE level as `[JS:<plugin id>] console.<level>: <arguments>`, redacted and
+rate limited like `host.log`, and only for plugins holding `log`; without it
+console output is dropped. The plugin id is the one the host knows for the
+plugin's realm, whatever the line itself says.
+
 This catches only those shapes; it is not a reason to log credentials.
 
 Each plugin may write 60 lines per minute. Further lines in that minute are
@@ -1858,10 +1864,42 @@ earlier visit can send the user to a port nothing is listening on.
 ## Plugin Lifecycle
 
 1. **Initialization**: Plugin directory is copied to app storage
-2. **Loading**: `createPlugin()` is called, then `onLoad(settings)`
+2. **Loading**: a fresh JavaScript realm is created for the plugin, then
+   `createPlugin()` is called, then `onLoad(settings)`
 3. **Running**: Plugin receives events via `onEvent()` and can emit events
-4. **Unloading**: `onUnload()` is called for cleanup
+4. **Unloading**: `onUnload()` is called for cleanup, then the plugin's realm is
+   disposed with every timer and pending request it still held
 5. **Removal**: Plugin files are deleted from storage
+
+A reload is an unload followed by a load, so it always starts from a fresh
+realm: globals a plugin set in a previous generation are gone. Keep state that
+must survive a reload in `host.storage` or plugin settings.
+
+### Plugin isolation
+
+Decaid gives every loaded plugin its own JavaScript engine instance (QuickJS on
+Android, Linux and Windows, JavaScriptCore on macOS and iOS). Nothing is shared
+between two plugins' realms: not the global object, not the built-ins
+(`Object`, `JSON`, `btoa`, typed arrays, ...), not the host bridge, and not the
+bookkeeping for timers, `fetch`, `host.transport`, `host.devices`,
+`host.decentProxy`, `host.localApi` or `host.discovery`, and not `console`.
+Messages from a realm are attributed by the host to the plugin that owns the
+realm, so a plugin can only act with its own manifest permissions and its own
+[machine control grant](#machine-control-grant), whatever identifiers or tokens
+it puts in a message. Its log and console lines carry that plugin's id.
+
+Inside its realm a plugin sees the same API as before, and its built-ins
+behave as in any JavaScript engine: a plugin may override, subclass or
+polyfill them, which affects only its own realm. The host's own globals
+(`host`, `fetch`, `sendMessage`, every `__`-prefixed host function) and
+`globalThis` are pinned as non-configurable getters before the plugin body
+runs, and the host shims use built-ins captured before plugin code runs, so a
+plugin that breaks its own built-ins breaks only its own requests. The host
+never relies on anything inside a realm to decide which plugin a request comes
+from.
+
+Each realm costs one engine instance per loaded plugin; see
+`doc/AI_PLUGINS_NOTES.md` for measured figures.
 
 ### Load watchdog
 
@@ -2004,7 +2042,7 @@ it in Decaid UI.
 
 ### Available in JavaScript Runtime
 
-- **Global Functions**: `fetch()`, `btoa()`, `setTimeout()`, `clearTimeout()`
+- **Global Functions**: `fetch()`, `btoa()`, `atob()`, `setTimeout()`, `clearTimeout()`
 - **Objects**: `Promise`, `JSON`, `Math`, `Date`, `Array`, `Object`
 - **Constants**: `undefined`, `null`, `Infinity`, `NaN`
 - **Host API**: `host.log()`, `host.emit()`, `host.storage()`, `host.decentProxy()`, `host.localApi()`, `host.transport`, `host.devices`, `host.discovery`
@@ -2056,32 +2094,11 @@ it in Decaid UI.
   authority: the plugin and skin management routes answer 401 to them. Only
   `host.localApi`, with the `manage.extensions` permission, carries that
   authority, and only for the plugin's current loaded generation
-- All loaded plugins share one JavaScript runtime and are not isolated from each
-  other. A plugin's permissions, `manage.extensions` included, should be treated
-  as available to every plugin loaded beside it, so grant `manage.extensions`
-  only on a device whose other plugins you trust as well. As a partial
-  mitigation, before the first plugin is evaluated the host freezes the shared
-  built-ins (`Object`, `Function`, `Array`, `JSON`, `Promise`, `Map`, `Set`,
-  `WeakMap`, `WeakSet`, `String`, `Number`, `Boolean`, `Symbol`, `Reflect`,
-  `Math`, `Date`, `RegExp`, `BigInt`, `Proxy`, `ArrayBuffer`, `DataView`, every
-  typed array and the shared typed-array prototype, `TextEncoder`,
-  `TextDecoder`, `btoa` and `atob`, with their prototypes, plus the `Error` and
-  `TypeError` constructors) and pins the global bindings of those built-ins,
-  of `globalThis` and of the host's own globals (`host`, `fetch`,
-  `sendMessage` and every `__`-prefixed host function), so one
-  plugin cannot hook another plugin's `JSON.stringify`, `btoa`, byte buffers,
-  promise callbacks, fetch responses or bridge calls. A pinned global is a
-  non-configurable getter with no setter rather than a read-only data
-  property, because the QuickJS engine used on Android, Linux and Windows lets
-  `Object.defineProperty` replace the value of a read-only, non-configurable
-  global; JavaScriptCore (macOS and iOS) does not. `console` and the other
-  globals not listed here are not pinned. Loaded plugin objects are kept in a
-  registry that is not reachable from plugin code and is keyed by each
-  plugin's private bridge token, so a plugin cannot read, replace or remove
-  another plugin's `onEvent` or HTTP handler. `atob` is provided when the
-  engine has none. Assigning to a frozen built-in throws in strict code and is
-  ignored otherwise; plugins must not patch or polyfill built-ins.
-  `Error.prototype` stays writable so subclasses can set `this.name`
+- Each loaded plugin runs in its own JavaScript realm: a separate engine
+  instance with its own global object, built-ins, host bridge, timers and
+  pending requests (see [Plugin isolation](#plugin-isolation)). A plugin cannot
+  read, call or replace anything in another plugin's realm, so its manifest
+  permissions are the only permissions it can use
 - `fetch` cannot send a non-`GET`/`HEAD` request to the host's own
   `/api/v1/machine/*` routes unless the user granted the plugin
   [machine control](#machine-control-grant) (it then resolves with 403), and

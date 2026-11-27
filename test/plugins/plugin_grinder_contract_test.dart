@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter_js/flutter_js.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reaprime/src/controllers/connection_manager.dart';
 import 'package:reaprime/src/controllers/de1_controller.dart';
@@ -53,15 +54,14 @@ void main() {
         addTearDown(fixture.dispose);
         final grinder = fixture.grinder;
         await grinder.onConnect();
-        fixture.manager.js.evaluate('''
+        _js(fixture.manager).evaluate('''
         currentGrinderContext.publishInfo({controls: {grindSetting: {kind: 'opaque'}}, surfaces: []});
       ''');
         await _flushJs(fixture.manager);
         expect(grinder.controls['grindSetting']!.kind, 'opaque');
         expect(grinder.surfaces, isEmpty);
-        fixture.manager.js.evaluate(
-          'globalThis.invalidSnapshot = ${jsonEncode(invalid)}',
-        );
+        _js(fixture.manager)
+            .evaluate('globalThis.invalidSnapshot = ${jsonEncode(invalid)}');
         final disconnected = grinder.connectionState.firstWhere(
           (state) => state == ConnectionState.disconnected,
         );
@@ -79,7 +79,7 @@ void main() {
     addTearDown(fixture.dispose);
     final grinder = fixture.grinder;
     await grinder.onConnect();
-    fixture.manager.js.evaluate('''
+    _js(fixture.manager).evaluate('''
       globalThis.invalidSnapshot = {state: 'idle', setting: 'x'.repeat(70 * 1024)};
     ''');
     final disconnected = grinder.connectionState.firstWhere(
@@ -99,7 +99,7 @@ void main() {
       addTearDown(fixture.dispose);
       final grinder = fixture.grinder;
       await grinder.onConnect();
-      fixture.manager.js.evaluate('''
+      _js(fixture.manager).evaluate('''
       currentGrinderContext.publishInfo({controls: {grindSetting: {
         kind: 'enumerated', values: ['filter']
       }}, surfaces: ['settings']});
@@ -113,7 +113,7 @@ void main() {
           .toList();
       expect(acceptedControls['grindSetting']!['values'], ['filter']);
       expect(acceptedSurfaces, hasLength(1));
-      fixture.manager.js.evaluate('globalThis.oversizedInfo = true');
+      _js(fixture.manager).evaluate('globalThis.oversizedInfo = true');
       final rejected = fixture.manager.emitStream.firstWhere(
         (event) => event['event'] == 'metadataRejected',
       );
@@ -160,7 +160,7 @@ void main() {
           );
           addTearDown(fixture.dispose);
           await fixture.grinder.onConnect();
-          fixture.manager.js.evaluate("""
+          _js(fixture.manager).evaluate("""
           globalThis.undeclaredObservationCode = null;
           currentGrinderContext.publish({state: 'idle', observedRpm: 900}).then(
             () => globalThis.undeclaredObservationCode = 'resolved',
@@ -221,7 +221,7 @@ void main() {
           }
 
           Future<String> publish(Object? snapshot) async {
-            fixture.manager.js.evaluate('''
+            _js(fixture.manager).evaluate('''
             globalThis.observationCode = null;
             currentGrinderContext.publish(${jsonEncode(snapshot)}).then(
               () => globalThis.observationCode = 'resolved',
@@ -272,7 +272,7 @@ void main() {
             );
             expect(await get('state'), accepted);
           }
-          fixture.manager.js.evaluate('''
+          _js(fixture.manager).evaluate('''
           globalThis.observationInfoCode = null;
           currentGrinderContext.publishInfo({controls: {grindSetting: {kind: 'opaque'}}}).then(
             () => globalThis.observationInfoCode = 'resolved',
@@ -313,7 +313,7 @@ void main() {
           );
           expect(frames.last, isNot(contains('observedSetting')));
           expect(frames.last, isNot(contains('observedRpm')));
-          fixture.manager.js.evaluate(
+          _js(fixture.manager).evaluate(
             'globalThis.retainedObservationContext = currentGrinderContext',
           );
           await grinder.disconnect();
@@ -324,7 +324,7 @@ void main() {
           await grinder.onConnect();
           await controller.adoptGrinder(grinder);
           Future<void> latePublication() async {
-            fixture.manager.js.evaluate('''
+            _js(fixture.manager).evaluate('''
             globalThis.lateObservationCode = null;
             retainedObservationContext.publish({state: 'idle', observedSetting: 'late', observedRpm: 99}).then(
               () => globalThis.lateObservationCode = 'resolved',
@@ -339,10 +339,21 @@ void main() {
           }
 
           await latePublication();
+          final retiredRealm = _js(fixture.manager);
           final replacement = await fixture.replace();
           await replacement.onConnect();
           await controller.adoptGrinder(replacement);
-          await latePublication();
+          // The retained context lives in the retired realm, which the reload
+          // disposed, so it can no longer publish at all.
+          expect(retiredRealm.isRuntimeActive, isFalse);
+          expect(
+            () => retiredRealm.evaluate(
+              "retainedObservationContext.publish({state: 'idle', observedSetting: 'late', observedRpm: 99})",
+            ),
+            throwsStateError,
+          );
+          expect(await get('state'), isNot(contains('observedSetting')));
+          expect(await get('state'), isNot(contains('observedRpm')));
           expect(controller.connectedGrinder(), same(replacement));
         },
       );
@@ -375,7 +386,7 @@ void main() {
           );
           await controller.setGrindSetting('1.5');
           await controller.setRpm(60);
-          fixture.manager.js.evaluate('''
+          _js(fixture.manager).evaluate('''
           currentGrinderContext.publishInfo({controls: {grindSetting: {
             kind: 'enumerated', values: ['filter']
           }}, surfaces: []});
@@ -386,7 +397,7 @@ void main() {
             'enumerated',
           );
           expect((await info())['surfaces'], isEmpty);
-          fixture.manager.js.evaluate('''
+          _js(fixture.manager).evaluate('''
             currentGrinderContext.publishInfo({controls: {grindSetting: {
               kind: 'enumerated', values: ['x'.repeat(70 * 1024)]
             }}, surfaces: ['settings']}).then(
@@ -396,7 +407,7 @@ void main() {
           ''');
           await _flushJs(fixture.manager);
           expect(
-            fixture.manager.js
+            _js(fixture.manager)
                 .evaluate('globalThis.largeInfoCode')
                 .stringResult,
             'resource_limit',
@@ -417,7 +428,7 @@ void main() {
             ['1.5', 'filter'],
           );
           if (entry.key == 'BLE') {
-            fixture.manager.js.evaluate('globalThis.failPublication = true');
+            _js(fixture.manager).evaluate('globalThis.failPublication = true');
             final rejected = fixture.manager.emitStream.firstWhere(
               (event) => event['event'] == 'metadataRejected',
             );
@@ -440,28 +451,26 @@ void main() {
             expect((await info())['surfaces'], isEmpty);
             await controller.setGrindSetting('filter');
           }
-          fixture.manager.js.evaluate(
-            'globalThis.retainedInfoContext = currentGrinderContext',
-          );
+          _js(
+            fixture.manager,
+          ).evaluate('globalThis.retainedInfoContext = currentGrinderContext');
           final retired = grinder as PluginGrinder;
           final beforeUnload = await info();
           expect(beforeUnload['surfaces'], isEmpty);
+          final retiredRealm = _js(fixture.manager);
           final replacement = await fixture.replace();
           await replacement.onConnect();
           await controller.adoptGrinder(replacement);
-          fixture.manager.js.evaluate('''
-            retainedInfoContext.publishInfo({controls: {grindSetting: {kind: 'opaque'}}, surfaces: []}).then(
-              () => globalThis.retiredInfoCode = 'resolved',
-              error => globalThis.retiredInfoCode = error.code
-            );
-          ''');
-          await _flushJs(fixture.manager);
+          // The retained context lives in the retired realm, which the reload
+          // disposed, so it can no longer publish info at all.
+          expect(retiredRealm.isRuntimeActive, isFalse);
           expect(
-            fixture.manager.js
-                .evaluate('globalThis.retiredInfoCode')
-                .stringResult,
-            'stale_session',
+            () => retiredRealm.evaluate(
+              "retainedInfoContext.publishInfo({controls: {grindSetting: {kind: 'opaque'}}, surfaces: []})",
+            ),
+            throwsStateError,
           );
+          await _flushJs(fixture.manager);
           expect((await info())['controls']['grindSetting']['kind'], 'numeric');
           expect((await info())['surfaces'], hasLength(1));
           expect(retired.controls['grindSetting']!.kind, 'numeric');
@@ -489,14 +498,14 @@ void main() {
           final snapshots = <GrinderSnapshot>[];
           final subscription = grinder.currentSnapshot.listen(snapshots.add);
           addTearDown(subscription.cancel);
-          fixture.manager.js.evaluate(
-            'globalThis.delayInitialPublication = true',
-          );
+          _js(fixture.manager)
+              .evaluate('globalThis.delayInitialPublication = true');
           var connected = false;
           final connection = grinder.onConnect().then((_) => connected = true);
           await Future<void>.delayed(const Duration(milliseconds: 20));
           expect(connected, isFalse);
-          fixture.manager.js.evaluate('globalThis.publishInitialPublication()');
+          _js(fixture.manager)
+              .evaluate('globalThis.publishInitialPublication()');
           await _flushJs(fixture.manager);
           await connection;
           expect(snapshots.single.state, GrinderState.idle);
@@ -522,7 +531,7 @@ void main() {
           expect(snapshots.last.setting, '12.3');
           expect(snapshots.last.rpm, 1200);
 
-          fixture.manager.js.evaluate('''
+          _js(fixture.manager).evaluate('''
           currentGrinderContext.publish({state: 'idle', vendor: true}).then(
             () => globalThis.invalidPublicationCode = 'resolved',
             error => globalThis.invalidPublicationCode = error.code || String(error)
@@ -530,7 +539,7 @@ void main() {
         ''');
           await _flushJs(fixture.manager);
           expect(
-            fixture.manager.js
+            _js(fixture.manager)
                 .evaluate('globalThis.invalidPublicationCode')
                 .stringResult,
             'invalid_argument',
@@ -538,15 +547,15 @@ void main() {
 
           await grinder.disconnect();
           await grinder.onConnect();
-          fixture.manager.js.evaluate('''
+          _js(fixture.manager).evaluate('''
           oldContext.publish({state: 'grinding'}).catch(error => {
             globalThis.staleCode = error.code;
           });
         ''');
-          while (fixture.manager.js.executePendingJob() > 0) {}
+          while (_js(fixture.manager).executePendingJob() > 0) {}
           await grinder.start();
           expect(
-            fixture.manager.js.evaluate('globalThis.staleCode').stringResult,
+            _js(fixture.manager).evaluate('globalThis.staleCode').stringResult,
             'stale_session',
           );
         },
@@ -558,7 +567,7 @@ void main() {
         final grinder = fixture.grinder;
         await grinder.onConnect();
 
-        fixture.manager.js.evaluate('''
+        _js(fixture.manager).evaluate('''
           currentGrinderContext.publish({state: 'idle', rpm: 1200}).then(
             () => globalThis.undeclaredPublicationCode = 'resolved',
             error => globalThis.undeclaredPublicationCode = error.code || String(error)
@@ -566,7 +575,7 @@ void main() {
         ''');
         await _flushJs(fixture.manager);
         expect(
-          fixture.manager.js
+          _js(fixture.manager)
               .evaluate('globalThis.undeclaredPublicationCode')
               .stringResult,
           'invalid_argument',
@@ -1018,10 +1027,14 @@ String _source({
       ''';
 }
 
+/// The realm of the fixture's only plugin (it changes on every replace).
+JavascriptRuntime _js(PluginManager manager) =>
+    manager.jsRealmOf(manager.loadedPlugins.single.pluginId);
+
 Future<void> _flushJs(PluginManager manager) async {
   for (var i = 0; i < 10; i++) {
     await Future<void>.delayed(Duration.zero);
-    while (manager.js.executePendingJob() > 0) {}
+    while (_js(manager).executePendingJob() > 0) {}
   }
 }
 
@@ -1029,9 +1042,9 @@ Future<String> _waitForJsResult(PluginManager manager, String key) async {
   final stopwatch = Stopwatch()..start();
   while (stopwatch.elapsed < const Duration(seconds: 2)) {
     await _flushJs(manager);
-    if (manager.js.evaluate('typeof globalThis.$key').stringResult ==
+    if (_js(manager).evaluate('typeof globalThis.$key').stringResult ==
         'string') {
-      return manager.js.evaluate('globalThis.$key').stringResult;
+      return _js(manager).evaluate('globalThis.$key').stringResult;
     }
     await Future<void>.delayed(const Duration(milliseconds: 1));
   }

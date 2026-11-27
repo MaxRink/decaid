@@ -131,14 +131,47 @@ Future<void> _loadPlugin(
 }
 
 void main() {
+  test('empty disposal is shared, terminal, and creates no runtime', () async {
+    var created = 0;
+    final manager = PluginManager(
+      kvStore: FakeKeyValueStoreService(),
+      createJsRuntime: () {
+        created += 1;
+        return getJavascriptRuntime(xhr: false);
+      },
+    );
+    final streamDone = expectLater(manager.emitStream, emitsDone);
+
+    final first = manager.dispose();
+    final second = manager.dispose();
+
+    expect(identical(first, second), isTrue);
+    expect(manager.lifecycle, PluginManagerLifecycle.disposing);
+    await Future.wait([first, second]);
+    await streamDone;
+    expect(manager.lifecycle, PluginManagerLifecycle.disposed);
+    expect(created, 0);
+    expect(manager.liveRealmCount, 0);
+    await manager.dispose();
+    expect(created, 0);
+  });
+
   test(
-    'empty disposal is shared, terminal, and disposes runtime once',
+    'disposal is shared, terminal, and disposes the realm runtime once',
     () async {
-      final runtime = _CountingRuntime(getJavascriptRuntime(xhr: false));
+      final runtimes = <_CountingRuntime>[];
       final manager = PluginManager(
         kvStore: FakeKeyValueStoreService(),
-        js: runtime,
+        createJsRuntime: () {
+          final runtime = _CountingRuntime(getJavascriptRuntime(xhr: false));
+          runtimes.add(runtime);
+          return runtime;
+        },
       );
+      await _loadPlugin(manager, 'disposal.plugin');
+      expect(runtimes, hasLength(1));
+      final runtime = runtimes.single;
+      expect(identical(manager.jsRealmOf('disposal.plugin'), runtime), isTrue);
       final streamDone = expectLater(manager.emitStream, emitsDone);
 
       final first = manager.dispose();
@@ -150,42 +183,65 @@ void main() {
       await streamDone;
       expect(manager.lifecycle, PluginManagerLifecycle.disposed);
       expect(runtime.disposeCalls, 1);
+      expect(runtime.delegate.isRuntimeActive, isFalse);
       expect(runtime.delegate.channelFunctions, isEmpty);
+      expect(manager.liveRealmCount, 0);
+      expect(() => manager.jsRealmOf('disposal.plugin'), throwsStateError);
       await manager.dispose();
       expect(runtime.disposeCalls, 1);
+      expect(runtimes, hasLength(1));
     },
   );
 
   test('failed runtime disposal still leaves the manager disposed', () async {
-    final runtime = _CountingRuntime(
-      getJavascriptRuntime(xhr: false),
-      throwOnDispose: true,
-    );
+    final runtimes = <_CountingRuntime>[];
     final manager = PluginManager(
       kvStore: FakeKeyValueStoreService(),
-      js: runtime,
+      createJsRuntime: () {
+        final runtime = _CountingRuntime(
+          getJavascriptRuntime(xhr: false),
+          throwOnDispose: true,
+        );
+        runtimes.add(runtime);
+        return runtime;
+      },
     );
+    await _loadPlugin(manager, 'throwing-dispose.plugin');
+    final runtime = runtimes.single;
 
     await expectLater(manager.dispose(), throwsStateError);
 
     expect(manager.lifecycle, PluginManagerLifecycle.disposed);
     expect(runtime.disposeCalls, 1);
+    expect(manager.liveRealmCount, 0);
+    expect(manager.loadedPlugins, isEmpty);
     await expectLater(manager.dispose(), throwsStateError);
     expect(runtime.disposeCalls, 1);
   });
 
-  test('unload deletes registry entry when onUnload throws', () async {
-    final manager = PluginManager(kvStore: FakeKeyValueStoreService());
+  test('unload disposes the plugin realm when onUnload throws', () async {
+    final runtimes = <_CountingRuntime>[];
+    final manager = PluginManager(
+      kvStore: FakeKeyValueStoreService(),
+      createJsRuntime: () {
+        final runtime = _CountingRuntime(getJavascriptRuntime(xhr: false));
+        runtimes.add(runtime);
+        return runtime;
+      },
+    );
     addTearDown(manager.dispose);
     await _loadPlugin(manager, 'throwing.plugin', onUnload: 'throw "boom";');
+    final runtime = runtimes.single;
 
     await manager.unloadPlugin('throwing.plugin');
 
     expect(manager.loadedPlugins, isEmpty);
-    expect(
-      manager.js.evaluate('typeof globalThis.__plugins__').stringResult,
-      'undefined',
-    );
+    expect(() => manager.jsRealmOf('throwing.plugin'), throwsStateError);
+    expect(manager.liveRealmCount, 0);
+    expect(runtime.disposeCalls, 1);
+    expect(runtime.delegate.isRuntimeActive, isFalse);
+    await manager.dispose();
+    expect(runtime.disposeCalls, 1);
   });
 
   test('reload persists storage written during onUnload', () async {
@@ -418,20 +474,40 @@ void main() {
       await _loadPlugin(manager, 'generation.plugin');
       final oldGeneration = manager.pluginGeneration('generation.plugin');
       await manager.unloadPlugin('generation.plugin');
-      await _loadPlugin(manager, 'generation.plugin');
+      await _loadPlugin(
+        manager,
+        'generation.plugin',
+        onLoad: 'globalThis.__bridgeToken = pluginBridgeToken;',
+      );
+      final newGeneration = manager.pluginGeneration('generation.plugin');
+      expect(newGeneration, isNot(oldGeneration));
+      final realm = manager.jsRealmOf('generation.plugin');
 
-      manager.js.evaluate('''
-      sendMessage("host", JSON.stringify({
-        pluginId: "generation.plugin",
-        generation: $oldGeneration,
-        type: "emit",
-        event: "stale",
-        payload: null
-      }));
-    ''');
+      void send(int? generation, String event) {
+        final result = realm.evaluate('''
+          sendMessage("host", JSON.stringify({
+            bridgeToken: globalThis.__bridgeToken,
+            pluginId: "generation.plugin",
+            generation: $generation,
+            type: "emit",
+            event: "$event",
+            payload: null
+          }));
+        ''');
+        expect(result.isError, isFalse, reason: result.stringResult);
+      }
+
+      // The stale message carries the live realm's own bridge token, so only
+      // its old generation can cause it to be dropped.
+      send(oldGeneration, 'stale');
       await Future<void>.delayed(const Duration(milliseconds: 20));
 
       expect(events, isEmpty);
+
+      send(newGeneration, 'fresh');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      expect(events, ['fresh']);
     },
   );
 }

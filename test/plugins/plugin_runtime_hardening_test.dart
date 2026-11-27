@@ -47,11 +47,11 @@ Future<Object?> _run(
   return jsonDecode(payload as String);
 }
 
+// Built-ins a victim uses; another plugin must not reach them.
+const _sharedBuiltIns = ['btoa', 'atob', 'JSON', 'Object'];
+
+// Host globals each realm pins for itself.
 const _pinnedGlobals = [
-  'btoa',
-  'atob',
-  'JSON',
-  'Object',
   'globalThis',
   'host',
   'fetch',
@@ -81,7 +81,7 @@ const _retargetings = {
 };
 
 void main() {
-  group('shared runtime intrinsics', () {
+  group('plugin realm isolation', () {
     late PluginManager manager;
 
     setUp(() => manager = PluginManager(kvStore: FakeKeyValueStoreService()));
@@ -94,6 +94,8 @@ void main() {
           manager,
           id: 'hooker.plugin',
           jsBody: '''
+          // Built-ins are not frozen: the hooker may change its own realm's.
+          const stringify = JSON.stringify.bind(JSON);
           const attempts = {};
           const tryIt = (name, fn) => {
             try { fn(); attempts[name] = "changed"; } catch (e) { attempts[name] = "refused"; }
@@ -110,7 +112,7 @@ void main() {
           tryIt("Map.prototype.get", () => { Map.prototype.get = () => undefined; });
           tryIt("fetch response hook", () => { globalThis.__handleFetchResponse = () => {}; });
           tryIt("fetch request hook", () => { globalThis.__fetchFor = () => {}; });
-          host.emit("result", JSON.stringify(attempts));
+          host.emit("result", stringify(attempts));
         ''',
         );
 
@@ -128,12 +130,19 @@ void main() {
         ''',
         );
         expect(victim, ['{"a":1}', 'function', 'secret']);
-        expect(
-          manager.js
-              .evaluate('String(globalThis.__handleFetchResponse).length > 30')
-              .stringResult,
-          'true',
-        );
+        for (final id in ['hooker.plugin', 'victim.plugin']) {
+          expect(
+            manager
+                .jsRealmOf(id)
+                .evaluate(
+                  'String(globalThis.__handleFetchResponse).length > 30 && '
+                  'String(globalThis.__fetchFor).length > 30',
+                )
+                .stringResult,
+            'true',
+            reason: id,
+          );
+        }
       },
     );
 
@@ -181,41 +190,36 @@ void main() {
         'view': 0,
       });
       expect(
-        manager.js.evaluate('JSON.stringify(globalThis.__stolen)').stringResult,
+        manager
+            .jsRealmOf('sniffer.plugin')
+            .evaluate('JSON.stringify(globalThis.__stolen)')
+            .stringResult,
         '[]',
       );
     });
 
     for (final MapEntry(key: form, value: retarget) in _retargetings.entries) {
       test(
-        '$form cannot retarget a pinned global another plugin uses',
+        '$form cannot retarget a pinned global or reach another plugin',
         () async {
-          manager.js.evaluate('globalThis.__lockPluginHostBridge();');
-          manager.js.evaluate('''
-          (function () {
-            const target = globalThis;
-            const stringify = JSON.stringify.bind(JSON);
-            const names = ${jsonEncode(_pinnedGlobals)};
-            const originals = names.map((name) => target[name]);
-            target.pinCheck = () =>
-              stringify(names.filter((name, i) => target[name] !== originals[i]));
-          })();
-        ''');
-
-          await _run(
+          final retargeted = await _run(
             manager,
             id: 'retargeter.plugin',
             jsBody:
                 '''
             const target = globalThis;
             const define = Object.defineProperty;
+            const stringify = JSON.stringify.bind(JSON);
+            const pinned = ${jsonEncode(_pinnedGlobals)};
+            const originals = pinned.map((name) => target[name]);
             const stolen = [];
-            target.stolenByRetargeter = stolen;
-            for (const name of ${jsonEncode(_pinnedGlobals)}) {
+            target.stolenByRetargeter = () => stringify(stolen);
+            for (const name of [...pinned, ...${jsonEncode(_sharedBuiltIns)}]) {
               const hook = function () { stolen.push(name); return "__HOOKED__"; };
               try { $retarget } catch (e) {}
             }
-            host.emit("result", "true");
+            host.emit("result", stringify(
+              pinned.filter((name, i) => target[name] !== originals[i])));
           ''',
           );
           final victim = await _run(
@@ -227,10 +231,11 @@ void main() {
           ''',
           );
 
-          expect(manager.js.evaluate('pinCheck()').stringResult, '[]');
+          expect(retargeted, isEmpty);
           expect(
-            manager.js
-                .evaluate('JSON.stringify(stolenByRetargeter)')
+            manager
+                .jsRealmOf('retargeter.plugin')
+                .evaluate('stolenByRetargeter()')
                 .stringResult,
             '[]',
           );
@@ -244,8 +249,12 @@ void main() {
     }
 
     test('the engine timer ids keep counting after the lock', () async {
-      manager.js.evaluate('globalThis.__lockPluginHostBridge();');
-      final ids = manager.js.evaluate('''
+      await _run(
+        manager,
+        id: 'timer.plugin',
+        jsBody: 'host.emit("result", JSON.stringify(true));',
+      );
+      final ids = manager.jsRealmOf('timer.plugin').evaluate('''
         (function () {
           const ids = [
             setTimeout(function () {}, 60000),
@@ -294,10 +303,18 @@ void main() {
         );
         expect((probe as Map)['registry'], 'undefined');
         expect(probe['names'], isEmpty);
+        expect(probe['registered'], isFalse);
+        expect(
+          manager
+              .jsRealmOf('prober.plugin')
+              .evaluate('typeof globalThis.__victimEvents')
+              .stringResult,
+          'undefined',
+        );
       },
     );
 
-    test('ordinary plugin code still runs on frozen built-ins', () async {
+    test('ordinary plugin code runs on unfrozen built-ins', () async {
       final result = await _run(
         manager,
         id: 'ordinary.plugin',
@@ -305,11 +322,16 @@ void main() {
           class AppError extends Error {
             constructor(message) { super(message); this.name = "AppError"; }
           }
+          class Stack extends Array {}
+          const stack = Stack.from([1]);
+          const tagged = { toString() { return "plain"; } };
+          tagged.toString = () => "own";
           const values = [3, 1, 2].sort().map((n) => n * 2);
           const map = new Map([["k", 1]]);
           const err = new AppError("boom");
           Promise.resolve(values).then((v) => report({
-            v, k: map.get("k"), name: err.name, json: JSON.parse("[1]")
+            v, k: map.get("k"), name: err.name, json: JSON.parse("[1]"),
+            stack: stack instanceof Stack, tagged: String(tagged)
           }));
         ''',
       );
@@ -318,11 +340,13 @@ void main() {
         'k': 1,
         'name': 'AppError',
         'json': [1],
+        'stack': true,
+        'tagged': 'own',
       });
     });
   });
 
-  test('every bundled plugin still loads on the frozen runtime', () async {
+  test('every bundled plugin loads, each in its own realm', () async {
     final manager = PluginManager(kvStore: FakeKeyValueStoreService());
     addTearDown(manager.dispose);
     final extra = Platform.environment['DECAID_EXTRA_PLUGIN_DIRS'];
@@ -350,6 +374,7 @@ void main() {
         reason: bundle.path,
       );
     }
+    expect(manager.liveRealmCount, bundles.length);
   });
 
   group('host API machine control from plugins', () {
@@ -469,6 +494,39 @@ void main() {
       );
       expect((again as Map)['status'], 403);
       expect(hits, ['PUT /api/v1/machine/state/espresso']);
+    });
+
+    test('a grant is attributed to the realm, not to a claimed id', () async {
+      granted.add('granted.plugin');
+      await _run(
+        manager,
+        id: 'granted.plugin',
+        permissions: {PluginPermissions.api},
+        jsBody: 'report(true);',
+      );
+      final forged = await _run(
+        manager,
+        id: 'forger.plugin',
+        permissions: {PluginPermissions.api},
+        jsBody:
+            '''
+          const url = "http://127.0.0.1:${api.port}/api/v1/machine/state/espresso";
+          sendMessage("fetch", JSON.stringify({ id: 1000, bridgeToken: pluginBridgeToken,
+            pluginId: "granted.plugin", generation: pluginGeneration, url,
+            method: "PUT", headers: {} }));
+          fetch(url, { method: "PUT" })
+            .then((r) => r.json().then((body) => report({ status: r.status, body })), fail);
+        ''',
+      );
+      expect(forged, {
+        'status': 403,
+        'body': {
+          'error': contains('forger.plugin is not allowed'),
+          'code': 'machine_control_not_granted',
+        },
+      });
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(hits, isEmpty);
     });
 
     test('firmware stays refused even with the grant', () async {

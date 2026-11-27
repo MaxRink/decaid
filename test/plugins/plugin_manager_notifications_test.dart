@@ -180,7 +180,10 @@ void main() {
       final result = events.single['payload'] as Map;
       expect(
         result['requestId'],
-        manager.js.evaluate('globalThis.noticeRequest').stringResult,
+        manager
+            .jsRealmOf('first')
+            .evaluate('globalThis.noticeRequest')
+            .stringResult,
       );
       expect(result['id'], 'condition');
       expect(result['status'], 'accepted');

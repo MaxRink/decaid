@@ -400,15 +400,24 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
           'globalThis.__reaprimePluginBridge.localApi(pluginId, pluginGeneration + 1, pluginBridgeToken, "/api/v1/plugins/$target/disable", "POST", null, null)',
         );
 
-        expect(outcome.resolved, isFalse);
+        expect(outcome.resolved, isFalse, reason: '$outcome');
+        expect(outcome.errorMessage, 'Plugin generation changed');
         expect(harness.bridged, isEmpty);
+        expect(
+          harness.manager
+              .jsRealmOf(attacker)
+              .evaluate('__debugPendingCounts().decentProxy')
+              .stringResult,
+          '0',
+        );
         await expectNoSideEffect();
       });
 
       test('it cannot claim the identity of a plugin that holds the grant', () async {
         final state = await harness.settledState(
           steward,
-          'globalThis.__probes[${jsonEncode(attacker)}].run(${jsonEncode('globalThis.__reaprimePluginBridge.localApi(${jsonEncode(steward)}, pluginGeneration, pluginBridgeToken, "/api/v1/webui/server/stop", "POST", null, null)')})',
+          'globalThis.__reaprimePluginBridge.localApi(${jsonEncode(steward)}, pluginGeneration, pluginBridgeToken, "/api/v1/webui/server/stop", "POST", null, null)',
+          actorId: attacker,
         );
 
         expect(state, isNot(startsWith('resolved')), reason: state);
@@ -635,11 +644,21 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
             expect(echo.jsonBody['hasGrant'], isTrue);
             expect(echo.jsonBody['mayManage'], isTrue);
 
+            harness.bridged.clear();
             final forged = await harness.probe(
               steward,
               'globalThis.__reaprimePluginBridge.localApi(pluginId, pluginGeneration + 1, pluginBridgeToken, "/api/v1/plugins/$dormant/disable", "POST", null, null)',
             );
             expect(forged.resolved, isFalse, reason: '$forged');
+            expect(forged.errorMessage, 'Plugin generation changed');
+            expect(harness.bridged, isEmpty);
+            expect(
+              harness.manager
+                  .jsRealmOf(steward)
+                  .evaluate('__debugPendingCounts().decentProxy')
+                  .stringResult,
+              '0',
+            );
             expect(harness.loader.isPluginLoaded(dormant), isTrue);
           });
 
@@ -857,7 +876,6 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
             steward,
             '/api/v1/plugins/$steward/update/approve',
             options: {'method': 'POST'},
-            reportVia: observer,
           );
           await harness.settleBridgedHandlers();
           final approval = await harness.bridgedResponses.single;

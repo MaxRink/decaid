@@ -664,9 +664,7 @@ function createPlugin(host) {
   return {
     id: "$id",
     onLoad(settings) {
-      globalThis.__modeLoads = (globalThis.__modeLoads || 0) + 1;
-      host.storage({type: "write", key: "mode",
-        data: globalThis.__modeLoads + ":" + settings.Mode});
+      host.storage({type: "write", key: "mode", data: settings.Mode});
     }
   };
 }
@@ -676,15 +674,17 @@ function createPlugin(host) {
 
         await service.savePluginSettings(id, {'Mode': 'off'});
         await service.loadPlugin(id);
-        expect(await waitForStorage(id, 'mode', '1:off'), '1:off');
+        expect(await waitForStorage(id, 'mode', 'off'), 'off');
+        final loadedGeneration = service.pluginManager.pluginGeneration(id)!;
 
         await service.savePluginSettings(id, {'Mode': 'auto'});
 
         expect(service.isPluginLoaded(id), isTrue);
+        expect(await waitForStorage(id, 'mode', 'auto'), 'auto');
         expect(
-          await waitForStorage(id, 'mode', '2:auto'),
-          '2:auto',
-          reason: 'save must reload the loaded plugin exactly once ',
+          service.pluginManager.pluginGeneration(id),
+          loadedGeneration + 2,
+          reason: 'save must reload the loaded plugin exactly once',
         );
       },
     );

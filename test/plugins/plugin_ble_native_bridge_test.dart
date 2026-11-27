@@ -57,8 +57,8 @@ void main() {
       final replaced = manager.emitStream.firstWhere(
         (e) => e['event'] == 'replaced',
       );
-      manager.js.evaluate('replaceSubscription();');
-      while (manager.js.executePendingJob() > 0) {}
+      manager.jsRealmOf('ble.sensor').evaluate('replaceSubscription();');
+      while (manager.jsRealmOf('ble.sensor').executePendingJob() > 0) {}
       await replaced.timeout(const Duration(seconds: 2));
       expect(platform.notificationProperties, [
         BleInputProperty.notification,
@@ -91,7 +91,7 @@ void main() {
         final result = manager.emitStream.firstWhere(
           (e) => e['event'] == 'read',
         );
-        manager.js.evaluate('checkRead();');
+        manager.jsRealmOf('ble.sensor').evaluate('checkRead();');
         expect(
           (await result.timeout(const Duration(seconds: 2)))['payload'],
           expected,
@@ -104,7 +104,7 @@ void main() {
       final written = manager.emitStream.firstWhere(
         (e) => e['event'] == 'write',
       );
-      manager.js.evaluate('checkWrite();');
+      manager.jsRealmOf('ble.sensor').evaluate('checkWrite();');
       expect(
         (await written.timeout(const Duration(seconds: 2)))['payload'],
         'characteristicDoesNotSupportWrite',

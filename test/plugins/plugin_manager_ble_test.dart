@@ -375,7 +375,7 @@ void main() {
     await sensor.onConnect();
     expect(transports, hasLength(2));
     expect(transports.first.disposeCalls, 1);
-    manager.js.evaluate('''
+    manager.jsRealmOf('ble.sensor').evaluate('''
       oldContext.gatt.read('180f', '2a19').then(
         () => { throw Error('stale read succeeded'); },
         e => currentContext.publish({humidity: 51}).then(() => {
@@ -383,10 +383,13 @@ void main() {
         })
       );
     ''');
-    while (manager.js.executePendingJob() > 0) {}
+    while (manager.jsRealmOf('ble.sensor').executePendingJob() > 0) {}
     await Future<void>.delayed(const Duration(milliseconds: 50));
     expect(
-      manager.js.evaluate('globalThis.staleCode').stringResult,
+      manager
+          .jsRealmOf('ble.sensor')
+          .evaluate('globalThis.staleCode')
+          .stringResult,
       'stale_session',
     );
     final states = <ConnectionState>[];
