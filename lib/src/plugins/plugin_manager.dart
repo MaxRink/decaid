@@ -135,6 +135,7 @@ class PluginManager {
 
   final Map<String, PluginRuntime> _plugins = {};
   final Map<String, PluginLogLimiter> _pluginLogLimiters = {};
+  final Map<String, PluginLogLimiter> _pluginErrorLimiters = {};
   final Map<String, List<String>> _pluginLogSecrets = {};
   final Map<String, _PluginRealm> _realms = {};
   final JavascriptRuntime Function() _createJsRuntime;
@@ -474,12 +475,14 @@ class PluginManager {
     String channel,
   ) {
     if (!identical(_realms[realm.pluginId], realm)) {
-      _log.warning('Rejected $channel message from a retired plugin realm');
+      _log.warning(
+        'Rejected $channel message from a retired realm of ${realm.pluginId}',
+      );
       return null;
     }
     if (msg['bridgeToken'] != realm.bridgeToken) {
       _log.warning(
-        'Rejected $channel message with invalid plugin bridge token',
+        'Rejected $channel message with invalid bridge token from ${realm.pluginId}',
       );
       _rejectInRealm(realm, channel, msg, 'Invalid plugin bridge caller');
       return null;
@@ -941,13 +944,19 @@ class PluginManager {
           };
         }
 
+        // Host error reports return to Dart instead of going through the
+        // plugin's console, which is the plugin's own (log-gated) output.
+        const __errorText = (e) => {
+          try { return __NativeString(e); } catch (_) { return "unprintable error"; }
+        };
         __pinGlobal("__dispatchToPlugin", function (evt) {
           const plugin = __plugin;
-          if (!plugin || typeof plugin.onEvent !== "function") return;
+          if (!plugin || typeof plugin.onEvent !== "function") return "";
           try {
             plugin.onEvent(evt);
+            return "";
           } catch (e) {
-            console.error("Plugin error", e);
+            return __errorText(e);
           }
         });
 
@@ -1060,11 +1069,12 @@ class PluginManager {
         });
         __pinGlobal("__dispatchTransportEvent", function (pluginId, handle, event) {
           const record = __mapGet(__transportListeners, handle);
-          if (!record || record.pluginId !== pluginId || !record.listener) return;
+          if (!record || record.pluginId !== pluginId || !record.listener) return "";
           try {
             record.listener(event);
+            return "";
           } catch (e) {
-            console.error("Transport listener error", pluginId, e);
+            return __errorText(e);
           }
         });
         __pinGlobal("__rejectTransportPendingForToken", function (bridgeToken, error) {
@@ -2435,9 +2445,13 @@ class PluginManager {
     if (_plugins[pluginId]?.isAlive != true) return;
     if (_pluginGenerations[pluginId] != generation) return;
     try {
-      _realmOf(pluginId, generation)?.evaluate(
-        'globalThis.__dispatchTransportEvent('
-        '${jsonEncode(pluginId)}, ${jsonEncode(handle)}, ${jsonEncode(event)});',
+      _logPluginError(
+        pluginId,
+        'transport listener',
+        _realmOf(pluginId, generation)?.evaluate(
+          'globalThis.__dispatchTransportEvent('
+          '${jsonEncode(pluginId)}, ${jsonEncode(handle)}, ${jsonEncode(event)});',
+        ),
       );
       if (event['type'] == 'close') {
         _removeTransportListener(pluginId, handle);
@@ -2910,9 +2924,11 @@ class PluginManager {
     String pluginId,
     String message, {
     Level level = Level.INFO,
+    Map<String, PluginLogLimiter>? limiters,
   }) {
-    final admission = (_pluginLogLimiters[pluginId] ??= PluginLogLimiter())
-        .admit();
+    final admission =
+        ((limiters ?? _pluginLogLimiters)[pluginId] ??= PluginLogLimiter())
+            .admit();
     _logSuppressedPluginLines(pluginId, admission.suppressed);
     if (!admission.write) return;
     _log.log(
@@ -2929,6 +2945,10 @@ class PluginManager {
 
   Future<void> _unloadPlugin(String id) async {
     _logSuppressedPluginLines(id, _pluginLogLimiters.remove(id)?.drain() ?? 0);
+    _logSuppressedPluginLines(
+      id,
+      _pluginErrorLimiters.remove(id)?.drain() ?? 0,
+    );
     _pluginLogSecrets.remove(id);
     notifications.retireSource(NotificationNamespace.plugin, id);
     _loggedPermissionDenials.removeWhere((denial) => denial.startsWith('$id:'));
@@ -3108,13 +3128,32 @@ class PluginManager {
         );'''
         : '';
 
-    realm.evaluate('''
-    globalThis.__dispatchToPlugin({
-      name: ${jsonEncode(name)},
-      payload: ${jsonEncode(payload)}
-    });
-    $httpDispatch
+    final result = realm.evaluate('''
+    (function () {
+      const error = globalThis.__dispatchToPlugin({
+        name: ${jsonEncode(name)},
+        payload: ${jsonEncode(payload)}
+      });
+      $httpDispatch
+      return error;
+    })();
   ''');
+    _logPluginError(pluginId, 'onEvent($name)', result);
+  }
+
+  /// Host-side report of a plugin failure. Written whatever the plugin's
+  /// `log` permission, with its own rate limit so plugin output cannot
+  /// crowd it out.
+  void _logPluginError(String pluginId, String where, JsEvalResult? result) {
+    if (result == null) return;
+    final text = result.stringResult;
+    if (!result.isError && (text.isEmpty || text == 'undefined')) return;
+    _writePluginLog(
+      pluginId,
+      'Plugin error in $where: $text',
+      level: Level.WARNING,
+      limiters: _pluginErrorLimiters,
+    );
   }
 
   Future<void> _handleMessage(String pluginId, Map<String, dynamic> msg) async {
