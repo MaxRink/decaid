@@ -75,7 +75,10 @@ preserve when changing this:
   `_bootstrapRealm` replaces that channel handler with one bound to the realm, so console
   lines are written through `_writePluginLog` (redaction, rate limit, `log` permission) as
   `[JS:<realm's plugin id>] console.<level>: ...` at FINE. Nothing in the line or the
-  message can change the id. Tests that wrap a runtime (`_CountingRuntime`) keep the
+  message can change the id. Host error reports must not use `console` (it is the
+  plugin's own, log-gated output): `__dispatchToPlugin` and `__dispatchTransportEvent`
+  return the caught exception text to Dart, which writes it via `_logPluginError` at
+  WARNING whatever the plugin's permissions, with its own limiter. Tests that wrap a runtime (`_CountingRuntime`) keep the
   default `print` handler, because `channelFunctions` is the wrapper's own map.
 - **Ids are per realm, so key host maps by generation and check identity.** Timer ids and
   fetch ids restart at 1 in every realm, and a retired generation's work can still finish
