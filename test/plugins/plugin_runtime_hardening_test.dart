@@ -47,50 +47,38 @@ Future<Object?> _run(
   return jsonDecode(payload as String);
 }
 
-/// True when this engine accepts a data-descriptor `defineProperty` on a
-/// non-writable, non-configurable property.
-///
-/// That is what makes the freeze pass unenforceable on the engine behind Linux
-/// builds: a plugin can retarget a pinned intrinsic anyway. Measured in #30;
-/// the property that would fix it is #36.
-Future<bool> _engineIgnoresDescriptorPinning(PluginManager manager) async {
-  manager.js.evaluate('globalThis.__lockPluginHostBridge();');
-  final verdict = manager.js.evaluate('''
-    (function () {
-      const d = Object.getOwnPropertyDescriptor(globalThis, "btoa");
-      if (!d || d.configurable || d.writable) return "not-pinned";
-      const original = globalThis.btoa;
-      try {
-        Object.defineProperty(globalThis, "btoa", {
-          value: function () { return "probe"; }
-        });
-      } catch (e) {
-        return "refused";
-      }
-      const changed = globalThis.btoa !== original;
-      try { Object.defineProperty(globalThis, "btoa", { value: original }); } catch (e) {}
-      return changed ? "ignored" : "not-changed";
-    })();
-  ''').stringResult;
-  return verdict == 'ignored';
-}
+const _pinnedGlobals = [
+  'btoa',
+  'atob',
+  'JSON',
+  'Object',
+  'globalThis',
+  'host',
+  'fetch',
+  'sendMessage',
+  '__reaprimePluginHostBridge',
+  '__reaprimePluginBridge',
+  '__registerPlugin',
+  '__unregisterPlugin',
+  '__dispatchToPlugin',
+  '__dispatchPluginHttp',
+  '__handleFetchResponse',
+  '__fetchFor',
+  '__handleTransportReply',
+  '__dispatchTransportEvent',
+  '__handleDeviceReply',
+  '__dispatchDeviceInvocation',
+  '__lockPluginHostBridge',
+];
 
-/// Reshapes `btoa`/`atob` into the non-configurable, still-writable data
-/// properties some engines expose natively, so the freeze pass is exercised
-/// against that shape on every host instead of only where the engine ships it.
-Future<void> _forceNonConfigurableBase64Helpers(PluginManager manager) async {
-  manager.js.evaluate('''
-    (function () {
-      for (const name of ["btoa", "atob"]) {
-        const real = globalThis[name];
-        delete globalThis[name];
-        Object.defineProperty(globalThis, name, {
-          value: real, writable: true, configurable: false, enumerable: false
-        });
-      }
-    })();
-  ''');
-}
+const _retargetings = {
+  'assignment': 'target[name] = hook;',
+  '{value}': 'define(target, name, { value: hook });',
+  '{value, writable: false}':
+      'define(target, name, { value: hook, writable: false });',
+  '{value, writable: true, configurable: true}': 'define(target, name, { value: hook, writable: true, configurable: true });',
+  '{get}': 'define(target, name, { get: () => hook });',
+};
 
 void main() {
   group('shared runtime intrinsics', () {
@@ -150,24 +138,6 @@ void main() {
     );
 
     test('base64 helpers and binary built-ins cannot be hooked', () async {
-      // #30: the engine behind Linux builds accepts a data-descriptor
-      // defineProperty on a non-writable, non-configurable property, so no
-      // freeze pass can pin an intrinsic there and this assertion cannot hold.
-      // Skip only when the engine actually behaves that way; everywhere else
-      // this test keeps enforcing. The property that would make it enforceable
-      // is per-plugin context isolation (#36).
-      if (await _engineIgnoresDescriptorPinning(manager)) {
-        markTestSkipped(
-          '#30: this engine accepts Object.defineProperty(globalThis, name, '
-          '{ value }) on a non-writable, non-configurable property, so a plugin '
-          'can still retarget a pinned intrinsic. Measured on ubuntu-latest: '
-          'identity changed and btoa("user:pass") returned "__HOOKED__", while '
-          'macOS refuses with "Attempting to change value of a readonly '
-          'property". Not a pass: the invariant needs per-plugin context '
-          'isolation (#36).',
-        );
-        return;
-      }
       await _run(
         manager,
         id: 'sniffer.plugin',
@@ -216,125 +186,80 @@ void main() {
       );
     });
 
-    // The suite above only covers whichever shape the host engine ships. Some
-    // engines (notably the Linux QuickJS build) expose `btoa`/`atob` as
-    // non-configurable *writable* data properties instead of the configurable
-    // ones the polyfill at the top of the runtime installs. The freeze pass used
-    // to skip every non-configurable property, which left those helpers
-    // writable and let one plugin replace `btoa` to read another plugin's
-    // arguments. Force that shape so this branch is covered on every host.
-    test('base64 helpers stay unrewritable when the engine defines them '
-        'non-configurably', () async {
-      await _forceNonConfigurableBase64Helpers(manager);
+    for (final MapEntry(key: form, value: retarget) in _retargetings.entries) {
+      test(
+        '$form cannot retarget a pinned global another plugin uses',
+        () async {
+          manager.js.evaluate('globalThis.__lockPluginHostBridge();');
+          manager.js.evaluate('''
+          (function () {
+            const target = globalThis;
+            const stringify = JSON.stringify.bind(JSON);
+            const names = ${jsonEncode(_pinnedGlobals)};
+            const originals = names.map((name) => target[name]);
+            target.pinCheck = () =>
+              stringify(names.filter((name, i) => target[name] !== originals[i]));
+          })();
+        ''');
 
-      // Same call loadPlugin makes before any plugin body runs.
+          await _run(
+            manager,
+            id: 'retargeter.plugin',
+            jsBody:
+                '''
+            const target = globalThis;
+            const define = Object.defineProperty;
+            const stolen = [];
+            target.stolenByRetargeter = stolen;
+            for (const name of ${jsonEncode(_pinnedGlobals)}) {
+              const hook = function () { stolen.push(name); return "__HOOKED__"; };
+              try { $retarget } catch (e) {}
+            }
+            host.emit("result", "true");
+          ''',
+          );
+          final victim = await _run(
+            manager,
+            id: 'victim.plugin',
+            jsBody: '''
+            const auth = btoa("user:pass");
+            report({ auth, decoded: atob(auth), keys: Object.keys({ a: 1, b: 2 }) });
+          ''',
+          );
+
+          expect(manager.js.evaluate('pinCheck()').stringResult, '[]');
+          expect(
+            manager.js
+                .evaluate('JSON.stringify(stolenByRetargeter)')
+                .stringResult,
+            '[]',
+          );
+          expect(victim, {
+            'auth': 'dXNlcjpwYXNz',
+            'decoded': 'user:pass',
+            'keys': ['a', 'b'],
+          });
+        },
+      );
+    }
+
+    test('the engine timer ids keep counting after the lock', () async {
       manager.js.evaluate('globalThis.__lockPluginHostBridge();');
-
-      // End to end first: this is the consequence that matters, so it is the
-      // assertion a reverted fix trips. A plugin that tries the hook must not
-      // observe anything the next plugin hands to the helper.
-      await _run(
-        manager,
-        id: 'sniffer.plugin',
-        jsBody: '''
-          globalThis.__stolen = [];
-          const steal = (value) => { globalThis.__stolen.push(String(value)); };
-          const attempt = (fn) => { try { fn(); } catch (e) {} };
-          const realBtoa = globalThis.btoa;
-          attempt(() => { globalThis.btoa = (v) => { steal(v); return realBtoa(v); }; });
-          attempt(() => {
-            Object.defineProperty(globalThis, "btoa", {
-              value: (v) => { steal(v); return realBtoa(v); }, writable: true, configurable: true
-            });
-          });
-          attempt(() => { globalThis.atob = (v) => { steal(v); return ""; }; });
-          host.emit("result", JSON.stringify(true));
-        ''',
-      );
-
-      final victim = await _run(
-        manager,
-        id: 'credentials.plugin',
-        jsBody: '''
-          const auth = btoa("user:pass");
-          report({ auth, decoded: atob(auth) });
-        ''',
-      );
-      expect(
-        manager.js.evaluate('JSON.stringify(globalThis.__stolen)').stringResult,
-        '[]',
-      );
-      expect(victim, {'auth': 'dXNlcjpwYXNz', 'decoded': 'user:pass'});
-
-      // Then the mechanism, so a failure above can be read against the state
-      // that allowed it.
-      final afterSetup = manager.js.evaluate('''
+      final ids = manager.js.evaluate('''
         (function () {
-          const btoaBefore = globalThis.btoa;
-          const atobBefore = globalThis.atob;
-          try { globalThis.btoa = function () { return "hooked"; }; } catch (_) {}
-          try { globalThis.atob = function () { return "hooked"; }; } catch (_) {}
-          try {
-            Object.defineProperty(globalThis, "btoa", {
-              value: function () { return "redefined"; }, writable: true, configurable: true
-            });
-          } catch (_) {}
-          const btoaAfter = Object.getOwnPropertyDescriptor(globalThis, "btoa");
-          return JSON.stringify({
-            btoaKept: globalThis.btoa === btoaBefore,
-            atobKept: globalThis.atob === atobBefore,
-            btoaWritable: btoaAfter.writable,
-            encoded: btoaBefore("user:pass"),
-          });
-        })();
-      ''').stringResult;
-      expect(jsonDecode(afterSetup), {
-        'btoaKept': true,
-        'atobKept': true,
-        'btoaWritable': false,
-        'encoded': 'dXNlcjpwYXNz',
-      });
-    });
-
-    // Covers whichever shape this host's engine actually ships. This is the
-    // assertion that fails on the Linux engine, and the reason it fails carries
-    // the descriptors so the shape is visible from CI output.
-    test('base64 helpers stay unrewritable on the host engine', () async {
-      String describe(String name) => manager.js.evaluate('''
-        (function () {
-          const d = Object.getOwnPropertyDescriptor(globalThis, "$name");
-          return JSON.stringify({
-            typeofValue: typeof globalThis["$name"],
-            own: Object.prototype.hasOwnProperty.call(globalThis, "$name"),
-            descriptor: d ? Object.keys(d).sort() : null,
-            writable: d ? d.writable : null,
-            configurable: d ? d.configurable : null,
-            enumerable: d ? d.enumerable : null,
-            hasValue: d ? ("value" in d) : null,
-            extensible: Object.isExtensible(globalThis),
-          });
+          const ids = [
+            setTimeout(function () {}, 60000),
+            setTimeout(function () {}, 60000),
+            setInterval(function () {}, 60000)
+          ];
+          clearTimeout(ids[0]);
+          clearTimeout(ids[1]);
+          clearInterval(ids[2]);
+          return JSON.stringify(ids);
         })();
       ''').stringResult;
 
-      final before = describe('btoa');
-      manager.js.evaluate('globalThis.__lockPluginHostBridge();');
-      final after = describe('btoa');
-
-      final applied = manager.js.evaluate('''
-        (function () {
-          const original = globalThis.btoa;
-          try { globalThis.btoa = function () { return "hooked"; }; } catch (_) {}
-          return JSON.stringify({
-            replaced: globalThis.btoa !== original,
-            value: String(globalThis.btoa("user:pass")),
-          });
-        })();
-      ''').stringResult;
-
-      expect(jsonDecode(applied), {
-        'replaced': false,
-        'value': 'dXNlcjpwYXNz',
-      }, reason: 'btoa before lock: $before | after lock: $after');
+      expect((jsonDecode(ids) as List).toSet(), hasLength(3));
     });
 
     test(
