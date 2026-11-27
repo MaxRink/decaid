@@ -105,7 +105,13 @@ jobs:
         run: sdkmanager --install "build-tools;35.0.0"
 
       # Never tag a release Android will refuse to install over the previous one.
+      # References are this repository's own releases; see pr-checks.yml for why
+      # only a fork may skip the "no releases yet" case.
       - name: Committed versionCode must exceed the last published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REPO: ${{ github.repository }}
+          VERSION_CODE_GUARD_ALLOW_SKIP: ${{ github.repository != 'decentespresso/decaid' && '1' || '0' }}
         run: ./scripts/check_version_code_bump.sh
 
       - name: Decode Android keystore

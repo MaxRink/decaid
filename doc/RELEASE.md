@@ -192,9 +192,10 @@ installed, and Android compares against the device, not against a release channe
 `version-code-guard` job of `pr-checks.yml`, which runs on **every** PR (the
 workflow is deliberately not filtered by base branch), and a pre-build step of
 `release.yml`, which runs before the keystore is decoded and the APK is built. It
-reads the versionCode of the newest published release APKs of
-`decentespresso/decaid` with `aapt2 dump badging` and fails with both numbers when
-the committed counter is not greater.
+reads the versionCode of the newest published release APKs of `RELEASE_REPO`
+with `aapt2 dump badging` and fails with both numbers when the committed counter
+is not greater. `RELEASE_REPO` defaults to `decentespresso/decaid`; both workflows
+set it to `${{ github.repository }}`, so a fork compares against its own releases.
 
 It fails closed. If `gh`, `aapt2`, the token or the network is missing, or a
 release carries no `decaid-android-<version>.apk`, the step fails instead of
@@ -207,6 +208,20 @@ before tagging:
 ```bash
 ./scripts/check_version_code_bump.sh
 ```
+
+On a fork (any repository other than `decentespresso/decaid`) both workflows also
+set `VERSION_CODE_GUARD_ALLOW_SKIP=1`, because a fork that has not published a
+release yet has no APK anyone could have installed from it. That covers only the
+"no releases at all" case; once the fork publishes a release the guard applies in
+full. Running the script by hand on a fork without that variable exits 2 with a
+message naming `RELEASE_REPO` and the opt-in.
+
+**One-way door.** Switching from the git-count versionCode to this counter is
+irreversible on any device that installs a build from it. Once a `3600` build is
+installed, a build from a branch that predates this change (git-count versionCode,
+around 3236) fails with `INSTALL_FAILED_VERSION_DOWNGRADE` unless the app is
+uninstalled first, which deletes its data. Base new work on a branch that already
+contains `android/version.properties`.
 
 (The offline unit test for the guard is
 `./scripts/test_check_version_code_bump.sh`; CI runs both. Its stub `gh`/`aapt2`

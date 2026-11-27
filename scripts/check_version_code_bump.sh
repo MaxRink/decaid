@@ -259,7 +259,7 @@ else
         echo "versionCode guard: SKIPPED on request: $RELEASE_REPO publishes no releases, so there is nothing a user could have installed. committed=$COMMITTED" >&2
         exit 0
       fi
-      die_unavailable "refusing to guess: $RELEASE_REPO publishes no releases, so the guard cannot tell whether committed=$COMMITTED would be a downgrade -- nothing was verified. If this repository has genuinely never published an APK, re-run with --allow-skip or VERSION_CODE_GUARD_ALLOW_SKIP=1."
+      die_unavailable "refusing to guess: $RELEASE_REPO publishes no releases, so the guard cannot tell whether committed=$COMMITTED would be a downgrade -- nothing was verified. If this repository has genuinely never published an APK (for example a fork before its first release), re-run with --allow-skip or VERSION_CODE_GUARD_ALLOW_SKIP=1. On a fork, also check that RELEASE_REPO names the fork (currently $RELEASE_REPO)."
       ;;
     *)
       die_unavailable "refusing to guess: the published versionCode of $RELEASE_REPO could not be read (see the error above), so committed=$COMMITTED was not verified. Fix the cause, or pass --published-version-code <n> to state the reference explicitly. --allow-skip does not cover this case."
