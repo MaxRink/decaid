@@ -39,6 +39,9 @@ class TestGrinder implements GrinderDevice {
 
   void connect() => _connection.add(ConnectionState.connected);
 
+  /// The transport dropping on its own, as a plugin reports a lost socket.
+  void drop() => _connection.add(ConnectionState.disconnected);
+
   void emit(
     GrinderState state, {
     String? setting,

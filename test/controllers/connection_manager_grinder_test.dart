@@ -388,6 +388,26 @@ void main() {
     },
   );
 
+  test('a preferred grinder whose connection drops is reconnected, a user disconnect is not', () async {
+    grinderGate.complete();
+    manager.grinderReconnectDelays = const [
+      Duration(milliseconds: 10),
+      Duration(milliseconds: 20),
+    ];
+    scanner.addDevice(grinder);
+    await pumpEventQueue();
+    expect((await manager.connectGrinder(grinder)).success, isTrue);
+    expect(grinder.onConnectCalls, 1);
+
+    grinder.drop();
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    expect(grinder.onConnectCalls, 2, reason: 'the dropped grinder came back');
+
+    await manager.disconnectGrinder();
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    expect(grinder.onConnectCalls, 2, reason: 'a requested disconnect stays');
+  });
+
   test(
     'cancelled selection does not retain a preferred grinder attempt',
     () async {
