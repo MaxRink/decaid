@@ -90,6 +90,7 @@ void main() {
     final plugin = await sighted;
     expect(plugin.implementation, DeviceImplementation.plugin);
 
+    expect(fixture.discovery.claimScaleWatchHandover(plugin), isNotNull);
     await fixture.discovery.stopDeviceWatch();
     await plugin.onConnect();
 
@@ -113,6 +114,7 @@ void main() {
       fixture.advertise();
       final plugin = await sighted;
 
+      expect(fixture.discovery.claimScaleWatchHandover(plugin), isNotNull);
       await fixture.discovery.stopDeviceWatch();
       await fixture.manager.unloadPlugin('ble.sensor');
 

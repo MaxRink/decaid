@@ -552,9 +552,9 @@ For browser clients on a different origin, `ETag` is exposed via `Access-Control
 | POST | `/api/v1/machine/shotSettings` | Update shot settings (steam temp, hot water, target volume, group temp) | |
 | GET | `/api/v1/machine/settings/advanced` | Advanced heater/phase settings | |
 | POST | `/api/v1/machine/settings/advanced` | Update advanced settings (heater phase flows/timeouts, idle temp, `heaterVoltage`, `refillKitSetting`). `refillKitSetting` is an override (`0` force off, `1` force on, `2` auto) retained locally per machine across app restarts and reapplied after reconnect; without a saved override, the firmware's auto handoff is the only refill-kit write on connect. The bounded map keeps 32 machines and evicts the oldest-updated entry. Each connection captures its raw handshake serial, falling back to device ID; account-resolved effective serials are excluded. Raw identity changes across connections do not migrate buckets, while account-only effective identity changes within a connection leave the bucket fixed. If neither is available, defaults are used with no retained entry. It is not detection: `GET /api/v1/machine/info` -> `extra.refillKit` reports what the machine detected | |
-| DELETE | `/api/v1/machine/settings/reset` | Reset the connected machine's settings to defaults (fan, heater idle/phase flows + ph2 timeout, refill kit auto, steam purge 0) and clear its retained fan/refill overrides — flow calibration is left untouched and its saved per-machine override is preserved; no calibration packet is sent and no unit multiplier is written; an acknowledgement is not evidence of factory restoration | |
-| GET | `/api/v1/machine/calibration` | Flow estimation calibration (`flowMultiplier`, calFlowEst MMR) | |
-| POST | `/api/v1/machine/calibration` | Update flow estimation calibration and persist the requested multiplier per machine for the next connection. The key is the raw serial, falling back to device ID; reset preserves the connected machine's override. | |
+| DELETE | `/api/v1/machine/settings/reset` | Reset the connected machine's settings to defaults (fan, heater idle/phase flows + ph2 timeout, refill kit auto, steam purge 0) and clear its retained fan/refill overrides — flow calibration is left untouched; no calibration packet is sent and no unit multiplier is written. A legacy per-machine saved multiplier is never replayed, so reset does not preserve a calibration override for a later connection; an acknowledgement is not evidence of factory restoration | |
+| GET | `/api/v1/machine/calibration` | Flow estimation calibration (`flowMultiplier`, calFlowEst MMR) read live from the machine on every request. A read failure returns 500 with an `error` and no `flowMultiplier`; the response is never a fabricated 1.0 | |
+| POST | `/api/v1/machine/calibration` | Write the flow estimation calibration multiplier to the machine (calFlowEst MMR) and update the session value. The write is explicit and session-only: nothing is persisted per machine and nothing is replayed on reconnect, app restart, or settings reset. The machine stays authoritative on every connection, and firmware retention of the value across a DE1 power cycle is unverified | |
 | GET | `/api/v1/machine/calibration/{target}` | Read DE1 sensor calibration for `flow`/`pressure`/`temperature`, `?source=current\|factory`. Read responses carry the calibration value in `measuredValue` (`de1ReportedValue` is 1.0 for flow/pressure, 0.0 for temperature) | |
 | PUT | `/api/v1/machine/calibration/{target}` | Write DE1 sensor calibration for `flow`/`pressure`/`temperature`. Writes are corrections, not sets: flow/pressure multiply the stored value by `measuredValue/de1ReportedValue`, temperature adds `measuredValue−de1ReportedValue`. To set an absolute value, read current `C` first, then write `{de1ReportedValue: C, measuredValue: X}` | |
 | POST | `/api/v1/machine/profile` | Upload profile to machine | |
@@ -722,9 +722,15 @@ SQL comparisons against a NULL rating never match. A `minEnjoyment` that is not
 a finite number, or falls outside inclusive `0..10`, is rejected with 400.
 The legacy `ids` parameter is mutually exclusive with every filter above:
 combining them is rejected with 400 rather than silently dropping either side.
+`beanId` resolves through the bean's live batches, so shots that recorded a
+batch of a bean deleted with `DELETE /api/v1/beans/:id` no longer match that
+filter; they stay in history and remain reachable through `beanBatchId`,
+`GET /api/v1/shots/:id`, and their recorded metadata.
 
 Newly recorded shots snapshot `serialNumber`, `model`, `firmwareVersion`, and
-`flowCalibration` under `workflow.machine`. Historical records may omit these
+`flowCalibration` under `workflow.machine`; `flowCalibration` is the multiplier
+read from (or explicitly written to) the machine in that session and is omitted
+when the machine did not report one. Historical records may omit these
 fields. Consumers must not infer missing capture-time identity from the machine
 that happens to be connected when a record is read.
 
@@ -733,14 +739,22 @@ that happens to be connected when a record is read.
 when the shot enters local storage; the extraction `timestamp` is the fallback
 for legacy records that predate the field. Both fields are system-managed: a
 `PUT /api/v1/shots/:id` body containing either is rejected with 400, so
-clients cannot spoof revision metadata. `updatedAt` advances only when shot
-*content* changes: `PUT /api/v1/shots/:id` bumps it iff the merged record
-differs outside the bookkeeping keys. The bookkeeping keys are
+clients cannot spoof revision metadata. The extraction `timestamp` itself is
+recorded data, not an annotation, and is not editable either: a `PUT` body with
+a top-level `timestamp` key is rejected with 400 even when the value is `null`
+or equals the stored one, because a rewrite would reorder every time-sorted
+list and detach the shot from its measurements' clock. A `timestamp` key nested
+inside `annotations.extras` is ordinary annotation data. `updatedAt` advances
+only when shot *content* changes: `PUT /api/v1/shots/:id` bumps it iff the
+merged record differs outside the bookkeeping keys. The bookkeeping keys are
 `uploaded_to_decent`, `decent_upload_rejected`, and `visualizerId` inside
 `annotations.extras` (the reserved scratch space for plugin sync state).
 Writes confined to those keys persist without touching `updatedAt`, so
 consumers can reconcile edits by comparing `updatedAt` against their own sync
-marker without feedback loops.
+marker without feedback loops. Rejection of a non-editable field is atomic for
+the whole request: a body mixing one with valid annotation edits changes no
+annotation, leaves the stored record and `updatedAt` untouched, and emits no
+`shotUpdated` event.
 
 **Clearing the note.** `annotations.espressoNotes: null` (and `annotations: null`,
 which clears every post-shot annotation) persists the cleared note as an empty
@@ -859,6 +873,12 @@ fields preserve stored values, explicit `null` clears nullable fields, and
 supplied values replace them. Explicit `null` for non-nullable fields returns
 `400`.
 
+`POST /api/v1/beans` requires `roaster` and `name`. Each must be a JSON string
+that is non-empty after trimming; a missing, `null`, non-string, empty or
+whitespace-only value returns `400` with
+`{"error":"Invalid request","message":"<field> is required"}` and creates no
+bean. Accepted values are stored as supplied, without trimming.
+
 | Method | Path | Description | Handler |
 |--------|------|-------------|---------|
 | GET | `/api/v1/beans` | List all beans | `beans_handler.dart` |
@@ -872,6 +892,13 @@ supplied values replace them. Explicit `null` for non-nullable fields returns
 | GET | `/api/v1/bean-batches/:id` | Get batch | |
 | PUT | `/api/v1/bean-batches/:id` | Update batch | |
 | DELETE | `/api/v1/bean-batches/:id` | Delete batch | |
+
+`DELETE /api/v1/beans/:id` deletes the bean and every batch it owns, archived
+batches included, in one transaction, so a failing statement rolls the whole
+deletion back. Foreign-key enforcement stays enabled and no schema migration is
+involved. Historical shots are preserved: their recorded `beanBatchId`,
+workflow, annotations, measurements, and timestamps are neither deleted nor
+rewritten, which keeps history serving a batch that no longer exists.
 
 ### Grinders
 
@@ -1266,7 +1293,7 @@ The **proxy** lets clients *use* the account without ever seeing the credentials
 
 | Method | Path | Description | Handler |
 |--------|------|-------------|---------|
-| GET | `/api/v1/info` | Build metadata (version, commit, branch) + gateway LAN IP (`localIp`) | `info_handler.dart` |
+| GET | `/api/v1/info` | Build metadata (version, commit, branch) + gateway LAN IP (`localIp`); responses also carry the additive `x-decaid-listener-id` diagnostic header while this listener is bound | `info_handler.dart` |
 | GET | `/api/v1/diagnostics/ble` | Read-only BLE adapter, scan/watch ownership, reconnect policy, cache, and advertisement diagnostics | `ble_diagnostics_handler.dart` |
 | GET | `/api/v1/update` | App-update state snapshot (`phase`, `latestVersion`, `releaseNotes`, `releaseUrl`, `installable`). Pure read — no network call; force a re-check via `/ws/v1/update`. | `update_handler.dart` |
 | POST | `/api/v1/feedback` | Submit feedback with an authenticated Decent account (creates GitHub issue; optional Support-link status) | `feedback_handler.dart` |
@@ -1496,7 +1523,9 @@ so a late joiner gets a coherent view from any single frame; `decision` is non-n
   `targetVolume` (app-side targets), `profileSkip` (app-issued weight skip), `profileAdvance`
   (firmware-natural step exit), `apiStop` / `appStop` (stop command attributed to a REST client /
   the in-app Stop button), `machineEnded` (GHC stop or natural profile completion —
-  indistinguishable), `noScale` (blocked by `blockOnNoScale`), `error` / `disconnected` (abnormal
+  indistinguishable), `noScale` (blocked by `blockOnNoScale`), `tareUnconfirmed` (with `blockOnNoScale`, the scale
+  had not confirmed a zero reading when flow started, so the shot was aborted before liquid reached the cup and
+  not saved), `error` / `disconnected` (abnormal
   endings, `event: "terminal"`), `stoppingBackstop` (post-stop settling window closed by the safety
   timer; never the stop reason itself).
 - Coverage: the feed reflects app-side sequencing only. In full gateway mode with the app

@@ -754,7 +754,8 @@ components:
               enum: [advance, stop, abort, terminal, finalize]
               description: >
                 advance = profile moved to the next step; stop = pour ended;
-                abort = shot blocked before it ran; terminal = abnormal end
+                abort = shot blocked or cancelled before extraction (no scale, or no
+                confirmed scale zero by the time flow started); terminal = abnormal end
                 (error/disconnect); finalize = post-stop settling window
                 closed (not why the shot stopped).
             reason:
@@ -762,8 +763,8 @@ components:
               description: >
                 OPEN SET — tolerate unknown values from newer builds. Known:
                 targetWeight, targetVolume, apiStop, appStop, machineEnded,
-                profileAdvance, profileSkip, noScale, error, disconnected,
-                stoppingBackstop.
+                profileAdvance, profileSkip, noScale, tareUnconfirmed, error,
+                disconnected, stoppingBackstop.
             details:
               type: string
               nullable: true
