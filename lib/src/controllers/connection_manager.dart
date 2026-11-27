@@ -474,6 +474,19 @@ class ConnectionManager {
   StreamSubscription<List<Device>>? _grinderReturnSub;
   bool _preferredGrinderPresent = false;
   bool _preferredGrinderLeft = false;
+  StreamSubscription<ConnectionState>? _grinderStateSub;
+  ConnectionState? _lastGrinderState;
+  Timer? _grinderReconnectTimer;
+  int _grinderReconnectAttempt = 0;
+  bool _grinderDisconnectRequested = false;
+
+  @visibleForTesting
+  List<Duration> grinderReconnectDelays = const [
+    Duration(seconds: 5),
+    Duration(seconds: 15),
+    Duration(minutes: 1),
+    Duration(minutes: 5),
+  ];
   AttachReconnectCoordinator? _attachReconnectCoordinator;
 
   bool _usbAttachLatched = false;
@@ -635,6 +648,7 @@ class ConnectionManager {
     );
     _listenForAdapter();
     _listenForReturningGrinder();
+    _listenForDroppedGrinder();
     final attachNotifier = deviceScanner is DeviceAttachNotifier
         ? deviceScanner as DeviceAttachNotifier
         : null;
@@ -950,6 +964,53 @@ class ConnectionManager {
       _preferredGrinderLeft = false;
       _log.info('Preferred grinder ${grinder.deviceId} returned; reconnecting');
       unawaited(_connectPreferredGrinder([grinder]));
+    });
+  }
+
+  void _listenForDroppedGrinder() {
+    _grinderStateSub = grinderController.connectionState.listen((state) {
+      final previous = _lastGrinderState;
+      _lastGrinderState = state;
+      if (state == ConnectionState.connected) {
+        _grinderReconnectAttempt = 0;
+        _grinderReconnectTimer?.cancel();
+        _grinderDisconnectRequested = false;
+        return;
+      }
+      if (state != ConnectionState.disconnected ||
+          previous != ConnectionState.connected) {
+        return;
+      }
+      if (_grinderDisconnectRequested) {
+        _grinderDisconnectRequested = false;
+        return;
+      }
+      _scheduleGrinderReconnect();
+    });
+  }
+
+  void _scheduleGrinderReconnect() {
+    if (_shuttingDown || settingsController.preferredGrinderDeviceId == null) {
+      return;
+    }
+    final delays = grinderReconnectDelays;
+    final delay =
+        delays[_grinderReconnectAttempt.clamp(0, delays.length - 1).toInt()];
+    _grinderReconnectAttempt++;
+    _grinderReconnectTimer?.cancel();
+    _grinderReconnectTimer = Timer(delay, () async {
+      if (_shuttingDown || grinderController.isOccupied) return;
+      final preferredId = settingsController.preferredGrinderDeviceId;
+      final grinder = deviceScanner.devices
+          .whereType<GrinderDevice>()
+          .firstWhereOrNull((device) => device.deviceId == preferredId);
+      if (grinder == null) return;
+      _log.info(
+        'Preferred grinder $preferredId dropped; reconnecting '
+        '(attempt $_grinderReconnectAttempt)',
+      );
+      final result = await connectGrinder(grinder);
+      if (!result.success) _scheduleGrinderReconnect();
     });
   }
 
@@ -2918,9 +2979,13 @@ class ConnectionManager {
     }
   }
 
-  Future<void> disconnectGrinder([GrinderDevice? grinder]) => grinder == null
-      ? grinderController.disconnect()
-      : grinderController.disconnectDevice(grinder);
+  Future<void> disconnectGrinder([GrinderDevice? grinder]) {
+    _grinderDisconnectRequested = true;
+    _grinderReconnectTimer?.cancel();
+    return grinder == null
+        ? grinderController.disconnect()
+        : grinderController.disconnectDevice(grinder);
+  }
 
   Future<void> shutdown() {
     final existing = _shutdownFuture;
@@ -2980,6 +3045,8 @@ class ConnectionManager {
     try {
       await _adapterSub?.cancel();
       await _grinderReturnSub?.cancel();
+      _grinderReconnectTimer?.cancel();
+      await _grinderStateSub?.cancel();
     } catch (error, stackTrace) {
       _log.warning('Adapter subscription shutdown failed', error, stackTrace);
     }
