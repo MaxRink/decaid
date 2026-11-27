@@ -146,6 +146,12 @@ class _RecordingSocket implements Socket {
 
   final Socket _inner;
   final List<String> calls = [];
+
+  @override
+  InternetAddress get remoteAddress => _inner.remoteAddress;
+
+  @override
+  int get remotePort => _inner.remotePort;
   final List<Completer<void>> flushGates = [];
 
   Future<void> releaseFlush() async {

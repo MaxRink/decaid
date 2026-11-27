@@ -253,8 +253,18 @@ function createPlugin() {
       expect(service.getPluginManifest(id)?.version, '1.1.0');
       expect(service.isPluginLoaded(id), await service.shouldAutoLoad(id));
     });
+
     group('machine control grant', () {
       const id = 'skale.reaplugin';
+
+      Future<void> installCode(String version, String code) async {
+        final dir = Directory('${tempDir.path}/code_${id}_$version')
+          ..createSync(recursive: true);
+        File('${dir.path}/manifest.json')
+            .writeAsStringSync(jsonEncode(manifestJson(id, version: version)));
+        File('${dir.path}/plugin.js').writeAsStringSync(code);
+        await service.addPlugin(dir.path);
+      }
 
       test('a grant persists and can be revoked', () async {
         await install(id);
@@ -279,23 +289,25 @@ function createPlugin() {
         );
         expect(service.machineControlGranted(id), isTrue);
 
-        await service.updatePluginSource(
-          id,
-          manifestJson: manifestJson(id, version: '1.0.2'),
-          pluginJs: '// changed\n${pluginJs(id)}',
-        );
+        await update(id, '1.0.2');
         expect(service.machineControlGranted(id), isFalse);
       });
 
-      test('an installed update keeps the grant', () async {
-        await install(id);
-        await service.setMachineControlGrant(id, true);
+      test(
+        'a package install keeps the grant only for unchanged code',
+        () async {
+          await install(id);
+          await service.setMachineControlGrant(id, true);
 
-        await install(id, version: '1.1.0');
+          await install(id, version: '1.1.0');
+          expect(service.getPluginManifest(id)?.version, '1.1.0');
+          expect(service.machineControlGranted(id), isTrue);
 
-        expect(service.getPluginManifest(id)?.version, '1.1.0');
-        expect(service.machineControlGranted(id), isTrue);
-      });
+          await installCode('1.2.0', '// new code\n${pluginJs(id)}');
+          expect(service.getPluginManifest(id)?.version, '1.2.0');
+          expect(service.machineControlGranted(id), isFalse);
+        },
+      );
 
       test('removing the plugin clears the grant', () async {
         await install(id);

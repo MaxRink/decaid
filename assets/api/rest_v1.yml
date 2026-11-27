@@ -3792,10 +3792,13 @@ paths:
         `{"error": ..., "code": "machine_control_not_granted"}`, and the host
         posts a notice asking the user to allow it. With it, those writes reach
         the API. Firmware routes and the raw machine socket stay refused for
-        every plugin (`machine_control_forbidden`). The grant is stored per
-        plugin id, cleared when the plugin is removed or a source write changes
-        its plugin.js, and kept across installed updates. The current value is
-        the `machineControl` field of GET /api/v1/plugins.
+        every plugin (`machine_control_forbidden`). The grant is checked for
+        the plugin whose realm sent the request. It is stored per plugin id
+        and cleared when the plugin is removed or its plugin.js changes (source
+        write, install or update). Plugins cannot call this route: a plugin
+        `fetch` to it on the host answers 403 `machine_control_forbidden`
+        and `host.localApi` refuses it. The current value is the
+        `machineControl` field of GET /api/v1/plugins.
         When protection is ON, this operation needs `Authorization: Bearer
         <token>` scoped `extensions:manage` (see the extensionsManage
         security scheme). When protection is OFF (the default), it needs no

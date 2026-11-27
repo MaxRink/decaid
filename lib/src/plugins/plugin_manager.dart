@@ -36,6 +36,8 @@ import '../services/webserver/extension_management_auth.dart';
 
 enum _PendingOpKind { fetch, pluginHttp, decentProxy, localApi, discovery }
 
+/// Notice id the host uses to ask the user for a plugin's machine-control
+/// grant.
 const machineControlNoticeId = 'host.machine-control';
 
 bool _noMachineControl(String _) => false;
@@ -158,7 +160,13 @@ class PluginManager {
   final Duration fetchTimeout;
   final int maxFetchResponseBytes;
   final Duration pluginHttpTimeout;
+
+  /// Port of the host's own REST API, the target of the machine-control
+  /// checks on plugin `fetch` and `host.transport`.
   final int hostApiPort;
+
+  /// Whether the user allowed [pluginId] to write machine routes through
+  /// `fetch`. Asked with the id of the realm the request came from.
   bool Function(String pluginId) machineControlGranted = _noMachineControl;
   final Duration decentProxyTimeout;
   final Duration localApiTimeout;
@@ -246,8 +254,12 @@ class PluginManager {
     _transportService = PluginTransportService(
       eventSink: _dispatchTransportEvent,
       connectWebSocket: connectWebSocket,
-      connectSocket: connectSocket,
-      connectSecureSocket: connectSecureSocket,
+      connectSocket: (host, port) async => _refuseHostApiSocket(
+        await (connectSocket ?? Socket.connect)(host, port),
+      ),
+      connectSecureSocket: (host, port) async => _refuseHostApiSocket(
+        await (connectSecureSocket ?? SecureSocket.connect)(host, port),
+      ),
       closeTimeout: transportCloseTimeout,
     );
     bleService = PluginBleService(
@@ -2313,14 +2325,14 @@ class PluginManager {
             );
             return;
           }
-          if (await _isHostMachineTransport(payload)) {
+          if (kind == 'websocket' &&
+              await _isRawMachineSocketUrl(payload['url'])) {
             _replyTransport(
               pluginId,
               requestId,
               bridgeToken,
-              error:
-                  'Plugins cannot open machine control connections to the '
-                  'host API',
+              error: 'Plugins cannot open the raw machine socket on the host',
+              code: 'machine_control_forbidden',
             );
             return;
           }
@@ -3418,28 +3430,55 @@ class PluginManager {
     return counts;
   }
 
-  Map<String, dynamic>? _machineControlRefusal(String pluginId, Uri uri) {
-    final Map<String, String> error;
-    if (_decodedPath(uri).startsWith('/api/v1/machine/firmware')) {
-      error = {
+  static final _machineControlGrantPath = RegExp(
+    r'^/api/v1/plugins/[^/]+/machine-control/?$',
+  );
+
+  /// The error a plugin `fetch` gets instead of reaching a machine-control
+  /// route on the host API, or null when the request may go out.
+  Future<Map<String, String>?> _hostApiFetchRefusal(
+    String pluginId,
+    String method,
+    Uri uri,
+    HttpConnectionInfo? peer,
+  ) async {
+    final path = _routePath(uri);
+    final write = method != 'GET' && method != 'HEAD';
+    final rawSocket = path.startsWith('/ws/v1/machine/raw');
+    final grantRoute = write && _machineControlGrantPath.hasMatch(path);
+    final machineWrite =
+        write &&
+        (path == '/api/v1/machine' || path.startsWith('/api/v1/machine/'));
+    if (!rawSocket && !grantRoute && !machineWrite) return null;
+    if (peer != null &&
+        !await _isHostApiPeer(peer.remoteAddress, peer.remotePort)) {
+      return null;
+    }
+    if (rawSocket) {
+      return {
+        'error': 'Plugins cannot open the raw machine socket on the host',
+        'code': 'machine_control_forbidden',
+      };
+    }
+    if (grantRoute) {
+      return {
+        'error': 'Plugins cannot change machine-control grants',
+        'code': 'machine_control_forbidden',
+      };
+    }
+    if (path.startsWith('/api/v1/machine/firmware')) {
+      return {
         'error': 'Plugins cannot update machine firmware',
         'code': 'machine_control_forbidden',
       };
-    } else if (machineControlGranted(pluginId)) {
-      return null;
-    } else {
-      _askForMachineControl(pluginId);
-      error = {
-        'error':
-            'Plugin $pluginId is not allowed to control the machine; the user '
-            'can allow it in Settings > Plugins',
-        'code': 'machine_control_not_granted',
-      };
     }
+    if (machineControlGranted(pluginId)) return null;
+    _askForMachineControl(pluginId);
     return {
-      'status': 403,
-      'headers': {'content-type': 'application/json'},
-      'body': jsonEncode(error),
+      'error':
+          'Plugin $pluginId is not allowed to control the machine; the user '
+          'can allow it in Settings > Plugins',
+      'code': 'machine_control_not_granted',
     };
   }
 
@@ -3476,65 +3515,72 @@ class PluginManager {
     );
   }
 
-  bool _isMachineControlWrite(String method, Uri uri) {
-    if (method == 'GET' || method == 'HEAD') return false;
-    final path = _decodedPath(uri);
-    return path == '/api/v1/machine' || path.startsWith('/api/v1/machine/');
-  }
-
-  String _decodedPath(Uri uri) {
-    final path = uri.normalizePath().path;
-    try {
-      return Uri.decodeFull(path).toLowerCase();
-    } on ArgumentError {
-      return path.toLowerCase();
-    }
-  }
-
-  Future<bool> _isHostMachineTransport(Map payload) async {
-    switch (payload['kind']) {
-      case 'websocket':
-        final url = Uri.tryParse('${payload['url']}');
-        return url != null &&
-            _decodedPath(url).startsWith('/ws/v1/machine/raw') &&
-            await _isHostApi(url.host, url.port);
-      case 'tcp' || 'tls':
-        final host = payload['host'];
-        final port = payload['port'];
-        return host is String && port is int && await _isHostApi(host, port);
-    }
-    return false;
-  }
-
-  Future<bool> _isHostApi(String host, int port) async {
-    if (port != hostApiPort) return false;
-    final literal = InternetAddress.tryParse(host);
-    final List<InternetAddress> targets;
-    try {
-      targets = literal != null
-          ? [literal]
-          : await InternetAddress.lookup(host);
-    } catch (_) {
+  Future<bool> _isRawMachineSocketUrl(Object? url) async {
+    final uri = url is String ? Uri.tryParse(url) : null;
+    if (uri == null ||
+        uri.scheme.toLowerCase() != 'ws' ||
+        uri.port != hostApiPort ||
+        !_routePath(uri).startsWith('/ws/v1/machine/raw')) {
       return false;
     }
-    var local = const <String>{};
+    // A WebSocket gives no peer to check before its upgrade is sent, and a
+    // host name may resolve elsewhere when checked than when connecting, so
+    // only another device's numeric address is let through.
+    final literal = InternetAddress.tryParse(uri.host);
+    return literal == null || await _isHostApiPeer(literal, uri.port);
+  }
+
+  Future<T> _refuseHostApiSocket<T extends Socket>(T socket) async {
+    if (await _isHostApiPeer(socket.remoteAddress, socket.remotePort)) {
+      socket.destroy();
+      throw const PluginTransportException(
+        'Plugins cannot open raw connections to the host API',
+        code: 'machine_control_forbidden',
+      );
+    }
+    return socket;
+  }
+
+  /// Lower-cased, percent-decoded path with dot segments and repeated
+  /// slashes removed, so spelling variants of a route compare equal.
+  static String _routePath(Uri uri) {
+    var path = uri.path;
     try {
-      local = {
-        for (final interface in await NetworkInterface.list(
-          includeLoopback: true,
-          includeLinkLocal: true,
-        ))
-          for (final address in interface.addresses) address.address,
-      };
+      path = Uri.decodeFull(path);
+    } on ArgumentError {
+      // Keep the raw path; the server will not route it either.
+    }
+    path = path.replaceAll(RegExp('/+'), '/');
+    return Uri(path: path).normalizePath().path.toLowerCase();
+  }
+
+  /// Whether [address]:[port] is this device's own API: the API port on
+  /// loopback, the unspecified address or one of this device's interfaces.
+  Future<bool> _isHostApiPeer(InternetAddress address, int port) async {
+    if (port != hostApiPort) return false;
+    var raw = address.rawAddress;
+    if (raw.length == 16 &&
+        raw.take(10).every((byte) => byte == 0) &&
+        raw[10] == 0xff &&
+        raw[11] == 0xff) {
+      raw = raw.sublist(12);
+      address = InternetAddress.fromRawAddress(raw);
+    }
+    if (address.isLoopback || raw.every((byte) => byte == 0)) return true;
+    try {
+      final interfaces = await NetworkInterface.list(
+        includeLoopback: true,
+        includeLinkLocal: true,
+      );
+      return interfaces.any(
+        (interface) => interface.addresses.any(
+          (own) => own.rawAddress.join('.') == raw.join('.'),
+        ),
+      );
     } catch (error) {
       _log.fine('Could not list network interfaces: $error');
+      return true;
     }
-    return targets.any(
-      (target) =>
-          target.isLoopback ||
-          target.rawAddress.every((byte) => byte == 0) ||
-          local.contains(target.address),
-    );
   }
 
   HttpClient _getHttpClient() {
@@ -4197,11 +4243,6 @@ class PluginManager {
         'responseType must be "base64" or omitted',
       ),
     };
-    if (_isMachineControlWrite(method, uri) &&
-        await _isHostApi(uri.host, uri.port)) {
-      final refusal = _machineControlRefusal(op.pluginId, uri);
-      if (refusal != null) return {'id': int.parse(op.requestId), ...refusal};
-    }
     final pin = parseTlsPinSha256(msg[tlsPinOption]);
     requireTlsScheme(pin, uri.scheme == 'https', 'an https:// url');
     final check = pin == null ? null : TlsPinCheck(pin);
@@ -4229,6 +4270,24 @@ class PluginManager {
   ) async {
     final request = await client.openUrl(method, uri);
     op.request = request;
+    // Checked against the peer this request is connected to, before any
+    // header is sent, so no host name can resolve one way here and another
+    // way for the connection.
+    final refusal = await _hostApiFetchRefusal(
+      op.pluginId,
+      method,
+      uri,
+      request.connectionInfo,
+    );
+    if (refusal != null) {
+      request.abort();
+      return {
+        'id': int.parse(op.requestId),
+        'status': 403,
+        'headers': {'content-type': 'application/json'},
+        'body': jsonEncode(refusal),
+      };
+    }
     headers.forEach((k, v) {
       request.headers.set(k.toString(), v.toString());
     });

@@ -105,7 +105,8 @@ void main() {
 
   test('dispatches every plugin and skin management route', () async {
     final routes = [
-      ...extensionManagementRoutes,
+      for (final route in extensionManagementRoutes)
+        if (!route.path.endsWith('/machine-control')) route,
       ...extensionManagementReadRoutes,
     ];
     for (final route in routes) {
@@ -122,6 +123,26 @@ void main() {
             '${route.method} ${route.path.replaceAll('<id>', 'a.reaplugin')}',
       ),
     );
+  });
+
+  test('never changes a machine-control grant', () async {
+    for (final id in ['a.reaplugin', 'self.reaplugin']) {
+      await expectLater(
+        send(
+          '/api/v1/plugins/$id/machine-control',
+          method: 'PUT',
+          body: {'granted': true},
+        ),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.message,
+            'message',
+            contains('machine-control grants'),
+          ),
+        ),
+      );
+    }
+    expect(received, isEmpty);
   });
 
   test('rejects every route outside plugin and skin management', () async {

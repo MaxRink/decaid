@@ -14,6 +14,11 @@ class PluginLocalApiBridge {
   static final _settingsRoute = ExtensionManagementRouteMatcher(const [
     extensionManagementSettingsRoute,
   ]);
+  static final _machineControlGrantRoute = ExtensionManagementRouteMatcher(
+    const [
+      ExtensionManagementRoute('PUT', '/api/v1/plugins/<id>/machine-control'),
+    ],
+  );
 
   final int maxResponseBytes;
 
@@ -33,6 +38,10 @@ class PluginLocalApiBridge {
       throw StateError('The local API is not available');
     }
     final target = shelf.Request(_method(method), _localUri(path));
+    // Only the user grants machine control, never a plugin.
+    if (await _machineControlGrantRoute.matches(target)) {
+      throw ArgumentError('localApi cannot change machine-control grants');
+    }
     final changesSettings = await _settingsRoute.matches(target);
     if (!changesSettings && !await _managementRoutes.matches(target)) {
       throw ArgumentError(

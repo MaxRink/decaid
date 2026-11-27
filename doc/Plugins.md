@@ -490,7 +490,7 @@ origin check and are judged by the credential policy instead.
 
 | Routes | What they are |
 |--------|---------------|
-| The 18 plugin and skin routes decaid#1031 put behind `extensions:manage` (and that need a token only while extension management protection is ON): those marked **yes** in [Plugin Lifecycle Management](#plugin-lifecycle-management-rest-api) and the skin routes in `doc/Skins.md` (`doc/Api.md` lists them all) | The plugin and skin management operations |
+| The 18 plugin and skin routes decaid#1031 put behind `extensions:manage` (and that need a token only while extension management protection is ON): those marked **yes** in [Plugin Lifecycle Management](#plugin-lifecycle-management-rest-api) and the skin routes in `doc/Skins.md` (`doc/Api.md` lists them all), except `PUT /api/v1/plugins/:id/machine-control`, which only the user changes | The plugin and skin management operations |
 | `GET /api/v1/plugins`, `GET /api/v1/plugins/{id}/settings` | Reading plugins and their settings |
 | `GET /api/v1/webui/skins`, `GET /api/v1/webui/skins/default`, `GET /api/v1/webui/skins/{id}`, `GET /api/v1/webui/server/status` | Reading skins and the skin server |
 | `POST /api/v1/settings` with a JSON object holding only `defaultSkinId` or `automaticUpdateCheck` | The settings that choose the default skin and turn automatic update checks on or off (plugin and skin updates are installed; app updates are only offered) |
@@ -787,11 +787,11 @@ the network.
 ### Machine control grant
 
 A plugin `fetch` that writes (any method but `GET`/`HEAD`) to the host's own
-`/api/v1/machine/*` routes, for example
-`PUT /api/v1/machine/state/espresso`, reaches the API only after the user has
-allowed that plugin to control the machine. There is no manifest permission for
-it: a stock Decaid rejects unknown permission names, so the grant is a
-host-side, per-plugin setting the user turns on.
+`/api/v1/machine/*` routes, for example `PUT /api/v1/machine/state/espresso`,
+reaches the API only after the user has allowed that plugin to control the
+machine. There is no manifest permission for it: a stock Decaid rejects unknown
+permission names, so the grant is a host-side, per-plugin setting the user turns
+on.
 
 - Without the grant the call does not reach the API. `fetch` resolves (it does
   not reject) with `status` 403 and a JSON body
@@ -805,16 +805,30 @@ host-side, per-plugin setting the user turns on.
   `{"granted": true}` or `{"granted": false}` (an extension-management route:
   `extensions:manage` token while protection is ON). `GET /api/v1/plugins`
   reports it as `machineControl`.
-- The grant is stored per plugin id. It survives restarts and installed
-  updates, and is cleared when the plugin is removed or a source write changes
-  its `plugin.js`.
+- No plugin can change a grant: `host.localApi` refuses the route, and a plugin
+  `fetch` to it on the host answers 403 `machine_control_forbidden`, whatever
+  the protection mode.
+- The host checks the grant of the plugin whose realm sent the request (see
+  [Plugin isolation](#plugin-isolation)); nothing in the request names the
+  plugin, so one plugin cannot use another plugin's grant.
+- The grant is stored per plugin id and survives restarts. It is cleared when
+  the plugin is removed, and whenever its `plugin.js` changes, by a source write
+  or a package install or update; an update that keeps the same `plugin.js`
+  keeps the grant. New code asks again.
 - Firmware (`/api/v1/machine/firmware`, `/api/v1/machine/firmware/apply`) is
   refused for every plugin, with or without the grant, as 403
-  `{"code": "machine_control_forbidden"}`. `host.transport` still refuses the
-  raw machine socket `/ws/v1/machine/raw` and raw `tcp`/`tls` to the API port
-  for every plugin.
-- The target counts as the host when it resolves to loopback, `0.0.0.0` or an
-  address of this device, on the API port.
+  `{"code": "machine_control_forbidden"}`. So is a `fetch` to the raw machine
+  socket `/ws/v1/machine/raw`. `host.transport` refuses a WebSocket to
+  `/ws/v1/machine/raw` on the API port when the host is this device or a host
+  name, and raw `tcp`/`tls` connections to this device's API port, for every
+  plugin (`machine_control_forbidden`).
+- The target counts as the host when the connection it opened goes to loopback,
+  `0.0.0.0` or an address of this device, on the API port. The check uses the
+  peer address of the open connection, before the request is sent, so a host
+  name that resolves differently on a second lookup cannot slip past it.
+- Other routes that act on the machine indirectly, such as `PUT /api/v1/workflow`
+  (which uploads the workflow's profile) or the scale and grinder routes, are
+  not machine routes and need no grant.
 - The grant does not let a plugin start a machine that requires starts at the
   group head. When `GET /api/v1/machine/info` reports `"GHC": true` (an active
   group head controller), DE1 firmware ignores a remote start of `espresso`,
@@ -2118,6 +2132,10 @@ it in Decaid UI.
   authority: the plugin and skin management routes answer 401 to them. Only
   `host.localApi`, with the `manage.extensions` permission, carries that
   authority, and only for the plugin's current loaded generation
+- Writes to the host's own `/api/v1/machine/*` routes are refused unless the
+  user granted the plugin [machine control](#machine-control-grant), and
+  firmware, the raw machine socket and raw `tcp`/`tls` to the host API port are
+  refused for every plugin
 - Each loaded plugin runs in its own JavaScript realm: a separate engine
   instance with its own global object, built-ins, host bridge, timers and
   pending requests (see [Plugin isolation](#plugin-isolation)). A plugin cannot
@@ -2417,7 +2435,7 @@ OFF):
 | POST | `/api/v1/plugins/:id/enable` | yes | Load plugin + enable auto-load on startup |
 | POST | `/api/v1/plugins/:id/disable` | yes | Unload plugin + disable auto-load |
 | PUT | `/api/v1/plugins/:id/source` | yes | Create or overwrite `manifest.json` + `plugin.js` |
-| PUT | `/api/v1/plugins/:id/machine-control` | yes | Allow (`{"granted": true}`) or forbid machine control for the plugin |
+| PUT | `/api/v1/plugins/:id/machine-control` | yes | Allow (`{"granted": true}`) or forbid machine control for the plugin ([details](#machine-control-grant)) |
 | DELETE | `/api/v1/plugins/:id` | yes | Remove plugin (unload + delete files) |
 | POST | `/api/v1/plugins/install` | yes | Not supported (501); use the GitHub endpoints below |
 | POST | `/api/v1/plugins/install/github-release` | yes | Install from a GitHub release asset |
