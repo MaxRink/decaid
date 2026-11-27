@@ -39,7 +39,7 @@ visible rather than reported as a timeout:
 
 Two suites open real sockets to a **non-loopback** address because the peer address is the subject:
 `test/plugins/plugin_extension_management_bypass_test.dart` (5 tests) and
-`test/webserver/extension_management_pipeline_test.dart` (6 tests). On a host whose TCP stack refuses
+`test/webserver/extension_management_pipeline_origins_test.dart` (6 tests; the pipeline suite is split across `extension_management_pipeline_{refused,routes,origins}_test.dart`, sharing `extension_management_pipeline_suite.dart`, to keep each file under the CI per-file active-time limit). On a host whose TCP stack refuses
 `setsockopt(TCP_NODELAY)` on those accepted connections, all 11 fail like this:
 
 ```
