@@ -511,6 +511,71 @@ void main() {
         expect(lines.where((line) => line.contains('secret-5')), isEmpty);
       });
 
+      test('host error lines for a plugin without log carry its id, '
+          'its own console output does not appear', () async {
+        final previousLevel = Logger.root.level;
+        Logger.root.level = Level.ALL;
+        addTearDown(() => Logger.root.level = previousLevel);
+        final records = <LogRecord>[];
+        final subscription = Logger.root.onRecord.listen((record) {
+          if (record.loggerName == 'PluginManager') records.add(record);
+        });
+        addTearDown(subscription.cancel);
+        String text(LogRecord r) => '${r.message} ${r.error ?? ''}';
+
+        await harness.load('thrower.plugin', '''
+          return {
+            id: "thrower.plugin",
+            onEvent(event) {
+              console.log("thrower console line");
+              throw new Error("event boom " + event.name);
+            }
+          };
+        ''', permissions: const {});
+        harness.manager.dispatchEvent('thrower.plugin', 'probe', null);
+        await expectLater(
+          harness.load('loadfail.plugin', '''
+            return {
+              id: "loadfail.plugin",
+              onLoad() {
+                console.log("loadfail console line");
+                throw new Error("load boom");
+              }
+            };
+          ''', permissions: const {}),
+          throwsA(anything),
+        );
+        await harness.settle();
+
+        final eventError = records.where(
+          (r) => r.message.contains('event boom probe'),
+        );
+        expect(eventError, hasLength(1));
+        expect(eventError.single.level, Level.WARNING);
+        expect(
+          eventError.single.message,
+          '[JS:thrower.plugin] Plugin error in onEvent(probe): '
+          'Error: event boom probe',
+        );
+        final loadError = records.where((r) => text(r).contains('load boom'));
+        expect(loadError, isNotEmpty);
+        expect(
+          loadError
+              .where((r) => r.level >= Level.WARNING)
+              .map((r) => r.message),
+          contains('Failed to load plugin loadfail.plugin'),
+        );
+        expect(
+          records
+              .where((r) => text(r).contains('console line'))
+              .where(
+                // Debug records echo plugin source; only output lines matter.
+                (r) => r.message.startsWith('[JS:'),
+              ),
+          isEmpty,
+        );
+      });
+
       group('defence in depth inside a realm', () {
         const pinned = [
           'globalThis',

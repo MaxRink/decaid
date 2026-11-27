@@ -250,6 +250,12 @@ rate limited like `host.log`, and only for plugins holding `log`; without it
 console output is dropped. The plugin id is the one the host knows for the
 plugin's realm, whatever the line itself says.
 
+What the host itself logs about a plugin does not depend on `log`: load
+failures, an exception thrown from `onEvent` or a `host.transport` listener
+(`[JS:<plugin id>] Plugin error in onEvent(<event>): ...` at WARNING, redacted
+and rate limited separately from the plugin's own lines) and rejected bridge
+calls always appear with the plugin id.
+
 This catches only those shapes; it is not a reason to log credentials.
 
 Each plugin may write 60 lines per minute. Further lines in that minute are
