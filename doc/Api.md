@@ -231,7 +231,9 @@ modes:
   `pendingUpdate` (`handsOverSecureSettings: true` for the latter).
 
 A write that leaves `plugin.js` unchanged from the same source, and a first
-install of a plugin id, need no review. See doc/Plugins.md,
+install of a plugin id, need no review. A source write also records the
+plugin's provenance as `local_source`, replacing any GitHub record, so update
+checks stop tracking the previous repository. See doc/Plugins.md,
 "Replacing an installed plugin", for the full lifecycle.
 
 ### Browser origins

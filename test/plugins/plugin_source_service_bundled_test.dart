@@ -148,12 +148,15 @@ function createPlugin() {
     group('bundled plugin provenance', () {
       const dye2Id = 'dye2.reaplugin';
 
-      Future<void> bundledUpgrade(String version) => loader.updatePluginSource(
-        dye2Id,
-        manifestJson: manifestJson(dye2Id, version: version),
-        pluginJs: pluginJs(dye2Id),
-        authorized: true,
-      );
+      Future<void> bundledUpgrade(String version) async {
+        final metadata = sourceFile(dye2Id).readAsStringSync();
+        await loader.updatePluginSource(
+          dye2Id,
+          manifestJson: manifestJson(dye2Id, version: version),
+          pluginJs: pluginJs(dye2Id),
+        );
+        sourceFile(dye2Id).writeAsStringSync(metadata);
+      }
 
       Future<void> installBundledCopy({
         String pluginId = dye2Id,

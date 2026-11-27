@@ -1,8 +1,11 @@
+const pluginSourceMetadataFileName = '.rea_source.json';
+
 enum PluginSourceKind {
   githubRelease('github_release'),
   githubBranch('github_branch'),
   localZip('local_zip'),
-  localFolder('local_folder');
+  localFolder('local_folder'),
+  localSource('local_source');
 
   final String wireName;
 

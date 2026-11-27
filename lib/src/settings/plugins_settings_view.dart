@@ -647,6 +647,7 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
             '(${_shortCommit(source.commit)})',
       PluginSourceKind.localZip => 'Local ZIP snapshot',
       PluginSourceKind.localFolder => 'Local folder snapshot',
+      PluginSourceKind.localSource => 'Local source write',
     };
 
     final checked = source.lastChecked;

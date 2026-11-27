@@ -51,7 +51,7 @@ const bundledPluginRepos = <String, String>{
 };
 
 class PluginSourceService {
-  static const metadataFileName = '.rea_source.json';
+  static const metadataFileName = pluginSourceMetadataFileName;
 
   final PluginLoaderService _loader;
   final Map<String, String> _canonicalBundledRepos;

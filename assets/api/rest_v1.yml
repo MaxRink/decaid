@@ -9487,7 +9487,11 @@ components:
       properties:
         kind:
           type: string
-          enum: [github_release, github_branch, local_zip, local_folder]
+          enum: [github_release, github_branch, local_zip, local_folder, local_source]
+          description: >
+            local_source marks code written by PUT /api/v1/plugins/{id}/source.
+            Like the other local kinds it has no update source, so update
+            checks skip the plugin until it is installed from GitHub again.
         repo:
           type: string
           nullable: true

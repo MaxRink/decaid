@@ -2140,6 +2140,7 @@ A plugin can be installed from four sources:
 | GitHub branch | yes | new commit on the branch |
 | Local ZIP | no | none, it is a snapshot |
 | Local folder | no | none, it is a snapshot |
+| Source write (`PUT /api/v1/plugins/:id/source`) | no | none, it is local code |
 
 Every install goes through the same validation: the package must resolve to a
 single plugin root holding both `manifest.json` and `plugin.js`, the manifest
@@ -2150,7 +2151,14 @@ root is rejected rather than guessed.
 Provenance for a tracked install is stored in a Decaid-owned
 `.rea_source.json` inside the plugin directory. It is not part of your plugin
 package, it is rewritten on every install, and it disappears when the plugin is
-removed.
+removed. Provenance always describes the installed code: a source write or a
+local ZIP or folder install over a GitHub-installed plugin replaces it with a
+local kind (`local_source`, `local_zip`, `local_folder`), so update checks stop
+tracking the old repository and never offer its code over the local one. Any
+pending update is dropped with it. Installing from GitHub again records that
+repository again. When a newer bundled copy replaces source-written code at
+startup, the `local_source` record is dropped so the bundled plugin is seeded
+with its canonical repository again.
 
 The Plugins page cogwheel menu provides **Refresh plugins**, **Check for
 updates**, and **Install plugin**. Installation opens the source choices:
@@ -2529,6 +2537,9 @@ Rules:
   and running plugin are restored and the request returns 500.
 - A plugin that was not loaded stays unloaded, and its new source is not
   executed or validated.
+- The plugin's provenance becomes `local_source`: the write replaces any
+  GitHub release or branch record and its pending update, so later update
+  checks leave the plugin alone until it is installed from GitHub again.
 - Ordinary settings and the auto-load preference are preserved. Replacing an
   installed plugin goes through
   [the replacement review](#replacing-an-installed-plugin): a manifest that

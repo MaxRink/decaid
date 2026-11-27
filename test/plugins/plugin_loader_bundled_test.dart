@@ -207,6 +207,35 @@ void main() {
     },
   );
 
+  for (final provenance in ['local_source', 'github_release']) {
+    test(
+      'a bundled upgrade over source-written code '
+      '${provenance == 'local_source' ? 'drops' : 'keeps'} $provenance',
+      () async {
+        assets[manifestAsset] = manifest('1.0.4', 'Bundled');
+        assets[scriptAsset] = '// bundled script\n';
+        final directory = Directory('${tempDir.path}/plugins/$id')
+          ..createSync(recursive: true);
+        File('${directory.path}/manifest.json')
+            .writeAsStringSync(manifest('1.0.3', 'Installed'));
+        File('${directory.path}/plugin.js').writeAsStringSync('// local\n');
+        final metadata = File('${directory.path}/.rea_source.json')
+          ..writeAsStringSync(
+            jsonEncode({
+              'kind': provenance,
+              'repo': provenance == 'local_source' ? null : 'acme/fork',
+              'installedAt': DateTime(2026).toIso8601String(),
+            }),
+          );
+
+        await service.initialize();
+
+        expect(service.getPluginManifest(id)?.version, '1.0.4');
+        expect(metadata.existsSync(), provenance != 'local_source');
+      },
+    );
+  }
+
   for (final damage in [
     'missing manifest',
     'malformed manifest',

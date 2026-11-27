@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
 import 'package:reaprime/src/plugins/plugin_replacement.dart';
+import 'package:reaprime/src/plugins/plugin_source.dart';
 import 'package:reaprime/src/plugins/plugin_source_service.dart';
 import 'package:reaprime/src/util/remote_update_report.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -267,6 +268,145 @@ function createPlugin() {
         throwsA(isA<PluginReplacementApprovalRequiredException>()),
       );
       expect(service.sourceFor(id)?.commit, 'commit-1');
+    });
+  });
+
+  group('provenance follows the installed code', () {
+    String localJs({String marker = 'local'}) =>
+        '''
+// $marker
+function createPlugin() {
+  return { id: "$id", onLoad() {} };
+}
+''';
+
+    Map<String, dynamic> manifestJson(String version) => {
+      'id': id,
+      'author': 'Test',
+      'name': 'Managed plugin',
+      'description': 'Stores a token',
+      'version': version,
+      'apiVersion': 1,
+      'permissions': ['log'],
+      'settings': {
+        'token': {'type': 'string', 'secure': true},
+      },
+      'api': <Object>[],
+    };
+
+    Future<({RemoteUpdateReport report, int repoRequests})> countedCheck({
+      bool automatic = false,
+    }) async {
+      var repoRequests = 0;
+      final client = gitHub(
+        tag: 'v2.0.0',
+        package: archive(version: '2.0.0', marker: 'upstream'),
+      );
+      final report = await http.runWithClient(
+        () => service.checkForPluginUpdates(automatic: automatic),
+        () => MockClient((request) {
+          if (request.url.toString().contains('acme/plugin')) repoRequests++;
+          return client.send(request).then(http.Response.fromStream);
+        }),
+      );
+      return (report: report, repoRequests: repoRequests);
+    }
+
+    test('a source write makes the plugin local and untracked', () async {
+      await installConfiguredRelease();
+      await withGitHub(
+        () => service.checkForPluginUpdates(),
+        tag: 'v1.1.0',
+        package: archive(version: '1.1.0', marker: 'replacement'),
+      );
+      expect(service.sourceFor(id)?.pendingUpdate, isNotNull);
+
+      await loader.updatePluginSource(
+        id,
+        manifestJson: manifestJson('1.0.1'),
+        pluginJs: localJs(),
+        approveReplacement: (_) => PluginReplacementDecision.unattended,
+      );
+
+      final source = service.sourceFor(id)!;
+      expect(source.kind, PluginSourceKind.localSource);
+      expect(source.repo, isNull);
+      expect(source.pendingUpdate, isNull);
+      for (final automatic in [false, true]) {
+        final check = await countedCheck(automatic: automatic);
+        expect(check.report.results, isEmpty);
+        expect(check.repoRequests, 0);
+      }
+      expect(loader.getPluginManifest(id)?.version, '1.0.1');
+    });
+
+    test('a GitHub reinstall records the repository again', () async {
+      await installConfiguredRelease();
+      await loader.updatePluginSource(
+        id,
+        manifestJson: manifestJson('1.0.1'),
+        pluginJs: localJs(),
+        approveReplacement: (_) => PluginReplacementDecision.unattended,
+      );
+      await loader.savePluginSettings(id, {'token': 's3cret'});
+      PluginReplacement? reviewed;
+
+      await withGitHub(
+        () => service.installFromGitHubRelease(
+          'acme/plugin',
+          approveReplacement: (replacement) {
+            reviewed = replacement;
+            return PluginReplacementDecision.unattended;
+          },
+        ),
+        tag: 'v1.1.0',
+        package: archive(version: '1.1.0'),
+      );
+
+      expect(reviewed?.sourceChanged, isTrue);
+      final source = service.sourceFor(id)!;
+      expect(source.kind, PluginSourceKind.githubRelease);
+      expect(source.repo, 'acme/plugin');
+      final check = await countedCheck();
+      expect(check.repoRequests, greaterThan(0));
+      expect(check.report.results.single.item, id);
+    });
+
+    test('a failed source write keeps the GitHub provenance', () async {
+      await installConfiguredRelease();
+      await loader.enablePlugin(id);
+
+      await expectLater(
+        loader.updatePluginSource(
+          id,
+          manifestJson: manifestJson('1.0.1'),
+          pluginJs: 'throw new Error("broken");',
+          approveReplacement: (_) => PluginReplacementDecision.unattended,
+        ),
+        throwsA(anything),
+      );
+
+      final source = service.sourceFor(id)!;
+      expect(source.kind, PluginSourceKind.githubRelease);
+      expect(source.repo, 'acme/plugin');
+      expect(await tokenIsSet(), isTrue);
+    });
+
+    test('a local ZIP over a GitHub install is untracked too', () async {
+      await installConfiguredRelease();
+      final zip = File('${tempDir.path}/local.zip')
+        ..writeAsBytesSync(archive(version: '1.0.1', marker: 'zip'));
+
+      await service.installFromZip(
+        zip.path,
+        approveReplacement: (_) => PluginReplacementDecision.unattended,
+      );
+
+      expect(service.sourceFor(id)?.kind, PluginSourceKind.localZip);
+      final check = await countedCheck();
+      expect(check.report.results, isEmpty);
+      expect(check.repoRequests, 0);
+      expect(await tokenIsSet(), isFalse);
     });
   });
 

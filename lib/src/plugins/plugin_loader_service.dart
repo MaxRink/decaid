@@ -19,6 +19,7 @@ import 'package:reaprime/src/plugins/plugin_manager.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
 import 'package:reaprime/src/plugins/plugin_package.dart';
 import 'package:reaprime/src/plugins/plugin_replacement.dart';
+import 'package:reaprime/src/plugins/plugin_source.dart';
 import 'package:reaprime/src/plugins/plugin_runtime.dart';
 import 'package:reaprime/src/plugins/plugin_version.dart';
 import 'package:reaprime/src/services/account/decent_account_service.dart'
@@ -338,9 +339,13 @@ class PluginLoaderService {
       final pluginDir = Directory('${_pluginsDir.path}/$pluginId');
       final manifestFile = File('${pluginDir.path}/manifest.json');
       final sourceFile = File('${pluginDir.path}/plugin.js');
+      final provenanceFile = File(
+        '${pluginDir.path}/$pluginSourceMetadataFileName',
+      );
       final directoryExisted = pluginDir.existsSync();
       final previousManifestSource = _readText(manifestFile);
       final previousSource = _readText(sourceFile);
+      final previousProvenance = _readText(provenanceFile);
       final keepSecureSettings = await _reviewReplacement(
         installed: previousManifest,
         candidate: manifest,
@@ -377,6 +382,7 @@ class PluginLoaderService {
           await _prefs.remove(_machineControlKey(pluginId));
         }
         if (!keepSecureSettings) await _clearSecureSettings(pluginId);
+        _writeLocalProvenance(provenanceFile);
         stagedManifest.renameSync(manifestFile.path);
         stagedSource.renameSync(sourceFile.path);
         _availablePluginsCache[pluginId] = manifest;
@@ -392,6 +398,9 @@ class PluginLoaderService {
         // Restore settings before the previous version reloads: the reload
         // re-reads reconciled settings under the settings lock.
         await _restorePersistedSettings(pluginId, settingsSnapshot);
+        if (directoryExisted) {
+          _writeOrDelete(provenanceFile, previousProvenance);
+        }
         await _restorePluginSource(
           pluginId: pluginId,
           pluginDir: pluginDir,
@@ -512,6 +521,28 @@ class PluginLoaderService {
       );
     }
     return keep;
+  }
+
+  static void _writeLocalProvenance(File file) {
+    file.writeAsStringSync(
+      jsonEncode(
+        PluginSource(
+          kind: PluginSourceKind.localSource,
+          installedAt: DateTime.now(),
+        ).toJson(),
+      ),
+    );
+  }
+
+  static void _forgetLocalProvenance(Directory pluginDir) {
+    final file = File('${pluginDir.path}/$pluginSourceMetadataFileName');
+    try {
+      final decoded = jsonDecode(_readText(file) ?? 'null');
+      if (decoded is Map &&
+          decoded['kind'] == PluginSourceKind.localSource.wireName) {
+        file.deleteSync();
+      }
+    } catch (_) {}
   }
 
   Future<void> _clearSecureSettings(String pluginId) =>
@@ -1184,6 +1215,7 @@ class PluginLoaderService {
           '$pluginPath/plugin.js',
         );
         File('${destDir.path}/plugin.js').writeAsStringSync(pluginAsset);
+        _forgetLocalProvenance(destDir);
 
         _log.fine('Updated bundled plugin: $pluginName');
       } catch (e) {
