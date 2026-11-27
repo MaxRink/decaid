@@ -2108,7 +2108,10 @@ it in Decaid UI.
   closes this, because every replacement then needs a token
 - The review compares permissions and device drivers only. Other things a
   manifest declares, such as new `api` endpoints and plugin surfaces, are not
-  reviewed: they act within the permissions the plugin already holds
+  reviewed: they act within the permissions the plugin already holds. Nor are
+  changes to a grinder driver's `controls` or a scale driver's `capabilities`
+  when the driver's id, type and BLE matcher stay the same: they act on a
+  device the plugin already holds
 - Apart from the machine control limits below, `fetch` and `host.transport`
   are not limited by destination, so they can reach Decaid's own API like any
   client on the network. They carry no
