@@ -148,7 +148,7 @@ void main() {
       await File(assetPath).copy('${apiDirectory.path}/$filename');
     }
 
-    final manifestUri = Uri.parse('http://docs.example.test/api/v1/manifest');
+    final manifestUri = Uri.parse('http://docs.local/api/v1/manifest');
     final manifestResponse = await createHandler()(Request('GET', manifestUri));
     final manifest = jsonDecode(await manifestResponse.readAsString()) as Map;
     final docs = manifest['docs'] as Map;

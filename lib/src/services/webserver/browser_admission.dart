@@ -36,7 +36,7 @@ Middleware browserAdmissionMiddleware(
       final action = '${request.method} /${request.url.path}';
       final policy = origins.snapshot();
       final host = directRequestHost(request);
-      if (host == null || !await policy.isDeviceHost(host.host)) {
+      if (host == null || !await policy.admitsBrowserHost(host.host)) {
         log.warning('$action refused (403) for a browser on a foreign host');
         return _browserRefusal(untrustedBrowserHostError);
       }

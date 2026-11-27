@@ -7,6 +7,7 @@ import 'package:shelf_router/shelf_router.dart';
 
 import 'package:reaprime/src/services/account/proxy_token_service.dart';
 import 'package:reaprime/src/services/webserver/proxy_auth_middleware.dart';
+import 'package:reaprime/src/services/webserver/request_host.dart';
 
 const extensionManagementGrantContextKey = 'decaid.extensionManagementGrant';
 
@@ -37,11 +38,18 @@ final class ExtensionManagementBrowserOrigins {
     required this.apiListenerPort,
     required this.pagePorts,
     required this.deviceAddresses,
+    this.allowedHostNames = _noAllowedHostNames,
   });
 
   final int? Function() apiListenerPort;
   final Set<int> Function() pagePorts;
   final Future<Set<String>> Function() deviceAddresses;
+
+  /// Normalized DNS names, besides numeric, loopback and `.local` hosts, that
+  /// the API answers (see [isAdmittedHost]).
+  final Set<String> Function() allowedHostNames;
+
+  static Set<String> _noAllowedHostNames() => const {};
 
   static const loopbackHosts = {'localhost', '127.0.0.1', '::1'};
 
@@ -51,6 +59,7 @@ final class ExtensionManagementBrowserOrigins {
       apiListenerPort: apiListenerPort,
       pagePorts: pagePorts,
       deviceAddresses: () => addresses ??= deviceAddresses(),
+      allowedHostNames: allowedHostNames,
     );
   }
 
@@ -137,6 +146,13 @@ final class ExtensionManagementBrowserOrigins {
     }
     final peerKey = _hostKey(peer.address);
     return peerKey != null && addresses.contains(peerKey);
+  }
+
+  /// The `Host` rule for browser requests: a numeric host must be loopback or
+  /// a current device address; a name must pass [isAdmittedHost].
+  Future<bool> admitsBrowserHost(String host) async {
+    if (InternetAddress.tryParse(host) != null) return isDeviceHost(host);
+    return isAdmittedHost(host, allowedHostNames());
   }
 
   Future<bool> isDeviceHost(String host) async {

@@ -676,6 +676,7 @@ ExtensionManagementBrowserOrigins extensionManagementBrowserOrigins(
     ?docsListenerPort?.call(),
   },
   deviceAddresses: () => webUIService.currentBrowserOriginAddresses(),
+  allowedHostNames: webUIService.admittedHostNames,
 );
 
 class ApiDocsConfiguration {
@@ -734,7 +735,9 @@ Handler buildWebServerHandler(
   AdmissionGate? admissionGate,
   BuiltinPageListener? pageListener,
 }) {
-  var pipeline = const Pipeline();
+  var pipeline = const Pipeline().addMiddleware(
+    admittedHostMiddleware(browserOrigins.allowedHostNames),
+  );
   final listener = pageListener;
   if (listener != null) {
     pipeline = pipeline.addMiddleware(

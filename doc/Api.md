@@ -191,9 +191,33 @@ protection is ON. The account proxy keeps its own scopes in both modes.
 
 ### Browser origins
 
-Every request a browser sends to the API port passes one admission policy
-before any handler runs, in both modes and for every route, including routes
-added later and plugin-defined routes:
+**Host names (every request).** DNS rebinding needs a DNS name the attacker
+controls, so the API port and every skin port (the live skin port, the port 3000
+entry point and the alias ports) answer a request only when its raw `Host`
+header is one of:
+
+- a numeric IPv4 or IPv6 address (any address, so clients and browsers that use
+  an IP keep working), except the unspecified `0.0.0.0` and `::`;
+- `localhost` or a name under `.localhost`;
+- an mDNS name under `.local`;
+- this device's own host name;
+- a name in the `allowedHostNames` setting (see [Settings](#settings)).
+
+Any other `Host` is refused with `403` and
+`{"error":"This device only answers its IP address, localhost, .local names and the host names in the allowedHostNames setting"}`
+before any handler runs, for every method and for WebSocket upgrades, whether or
+not the request looks like it came from a browser. Names compare
+case-insensitively and without a trailing dot. `Forwarded` and `X-Forwarded-*`
+headers never change the host this check sees. A request without a `Host`
+header is judged by the listener address, which on the default wildcard bind is
+`0.0.0.0` and therefore refused; in-process callers (`host.localApi`) use
+`localhost`. Browsers send no Fetch Metadata to a plain-HTTP LAN address, so a
+rebound page can make a `fetch` with no `Origin`, `Referer` or `Sec-Fetch-*`;
+this rule is what refuses it.
+
+On top of that, every request a browser sends to the API port passes one
+admission policy before any handler runs, in both modes and for every route,
+including routes added later and plugin-defined routes:
 
 - **Foreign origins are refused.** A request whose `Origin` is not one of the
   device's own origins (the table below) is refused with `403` and
@@ -208,15 +232,14 @@ added later and plugin-defined routes:
   `Access-Control-Allow-Credentials` and `Vary: Origin`) is only sent to the
   device's own origins, and only they get a preflight answer. Refusals carry no
   `access-control-*` header.
-- **Host names (DNS rebinding).** A request that carries `Origin`, `Referer`
-  or any `Sec-Fetch-*` header is treated as a browser request. It is refused
-  with `403` and
-  `{"error":"This API only answers browsers on the device address"}` unless
-  the raw `Host` header is `localhost`, a loopback address or a numeric address
-  currently assigned to the device, and it is refused the same way if it
-  carries `Forwarded` or any `X-Forwarded-*` header, because those would
-  otherwise replace the host the check sees. A name that resolves to the device
-  is not the device's address.
+- **Browser hosts.** A request that carries `Origin`, `Referer` or any
+  `Sec-Fetch-*` header is treated as a browser request. It is refused with
+  `403` and `{"error":"This API only answers browsers on the device address"}`
+  when its numeric `Host` is not loopback or an address currently assigned to
+  the device, and when it carries `Forwarded` or any `X-Forwarded-*` header,
+  because those would otherwise replace the host the check sees. A host name
+  admitted by the rule above passes; a name that resolves to the device is
+  still never a trusted *origin* (see the table below).
 - **Cross-site requests without an `Origin`.** Browsers omit `Origin` on
   navigations, link prefetches and `<img>`/`<script>` loads, but send
   `Sec-Fetch-Site`. Such a request is refused with `403` and
@@ -249,18 +272,26 @@ added later and plugin-defined routes:
 Every API response carries `Vary: Origin`, so a cache never serves one
 origin's answer to another.
 
-Requests without `Origin`, `Referer` and `Sec-Fetch-*` are not affected: Home
-Assistant, `curl`, MCP clients, native app code and `host.localApi` keep working
-in both modes, under any host name and behind a forwarding proxy.
+Requests without `Origin`, `Referer` and `Sec-Fetch-*` are only subject to the
+host name rule: Home Assistant, `curl`, MCP clients, native app code and
+`host.localApi` keep working in both modes, by IP address, `localhost`, a
+`.local` name, the device's own host name or an allow-listed name, and behind a
+forwarding proxy. A native client that sends a `Referer` is a browser request
+and is held to the browser rules as well.
 
 **What remains.** The policy is a browser boundary, not authentication:
 
-- A browser without Fetch Metadata (for example Safari before 16.4) sends no
-  `Origin` or `Sec-Fetch-*` on a same-origin `GET`. A DNS-rebound page that also
-  suppresses its `Referer` therefore looks like a non-browser client, and its
-  same-origin `GET` requests are answered. Writes are still refused, because
-  browsers send `Origin` on every non-`GET` request. Current Chromium, Firefox
-  and Safari releases send Fetch Metadata, which closes this.
+- Over plain HTTP no browser sends Fetch Metadata, so a page elsewhere can
+  still make a header-less `GET` to the device's *numeric* address, for example
+  `<img referrerpolicy="no-referrer" src="http://192.168.1.5:8080/api/v1/devices/scan">`.
+  Such a request is indistinguishable from `curl`: it can trigger a
+  side-effecting `GET` blind, but the browser does not let the page read the
+  response. Reading needs a same-origin page, and a rebound page's origin is its
+  DNS name, which the host name rule refuses. Browsers that enforce Private /
+  Local Network Access restrictions block or prompt for this request.
+- An allow-listed name, the device's own host name and `.local` names are
+  trusted not to be under an attacker's control. Only allow-list names served by
+  DNS you control.
 - A trusted origin has full API control: script running in an installed skin,
   a plugin page or the docs viewer can call every route. A cross-site scripting
   flaw in an installed skin is therefore equivalent to API control; install
@@ -272,14 +303,21 @@ in both modes, under any host name and behind a forwarding proxy.
 
 #### Compatibility
 
-- **Open the device by numeric address or `localhost`.** A browser that reaches
-  the API or a plugin page through a DNS name (an mDNS `.local` name, a router
-  DNS record, a hosts file entry) is refused, because that name is not one of
-  the device's origins. The skin entry point (port 3000) and inactive skin alias
-  ports redirect a name that resolves to the device to the device's numeric
-  address, the same way the built-in pages do (see
-  [Opening a built-in page through a name](#opening-a-built-in-page-through-a-name)),
-  so `http://decent.local:3000` lands on a working skin. A reverse proxy in front
+- **DNS names need `.local` or the allowlist.** Every client, browser or not,
+  that reaches the device through a DNS name other than `localhost`, a `.local`
+  name or the device's own host name (a router DNS record, a hosts file entry,
+  a reverse proxy that passes its upstream name as `Host`) gets `403` until the
+  name is added to `allowedHostNames`.
+- **Browsers: open the device by numeric address or `localhost`.** A page
+  opened under a DNS name is not one of the device's origins, so its API calls
+  are refused. The skin entry point (port 3000) and inactive skin alias ports
+  redirect an admitted name that resolves to the device to a numeric device
+  address: the address the name resolves to on the device, and when the device
+  holds several addresses of the client's family (Wi-Fi and Ethernet, IPv6
+  stable and privacy addresses), the one that shares the longest prefix with the
+  client (at least /16 for IPv4, /64 for IPv6). Only when none fits does the
+  redirect keep the name. So `http://decent.local:3000` lands on a working skin.
+  A reverse proxy in front
   of the device must enforce its own origin check and must not forward the
   browser's `Origin`, `Referer` and `Sec-Fetch-*` headers; browser requests that
   arrive with `Forwarded` or `X-Forwarded-*` headers are refused, and the skin
@@ -1014,9 +1052,18 @@ from normal scan results; it is never a persisted `grinderId`.
 | Method | Path | Description | Handler |
 |--------|------|-------------|---------|
 | GET | `/api/v1/settings` | All app settings (gateway, theme, charging, devices, etc.) | `settings_handler.dart` |
-| POST | `/api/v1/settings` | Update settings (partial, key-by-key); while extension management protection is ON, `webUiPath`, a changed `defaultSkinId` and turning `automaticUpdateCheck` on need an `extensions:manage` token ([details](#extension-management-authorization)) | |
+| POST | `/api/v1/settings` | Update settings (partial, key-by-key); while extension management protection is ON, `webUiPath`, a changed `defaultSkinId`, a changed `allowedHostNames` and turning `automaticUpdateCheck` on need an `extensions:manage` token ([details](#extension-management-authorization)) | |
 
-Settings fields include: `gatewayMode`, `themeMode`, `logLevel`, `weightFlowMultiplier`, `volumeFlowMultiplier`, `hotWaterFlowMultiplier`, `scalePowerMode`, `blockOnNoScale`, `blockTareDuringShot`, `stopHotWaterAtWeight`, `preferredMachineId`, `preferredScaleId`, `preferredGrinderDeviceId`, `defaultSkinId`, `automaticUpdateCheck`, `chargingMode`, `nightModeEnabled`, `nightModeSleepTime`, `nightModeMorningTime`, `lowBatteryBrightnessLimit`, `keepAwake`, `keepServiceRunning`, `simulatedDevices`.
+Settings fields include: `gatewayMode`, `themeMode`, `logLevel`, `weightFlowMultiplier`, `volumeFlowMultiplier`, `hotWaterFlowMultiplier`, `scalePowerMode`, `blockOnNoScale`, `blockTareDuringShot`, `stopHotWaterAtWeight`, `preferredMachineId`, `preferredScaleId`, `preferredGrinderDeviceId`, `defaultSkinId`, `automaticUpdateCheck`, `allowedHostNames`, `chargingMode`, `nightModeEnabled`, `nightModeSleepTime`, `nightModeMorningTime`, `lowBatteryBrightnessLimit`, `keepAwake`, `keepServiceRunning`, `simulatedDevices`.
+
+`allowedHostNames` (array of strings, default `[]`): extra DNS names the API
+and skin servers answer besides numeric addresses, `localhost`, `.local` names
+and the device's own host name (see [Browser origins](#browser-origins)). At
+most 32 names of dot-separated DNS labels; they are stored lower-case without a
+trailing dot, and an IP address or any other value is a `400`. A change needs an
+`extensions:manage` token in protected mode and, like every write, is refused
+from a foreign browser origin. The same list is editable under Settings >
+Security > Allowed host names.
 
 Android session-only USB IDs are usable for the current attachment but are not durable device identities. Writing one to `preferredMachineId` leaves the existing preference unchanged. For `preferredScaleId`, a currently discovered, protocol-identified serial-less USB Half Decent Scale is saved as the durable family selector `usb-hds:any`; unsupported or absent session-only scale IDs return `400`. Clients may also save `usb-hds:any` directly without a connected scale. `null` still clears either preference.
 

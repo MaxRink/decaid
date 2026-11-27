@@ -243,6 +243,17 @@ class WebUIService implements SkinServingSelectionSource {
   void Function()? skinProxyTokenRevoker;
   String? Function(String path)? skinIdentityProvider;
   Iterable<String> Function(String path)? legacySkinPathsProvider;
+  Iterable<String> Function()? allowedHostNamesProvider;
+
+  /// The DNS names, besides numeric, loopback and `.local` hosts, that the
+  /// skin and API servers answer: the `allowedHostNames` setting plus this
+  /// device's own host name.
+  Set<String> admittedHostNames() =>
+      hostNameAllowlist(allowedHostNamesProvider?.call() ?? const []);
+
+  late final Middleware _hostAdmission = admittedHostMiddleware(
+    admittedHostNames,
+  );
 
   Future<bool> _isDeviceAddress(String host) async {
     if (host == 'localhost' || host == '127.0.0.1' || host == '::1') {
@@ -403,6 +414,7 @@ class WebUIService implements SkinServingSelectionSource {
     }
 
     final handler = const Pipeline()
+        .addMiddleware(_hostAdmission)
         .addMiddleware(logRequests())
         .addMiddleware(expirationModifier)
         .addMiddleware(skinApiInjector)
@@ -635,6 +647,9 @@ class WebUIService implements SkinServingSelectionSource {
     }
   }
 
+  Handler _redirectHandler(int Function() targetPort) =>
+      _hostAdmission((request) => _redirectResponse(request, targetPort()));
+
   Future<Response> _redirectResponse(Request request, int targetPort) async {
     final direct = directRequestHost(request);
     if (direct == null || !await _isDeviceHost(direct.host)) {
@@ -663,10 +678,16 @@ class WebUIService implements SkinServingSelectionSource {
     final info = request.context['shelf.io.connection_info'];
     if (info is! HttpConnectionInfo) return null;
     try {
-      return canonicalPageHost(
-        peer: info.remoteAddress,
-        addresses: await currentBrowserOriginAddresses(),
-      );
+      final peer = info.remoteAddress;
+      final device = await currentBrowserOriginAddresses();
+      final named = <String>{};
+      for (final address in await _resolvedAddresses(host)) {
+        final numeric = _numericAddress(address);
+        if (numeric != null && device.contains(numeric)) named.add(numeric);
+      }
+      final candidates = named.isEmpty ? device : named;
+      return canonicalPageHost(peer: peer, addresses: candidates) ??
+          onLinkPageHost(peer: peer, addresses: candidates);
     } catch (e) {
       _log.fine('Could not pick a numeric skin address: $e');
       return null;
@@ -684,8 +705,9 @@ class WebUIService implements SkinServingSelectionSource {
     await _entryServer?.close(force: true);
     if (version != _lifecycleVersion || (isCancelled?.call() ?? false)) return;
     final listenerId = newListenerIdentity();
+    final redirect = _redirectHandler(() => port);
     Future<Response> boundHandler(Request request) async {
-      final response = await _redirectResponse(request, port);
+      final response = await redirect(request);
       return response.change(
         headers: {...response.headersAll, listenerIdentityHeader: listenerId},
       );
@@ -739,7 +761,7 @@ class WebUIService implements SkinServingSelectionSource {
       HttpServer? server;
       try {
         server = await _bindSkinPort(
-          (request) => _redirectResponse(request, _entryPort),
+          _redirectHandler(() => _entryPort),
           aliasPort,
         );
       } catch (e) {

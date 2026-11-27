@@ -60,6 +60,7 @@ class SettingsHandler {
         'preferredGrinderDeviceId': preferredGrinderDeviceId,
         'defaultSkinId': defaultSkinId,
         'automaticUpdateCheck': automaticUpdateCheck,
+        allowedHostNamesSetting: _controller.allowedHostNames,
         'chargingMode': _controller.chargingMode.name,
         'nightModeEnabled': _controller.nightModeEnabled,
         'nightModeSleepTime': _controller.nightModeSleepTime,
@@ -103,6 +104,34 @@ class SettingsHandler {
         return jsonBadRequest({
           'error': 'webUiPath must be a skin folder inside the skin storage',
         });
+      }
+      List<String>? allowedHostNames;
+      if (json.containsKey(allowedHostNamesSetting)) {
+        final value = json[allowedHostNamesSetting];
+        final names = value is List && value.length <= maxAllowedHostNames
+            ? [
+                for (final name in value)
+                  name is String ? normalizeHostName(name) : null,
+              ]
+            : const [null];
+        if (names.contains(null)) {
+          return jsonBadRequest({
+            'message':
+                '$allowedHostNamesSetting must be a list of at most '
+                '$maxAllowedHostNames DNS host names',
+          });
+        }
+        allowedHostNames = {...names.nonNulls}.toList();
+        if (!const ListEquality<String>().equals(
+          allowedHostNames,
+          _controller.allowedHostNames,
+        )) {
+          final denial = await requireExtensionManagement(
+            request,
+            action: 'POST /api/v1/settings $allowedHostNamesSetting',
+          );
+          if (denial != null) return denial;
+        }
       }
       if (json.containsKey('gatewayMode')) {
         final GatewayMode? gatewayMode = GatewayModeFromString.fromString(
@@ -261,6 +290,9 @@ class SettingsHandler {
             'message': 'automaticUpdateCheck must be a boolean',
           });
         }
+      }
+      if (allowedHostNames != null) {
+        await _controller.setAllowedHostNames(allowedHostNames);
       }
       if (json.containsKey('chargingMode')) {
         final mode = ChargingModeFromString.fromString(json['chargingMode']);

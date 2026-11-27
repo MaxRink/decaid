@@ -591,7 +591,7 @@ void main() {
     final response = await request.close();
     final body = await response.transform(utf8.decoder).join();
 
-    expect(response.statusCode, HttpStatus.notFound);
+    expect(response.statusCode, HttpStatus.forbidden);
     expect(response.headers.value(HttpHeaders.locationHeader), isNull);
     expect(body, isNot(contains('skin-')));
     expect(body, isNot(contains('reaprime-proxy-token')));

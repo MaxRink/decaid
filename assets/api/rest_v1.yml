@@ -27,15 +27,22 @@ info:
     `POST /api/v1/data/sync`. The rest of the API is unchanged; general
     authentication is tracked in #1135.
 
-    Every route, in both modes, applies one browser admission policy before
-    any handler runs. A request that carries `Origin`, `Referer` or any
-    `Sec-Fetch-*` header is a browser request:
+    Every request, browser or not, is refused with 403 and
+    `{"error":"This device only answers its IP address, localhost, .local names and the host names in the allowedHostNames setting"}`
+    unless its raw `Host` header is a numeric address (other than `0.0.0.0`
+    or `::`), `localhost` or a `*.localhost` name, a `*.local` name, the
+    device's own host name or a name in the `allowedHostNames` setting.
+    Forwarding headers do not change the host this check sees.
+
+    Every route, in both modes, also applies one browser admission policy
+    before any handler runs. A request that carries `Origin`, `Referer` or
+    any `Sec-Fetch-*` header is a browser request:
 
     - It is refused with 403 and
       `{"error":"This API only answers browsers on the device address"}`
-      when its raw `Host` header is not `localhost`, a loopback address or a
-      numeric address currently assigned to the device, or when it carries
-      `Forwarded` or an `X-Forwarded-*` header.
+      when its numeric `Host` is not loopback or an address currently
+      assigned to the device, or when it carries `Forwarded` or an
+      `X-Forwarded-*` header.
     - With `Origin`, it is admitted only from one of the device's own origins;
       any other origin, including `Origin: null`, is answered 403 with
       `{"error":"This API does not accept requests from this browser origin"}`
@@ -1998,8 +2005,9 @@ paths:
         extension management protection is ON. That is a body containing
         `webUiPath`, setting `defaultSkinId` to a skin other than the
         current default, or setting `automaticUpdateCheck` to true while it
-        is off (automatic checks install plugin and skin updates). Such a
-        body then needs `Authorization: Bearer <token>` scoped
+        is off (automatic checks install plugin and skin updates), or
+        changing `allowedHostNames` (which widens the host names the
+        device answers). Such a body then needs `Authorization: Bearer <token>` scoped
         `extensions:manage` (see the extensionsManage security scheme) and
         is refused with 401 or 403 before any key is applied. When
         protection is OFF (the default), no token is needed, and in every
@@ -8426,6 +8434,14 @@ components:
           description: 'Whether to automatically check for updates. Automatic checks install plugin and skin updates, so setting true while it is off is gated only while extension management protection is ON and then requires a bearer token scoped extensions:manage (see POST /api/v1/settings); turning it off needs none.'
           type: boolean
           nullable: true
+        allowedHostNames:
+          description: 'Extra DNS names the API and skin servers answer besides numeric addresses, localhost, .local names and the device''s own host name. Stored lower-case without a trailing dot; an IP address or any other value is a 400. A change is gated only while extension management protection is ON, and then requires a bearer token scoped extensions:manage.'
+          type: array
+          maxItems: 32
+          items:
+            type: string
+            maxLength: 253
+          example: ["decent.lan"]
         chargingMode:
           type: string
           enum: [disabled, longevity, balanced, highAvailability]
@@ -8540,6 +8556,11 @@ components:
         automaticUpdateCheck:
           description: Whether automatic update checking is enabled
           type: boolean
+        allowedHostNames:
+          description: Extra DNS names the API and skin servers answer (see the request schema)
+          type: array
+          items:
+            type: string
         chargingMode:
           type: string
           enum: [disabled, longevity, balanced, highAvailability]

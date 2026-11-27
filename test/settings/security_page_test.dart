@@ -134,6 +134,32 @@ void main() {
     });
   });
 
+  group('allowed host names', () {
+    testWidgets('valid names are saved normalized, invalid ones are not', (
+      tester,
+    ) async {
+      await useStoredMode(requireAuthorization: true);
+      await pumpSecurityPage(tester);
+      final field = find.byKey(const Key('allowedHostNames'));
+      final save = find.text('Save host names');
+
+      await tester.enterText(field, 'not a/name');
+      await tester.ensureVisible(save);
+      await tester.tap(save);
+      await tester.pumpAndSettle();
+      expect(controller.allowedHostNames, isEmpty);
+
+      await tester.enterText(field, 'Decent.LAN., proxy.home.arpa');
+      await tester.tap(save);
+      await tester.pumpAndSettle();
+      expect(controller.allowedHostNames, ['decent.lan', 'proxy.home.arpa']);
+      expect(await settingsService.allowedHostNames(), [
+        'decent.lan',
+        'proxy.home.arpa',
+      ]);
+    });
+  });
+
   group('mode display', () {
     testWidgets('compatibility mode states the risk and the upgrade notice', (
       tester,

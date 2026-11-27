@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:logging/logging.dart';
 import 'package:reaprime/src/account/account_page.dart';
+import 'package:reaprime/src/services/webserver/request_host.dart';
 import 'package:reaprime/src/settings/settings_controller.dart';
 import 'package:shadcn_ui/shadcn_ui.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -20,6 +21,44 @@ class SecurityPage extends StatefulWidget {
 class _SecurityPageState extends State<SecurityPage> {
   final _log = Logger('Security Page');
   bool _saving = false;
+  late final _hostNames = TextEditingController(
+    text: widget.controller.allowedHostNames.join(', '),
+  );
+
+  @override
+  void dispose() {
+    _hostNames.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveAllowedHostNames() async {
+    final entries = _hostNames.text
+        .split(RegExp(r'[\s,]+'))
+        .where((entry) => entry.isNotEmpty)
+        .toList();
+    final names = entries.map(normalizeHostName).toList();
+    final messenger = ScaffoldMessenger.of(context);
+    if (names.contains(null) || names.length > maxAllowedHostNames) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Enter up to 32 host names, such as decent.lan.'),
+        ),
+      );
+      return;
+    }
+    try {
+      await widget.controller.setAllowedHostNames({...names.nonNulls}.toList());
+      _hostNames.text = widget.controller.allowedHostNames.join(', ');
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Allowed host names saved.')),
+      );
+    } catch (error, stackTrace) {
+      _log.warning('Saving allowed host names failed', error, stackTrace);
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not save the host names.')),
+      );
+    }
+  }
 
   Future<void> _setRequireExtensionManagementAuthorization(bool value) async {
     if (_saving) return;
@@ -75,6 +114,7 @@ class _SecurityPageState extends State<SecurityPage> {
                     _buildCompatibilityWarningCard(),
                     _buildUpgradeNoticeCard(),
                   ],
+                  _buildHostNamesCard(),
                   _buildLinksCard(),
                 ],
               ),
@@ -199,6 +239,41 @@ class _SecurityPageState extends State<SecurityPage> {
             'server is proposed in #925. Other REST and WebSocket APIs are not '
             'covered by this setting, and optional full API authentication is '
             'tracked in #1135.',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHostNamesCard() {
+    return ShadCard(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        spacing: 8,
+        children: [
+          _cardHeading(
+            icon: Icons.dns_outlined,
+            color: Theme.of(context).colorScheme.primary,
+            text: 'Allowed host names',
+          ),
+          const Text(
+            'The API and skins answer the device IP address, localhost, '
+            '.local names and this device\'s own name. Add other names here, '
+            'for example a router DNS name or a reverse proxy upstream name. '
+            'Only add names that you control.',
+          ),
+          TextField(
+            key: const Key('allowedHostNames'),
+            controller: _hostNames,
+            decoration: const InputDecoration(hintText: 'decent.lan'),
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: ShadButton(
+              onPressed: _saveAllowedHostNames,
+              child: const Text('Save host names'),
+            ),
           ),
         ],
       ),

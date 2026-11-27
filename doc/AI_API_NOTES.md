@@ -343,16 +343,30 @@ section, or for development and automation from `--extensions-token` or the
   `snapshot()` per request, so a request enumerates the interfaces at most
   once however many checks it needs, and an enumeration failure is a
   fail-closed refusal.
+- Before any of that, `admittedHostMiddleware` (`webserver/request_host.dart`)
+  is the first middleware of `buildWebServerHandler` and wraps every skin
+  listener (skin port, port 3000 entry, alias ports). It reads the raw `Host`
+  through `rawRequestHost` (forwarding headers ignored; no `Host` falls back to
+  the listener address, `0.0.0.0` on a wildcard bind, which is refused) and
+  admits only `isAdmittedHost`: numeric addresses except the unspecified ones,
+  `localhost`/`*.localhost`, `*.local`, `Platform.localHostname` and the
+  `allowedHostNames` setting (`hostNameAllowlist`, fed through
+  `WebUIService.allowedHostNamesProvider` from `SettingsController`). It runs
+  for every request, browser or not, because over plain HTTP browsers send no
+  Fetch Metadata and a rebound `fetch(..., {referrerPolicy: 'no-referrer'})`
+  carries no browser signal at all. Changing `allowedHostNames` over
+  `POST /api/v1/settings` goes through `requireExtensionManagement`; it is not
+  in `extensionManagementSettingsKeys`, so `host.localApi` cannot change it.
 - A request is a browser request when it carries `Origin`, `Referer` or any
-  `Sec-Fetch-*` header; everything else passes untouched. For a browser
+  `Sec-Fetch-*` header; everything else passes on. For a browser
   request the middleware refuses `Forwarded` and `X-Forwarded-*` headers and
   validates the raw `Host` header with `directRequestHost`
   (`webserver/request_host.dart`), never `requestedUri.host`: `dart:io`
   builds `requestedUri` from `X-Forwarded-Host` and `X-Forwarded-Proto` when
   they are present, so a rebound same-origin page could otherwise name the
-  device address in a header. `isDeviceHost` accepts loopback names or a
-  numeric address from the same listing, which is the DNS-rebinding guard: a
-  rebound name is never a device host even though it resolves to one.
+  device address in a header. `admitsBrowserHost` requires a numeric host to
+  be loopback or in the same listing (`isDeviceHost`) and a name to pass
+  `isAdmittedHost`; a name is still never a trusted origin.
 - With `Origin` it refuses every method from an untrusted origin, `GET`
   included: `GET /api/v1/devices/scan` scans and connects, so "safe" methods
   are not assumed to be side-effect free. Without `Origin` it reads
@@ -378,7 +392,12 @@ section, or for development and automation from `--extensions-token` or the
 - The skin server reads the same raw `Host` through `directRequestHost`: a
   request with forwarding headers gets neither the skin API script nor the
   account-proxy token, and the port 3000 entry and alias redirects send a name
-  that resolves to the device to `canonicalPageHost`'s numeric address.
+  that resolves to the device to a numeric address: `canonicalPageHost` over
+  the device addresses the name resolves to, and when that is ambiguous
+  `onLinkPageHost`, the candidate sharing the longest prefix with the peer
+  (at least /16 IPv4, /64 IPv6; dart:io exposes neither netmasks nor the
+  socket's local address). Only when nothing fits is the name kept. The
+  built-in pages keep `canonicalPageHost`'s fail-closed tie handling.
 - A name is still never authority, but a browser that reached a built-in page
   through one would load a page whose every management request is then refused.
   `builtinBrowserCanonicalRedirect` therefore canonicalises the *page entry*

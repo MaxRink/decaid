@@ -24,7 +24,7 @@ const _settingsPagePath = '/api/v1/plugins/$_settingsPluginId/ui';
 const _thirdPartyPagePath = '/api/v1/plugins/dye2.reaplugin/ui';
 const _skinUpdatePath = '/api/v1/webui/skins/update';
 const _settingsPath = '/api/v1/settings';
-const _aliasHost = 'de1tablet.home';
+const _aliasHost = 'de1tablet.local';
 const _hostileOrigin = 'https://evil.example';
 const _foreignNumericHost = '10.9.9.9';
 const _managedInterfaceAddress = '192.168.12.64';
@@ -1969,7 +1969,7 @@ void main() {
         403,
         reason: _evidence('POST alias settings', reply),
       );
-      expect(reply.error, untrustedBrowserHostError);
+      expect(reply.error, crossOriginRequestError);
       expect(reply.corsAllowOrigin, isEmpty);
       expect(surface.skins.mutations, before);
     });
@@ -2029,7 +2029,7 @@ void main() {
         'POST',
         _skinUpdatePath,
         origin: surface.aliasPageOrigin,
-        hostHeader: '127.0.0.1:${surface.apiPort}',
+        hostHeader: '127.0.0.1',
         headers: {
           'x-forwarded-host': '127.0.0.1:${surface.apiPort}',
           'x-forwarded-for': '127.0.0.1',

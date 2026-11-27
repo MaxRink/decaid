@@ -51,6 +51,8 @@ class SettingsController with ChangeNotifier {
 
   bool _automaticUpdateCheck = true;
 
+  List<String> _allowedHostNames = const [];
+
   bool _requireExtensionManagementAuthorization = true;
   Future<void> _extensionManagementAuthorizationOps = Future.value();
 
@@ -105,6 +107,7 @@ class SettingsController with ChangeNotifier {
   String? get preferredGrinderDeviceId => _preferredGrinderDeviceId;
   String get defaultSkinId => _defaultSkinId;
   bool get automaticUpdateCheck => _automaticUpdateCheck;
+  List<String> get allowedHostNames => _allowedHostNames;
   bool get requireExtensionManagementAuthorization =>
       _requireExtensionManagementAuthorization;
   UpdateChannel get updateChannel => _updateChannel;
@@ -156,6 +159,9 @@ class SettingsController with ChangeNotifier {
         .preferredGrinderDeviceId();
     _defaultSkinId = await _settingsService.defaultSkinId();
     _automaticUpdateCheck = await _settingsService.automaticUpdateCheck();
+    _allowedHostNames = List.unmodifiable(
+      await _settingsService.allowedHostNames(),
+    );
     _updateChannel = await _settingsService.updateChannel();
     _telemetryConsent = await _settingsService.telemetryConsent();
     _telemetryPromptShown = await _settingsService.telemetryPromptShown();
@@ -385,6 +391,15 @@ class SettingsController with ChangeNotifier {
     }
     _automaticUpdateCheck = value;
     await _settingsService.setAutomaticUpdateCheck(value);
+    notifyListeners();
+  }
+
+  /// Extra DNS names the API and skin servers answer; see `doc/Api.md`
+  /// "Host names". Callers validate with `normalizeHostName`.
+  Future<void> setAllowedHostNames(List<String> names) async {
+    if (const ListEquality<String>().equals(names, _allowedHostNames)) return;
+    _allowedHostNames = List.unmodifiable(names);
+    await _settingsService.setAllowedHostNames(_allowedHostNames);
     notifyListeners();
   }
 

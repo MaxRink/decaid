@@ -812,7 +812,67 @@ void main() {
             expect(settings.automaticUpdateCheck, isTrue);
             expect(settings.gatewayMode, GatewayMode.full);
           });
+
+          test('changing allowedHostNames $label $outcome', () async {
+            final reply = await send(
+              'POST',
+              '/api/v1/settings',
+              authorization: credentialHeader(kind),
+              json: {
+                'allowedHostNames': ['Decent.LAN.', 'proxy.home.arpa'],
+              },
+            );
+            if (!admitted) {
+              expect(reply.status, refusal, reason: '$reply');
+              expect(reply.json, refusalBody(kind), reason: '$reply');
+              expect(settings.allowedHostNames, isEmpty);
+              return;
+            }
+            expect(reply.status, 200, reason: '$reply');
+            expect(settings.allowedHostNames, [
+              'decent.lan',
+              'proxy.home.arpa',
+            ]);
+          });
         }
+
+        test(
+          'allowedHostNames is validated and the current value is free',
+          () async {
+            for (final bad in [
+              'decent.lan',
+              ['evil example'],
+              ['192.168.1.5'],
+              [1],
+              List.filled(33, 'a.lan'),
+            ]) {
+              final reply = await send(
+                'POST',
+                '/api/v1/settings',
+                authorization: credentialHeader('manager'),
+                json: {'allowedHostNames': bad},
+              );
+              expect(reply.status, 400, reason: '$bad');
+            }
+            final same = await send(
+              'POST',
+              '/api/v1/settings',
+              json: {'allowedHostNames': <String>[]},
+            );
+            expect(same.status, 200);
+            final foreign = await send(
+              'POST',
+              '/api/v1/settings',
+              authorization: credentialHeader('manager'),
+              origin: 'http://evil.example',
+              json: {
+                'allowedHostNames': ['evil.example'],
+              },
+            );
+            expect(foreign.status, 403);
+            expect(settings.allowedHostNames, isEmpty);
+          },
+        );
 
         test('a default skin already in effect stays legacy', () async {
           final reply = await send(

@@ -126,6 +126,9 @@ class RecordingWebUIService extends Fake implements WebUIService {
       browserOriginAddresses;
 
   @override
+  Set<String> admittedHostNames() => const {};
+
+  @override
   String serverPath() => '/recorded-skin';
 
   @override

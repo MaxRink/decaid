@@ -1,6 +1,18 @@
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:logging/logging.dart';
 import 'package:shelf/shelf.dart';
+
+const allowedHostNamesSetting = 'allowedHostNames';
+
+const maxAllowedHostNames = 32;
+
+const unadmittedHostError =
+    'This device only answers its IP address, localhost, .local names and '
+    'the host names in the allowedHostNames setting';
+
+final _log = Logger('RequestHost');
 
 final class RequestHost {
   const RequestHost(this.host, this.port);
@@ -38,14 +50,87 @@ bool carriesForwardingHeaders(Request request) =>
       return lower == 'forwarded' || lower.startsWith('x-forwarded-');
     });
 
-RequestHost? directRequestHost(Request request) {
-  if (carriesForwardingHeaders(request)) return null;
+RequestHost? directRequestHost(Request request) =>
+    carriesForwardingHeaders(request) ? null : rawRequestHost(request);
+
+RequestHost? rawRequestHost(Request request) {
   final hostHeader = request.headers['host'];
   if (hostHeader != null) return parseHostHeader(hostHeader);
+  if (carriesForwardingHeaders(request)) return null;
   final uri = request.requestedUri;
   return uri.host.isEmpty
       ? null
       : RequestHost(uri.host, uri.hasPort ? uri.port : null);
+}
+
+/// Whether [host] (a parsed `Host` value) is a name a DNS-rebinding page
+/// cannot own: a numeric address, a loopback name, an mDNS `.local` name or
+/// one of [allowedNames] (normalized with [normalizeHostName]).
+bool isAdmittedHost(String host, Set<String> allowedNames) {
+  final address = InternetAddress.tryParse(host);
+  if (address != null) {
+    final normalized = _normalizedAddress(address);
+    return normalized != null &&
+        !normalized.rawAddress.every((byte) => byte == 0);
+  }
+  final name = normalizeHostName(host);
+  if (name == null) return false;
+  return name == 'localhost' ||
+      name.endsWith('.localhost') ||
+      name.endsWith('.local') ||
+      allowedNames.contains(name);
+}
+
+/// Lower-cases a DNS name and drops one trailing dot; null for anything that
+/// is not dot-separated DNS labels or that is a numeric address.
+String? normalizeHostName(String name) {
+  final trimmed = name.trim().toLowerCase();
+  if (InternetAddress.tryParse(trimmed) != null) return null;
+  if (trimmed.length > 253 || !_regName.hasMatch(trimmed)) return null;
+  return trimmed.endsWith('.')
+      ? trimmed.substring(0, trimmed.length - 1)
+      : trimmed;
+}
+
+/// The configured names plus this device's own host name, normalized.
+Set<String> hostNameAllowlist(Iterable<String> configured) => {
+  for (final name in [...configured, ?_localHostname()])
+    ?normalizeHostName(name),
+};
+
+String? _localHostname() {
+  try {
+    return Platform.localHostname;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Refuses every request whose raw `Host` (forwarding headers ignored) is not
+/// [isAdmittedHost]. A request without a `Host` header is judged by the
+/// address the listener reports, which is the unspecified address on a
+/// wildcard bind and therefore refused.
+Middleware admittedHostMiddleware(Set<String> Function() allowedNames) {
+  return (Handler inner) {
+    return (Request request) {
+      final host = rawRequestHost(request);
+      if (host != null && isAdmittedHost(host.host, allowedNames())) {
+        return inner(request);
+      }
+      _log.warning(
+        '${request.method} /${request.url.path} refused (403): the Host is '
+        'not an address, a local name or an allowed host name',
+      );
+      return Response(
+        403,
+        body: jsonEncode({'error': unadmittedHostError}),
+        headers: const {
+          'content-type': 'application/json',
+          'cache-control': 'no-store',
+        },
+      );
+    };
+  };
 }
 
 String? canonicalPageHost({
@@ -73,6 +158,52 @@ String? canonicalPageHost({
     candidates.add(parsed.address);
   }
   return candidates.length == 1 ? candidates.single : null;
+}
+
+/// Picks the device address that shares the longest prefix with [peer], as a
+/// stand-in for "the address on the peer's subnet".
+// ponytail: dart:io exposes no netmasks or local socket address, so the subnet
+// is approximated by a shared prefix of at least /16 (IPv4) or /64 (IPv6).
+String? onLinkPageHost({
+  required InternetAddress peer,
+  required Iterable<String> addresses,
+}) {
+  final normalizedPeer = _normalizedAddress(peer);
+  if (normalizedPeer == null || normalizedPeer.isLoopback) return null;
+  final minimum = normalizedPeer.type == InternetAddressType.IPv4 ? 16 : 64;
+  String? best;
+  var bestBits = minimum - 1;
+  for (final address in addresses) {
+    final parsed = _parsedAddress(address);
+    if (parsed == null || !_isCandidate(parsed, normalizedPeer)) continue;
+    final bits = _sharedPrefixBits(
+      parsed.rawAddress,
+      normalizedPeer.rawAddress,
+    );
+    if (bits > bestBits) {
+      best = parsed.address;
+      bestBits = bits;
+    }
+  }
+  return best;
+}
+
+int _sharedPrefixBits(List<int> a, List<int> b) {
+  var bits = 0;
+  for (var index = 0; index < a.length; index++) {
+    final diff = a[index] ^ b[index];
+    if (diff == 0) {
+      bits += 8;
+      continue;
+    }
+    var mask = 0x80;
+    while (diff & mask == 0) {
+      bits++;
+      mask >>= 1;
+    }
+    break;
+  }
+  return bits;
 }
 
 final _portSuffix = RegExp(r'^:(\d{1,5})$');

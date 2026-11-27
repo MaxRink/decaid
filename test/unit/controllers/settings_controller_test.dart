@@ -93,6 +93,9 @@ class _SpySettingsService implements SettingsService {
       _preferredGrinderDeviceId = deviceId;
 
   @override
+  Future<List<String>> allowedHostNames() async => const [];
+
+  @override
   dynamic noSuchMethod(Invocation invocation) {
     if (invocation.isMethod) return Future.value();
     if (invocation.isGetter) return null;
