@@ -175,13 +175,17 @@ void main() {
     });
 
     await load(const {}, '''
-      globalThis.__reaprimePluginHostBridge.log(pluginBridgeToken, "bypass");
-      globalThis.__reaprimePluginHostBridge.emit(
-        pluginBridgeToken, "bypass", null
+      globalThis.__reaprimePluginHostBridge.log(
+        pluginBridgeToken, pluginGeneration, "bypass"
       );
-      globalThis.__reaprimePluginHostBridge.storage(pluginBridgeToken, {
-        type: "write", key: "bypass", data: "no"
-      });
+      globalThis.__reaprimePluginHostBridge.emit(
+        pluginBridgeToken, pluginGeneration, "bypass", null
+      );
+      globalThis.__reaprimePluginHostBridge.storage(
+        pluginBridgeToken, pluginGeneration, {
+          type: "write", key: "bypass", data: "no"
+        }
+      );
     ''');
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
@@ -368,7 +372,10 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
     expect(
-      manager.js.evaluate('String(globalThis.__timerFired)').stringResult,
+      manager
+          .jsRealmOf(pluginId)
+          .evaluate('String(globalThis.__timerFired)')
+          .stringResult,
       'true',
     );
   });
@@ -383,7 +390,10 @@ void main() {
     manager.dispatchEvent(pluginId, 'stateUpdate', const {});
 
     expect(
-      manager.js.evaluate('String(globalThis.__eventCount)').stringResult,
+      manager
+          .jsRealmOf(pluginId)
+          .evaluate('String(globalThis.__eventCount)')
+          .stringResult,
       '1',
     );
   });
@@ -398,7 +408,10 @@ void main() {
     manager.dispatchEvent(pluginId, 'stateUpdate', const {});
 
     expect(
-      manager.js.evaluate('String(globalThis.__eventCount || 0)').stringResult,
+      manager
+          .jsRealmOf(pluginId)
+          .evaluate('String(globalThis.__eventCount || 0)')
+          .stringResult,
       '0',
     );
   });
@@ -414,7 +427,10 @@ void main() {
     manager.dispatchEvent(pluginId, 'shotUpdated', const {});
 
     expect(
-      manager.js.evaluate('String(globalThis.__eventCount)').stringResult,
+      manager
+          .jsRealmOf(pluginId)
+          .evaluate('String(globalThis.__eventCount)')
+          .stringResult,
       '2',
     );
   });
@@ -430,7 +446,10 @@ void main() {
     manager.dispatchEvent(pluginId, 'shotUpdated', const {});
 
     expect(
-      manager.js.evaluate('String(globalThis.__eventCount || 0)').stringResult,
+      manager
+          .jsRealmOf(pluginId)
+          .evaluate('String(globalThis.__eventCount || 0)')
+          .stringResult,
       '0',
     );
   });

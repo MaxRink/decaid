@@ -345,9 +345,7 @@ function createPlugin(host) {
   return {
     id: "$id",
     onLoad(settings) {
-      globalThis.__modeLoads = (globalThis.__modeLoads || 0) + 1;
-      host.storage({type: "write", key: "mode",
-        data: globalThis.__modeLoads + ":" + settings.Mode});
+      host.storage({type: "write", key: "mode", data: settings.Mode});
     }
   };
 }
@@ -355,16 +353,18 @@ function createPlugin(host) {
       await service.addPlugin(dir.path);
       await service.savePluginSettings(id, {'Mode': 'off'});
       await service.loadPlugin(id);
-      expect(await waitForStorage(id, 'mode', '1:off'), '1:off');
+      expect(await waitForStorage(id, 'mode', 'off'), 'off');
+      final loadedGeneration = service.pluginManager.pluginGeneration(id)!;
 
       final res = await postSettings(id, {'Mode': 'auto'});
 
       expect(res.statusCode, 200);
       expect(jsonDecode(await res.readAsString()), {'Mode': 'auto'});
       expect(service.isPluginLoaded(id), isTrue);
+      expect(await waitForStorage(id, 'mode', 'auto'), 'auto');
       expect(
-        await waitForStorage(id, 'mode', '2:auto'),
-        '2:auto',
+        service.pluginManager.pluginGeneration(id),
+        loadedGeneration + 2,
         reason: 'REST save must reload the loaded plugin exactly once',
       );
     });

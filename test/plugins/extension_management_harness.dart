@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:flutter_js/flutter_js.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
 import 'package:reaprime/src/plugins/plugin_manager.dart';
@@ -265,6 +266,12 @@ class ExtensionManagementHarness {
   final List<SeenRequest> settingsPosts;
   final Map<String, SlowRoute> slowRoutes;
   int _probeSeq = 0;
+  final Map<String, Completer<ProbeOutcome>> _probeReports = {};
+  final Map<
+    String,
+    ({String pluginId, JavascriptRuntime realm, int generation})
+  >
+  _stashes = {};
 
   ExtensionManagementHarness._({
     required this.tempDir,
@@ -489,34 +496,45 @@ class ExtensionManagementHarness {
     if (load) await loader.enablePlugin(id);
   }
 
-  void evaluate(String source) {
-    final result = manager.js.evaluate(source);
+  static const _probeChannel = 'extensionManagementProbe';
+
+  /// [pluginId]'s current JS realm, wired to report probe outcomes straight
+  /// to Dart so they still arrive while the probed plugin unloads itself.
+  JavascriptRuntime realmOf(String pluginId) {
+    final realm = manager.jsRealmOf(pluginId);
+    realm.onMessage(_probeChannel, (message) {
+      final report = message as Map<String, dynamic>;
+      _probeReports
+          .remove(report['tag'])
+          ?.complete(Map<String, dynamic>.from(report['outcome'] as Map));
+    });
+    return realm;
+  }
+
+  void evaluate(String pluginId, String source) {
+    final realm = realmOf(pluginId);
+    final result = realm.evaluate(source);
     if (result.isError) {
       throw StateError('JS evaluation failed: ${result.stringResult}');
     }
-    while (manager.js.executePendingJob() > 0) {}
+    while (realm.executePendingJob() > 0) {}
   }
 
   Future<ProbeOutcome> probe(
     String pluginId,
     String expression, {
-    String? reportVia,
     String probeGlobal = '__probes',
     Duration timeout = const Duration(seconds: 15),
   }) {
     final tag = 'probe-${++_probeSeq}';
-    final reporter = reportVia ?? pluginId;
-    final outcome = manager.emitStream
-        .firstWhere((event) => event['event'] == tag)
-        .then(
-          (event) =>
-              jsonDecode(event['payload'] as String) as Map<String, dynamic>,
-        )
-        .timeout(timeout);
-    evaluate('''
+    final report = _probeReports[tag] = Completer<ProbeOutcome>();
+    try {
+      evaluate(pluginId, '''
       (function () {
-        const report = (value) =>
-          globalThis.__probes[${jsonEncode(reporter)}].emit(${jsonEncode(tag)}, JSON.stringify(value));
+        const report = (value) => sendMessage(
+          ${jsonEncode(_probeChannel)},
+          JSON.stringify({ tag: ${jsonEncode(tag)}, outcome: value })
+        );
         let pending;
         try {
           pending = Promise.resolve(
@@ -536,18 +554,20 @@ class ExtensionManagementHarness {
         );
       })();
     ''');
-    return outcome;
+    } catch (_) {
+      _probeReports.remove(tag);
+      rethrow;
+    }
+    return report.future.timeout(timeout);
   }
 
   Future<ProbeOutcome> localApi(
     String pluginId,
     Object? path, {
     Map<String, Object?> options = const {},
-    String? reportVia,
   }) => probe(
     pluginId,
     'host.localApi(${jsonEncode(path)}, ${jsonEncode(options)})',
-    reportVia: reportVia,
   );
 
   Future<ProbeOutcome> fetch(
@@ -561,38 +581,87 @@ class ExtensionManagementHarness {
         .then((response) => response.text().then((text) => ({ status: response.status, body: text })))
     ''');
 
-  Future<String> settledState(String observerId, String expression) async {
-    final outcome = await probe(observerId, '''
+  /// Starts [expression] in [actorId]'s realm (default: [observerId]), lets a
+  /// marker request from [observerId] pass the bridge after it, and returns
+  /// how the attempt had settled by then.
+  Future<String> settledState(
+    String observerId,
+    String expression, {
+    String? actorId,
+  }) async {
+    final actor = actorId ?? observerId;
+    final key = '__settledState${++_probeSeq}';
+    evaluate(actor, '''
       (() => {
-        let state = "pending";
+        globalThis.$key = "pending";
         let attempt;
         try {
-          attempt = Promise.resolve($expression);
+          attempt = Promise.resolve(
+            globalThis.__probes[${jsonEncode(actor)}].run(${jsonEncode(expression)})
+          );
         } catch (error) {
           attempt = Promise.reject(error);
         }
         attempt.then(
-          (value) => { state = "resolved:" + JSON.stringify(value); },
-          (error) => { state = "rejected:" + String(error && error.message); }
+          (value) => { globalThis.$key = "resolved:" + JSON.stringify(value); },
+          (error) => { globalThis.$key = "rejected:" + String(error && error.message); }
         );
-        return host.localApi("$fixtureMarker").then(() => state);
-      })()
+      })();
     ''');
-    return outcome.value as String;
+    final marker = await localApi(observerId, fixtureMarker);
+    expect(marker.resolved, isTrue, reason: '$marker');
+    final realm = realmOf(actor);
+    while (realm.executePendingJob() > 0) {}
+    return realm.evaluate('globalThis.$key').stringResult;
   }
 
-  String staleLocalApi(
+  /// Remembers [pluginId]'s current realm and generation so that
+  /// [staleLocalApiState] can later try to act as that identity.
+  void stash(String pluginId, {String as = '__stale'}) {
+    _stashes[as] = (
+      pluginId: pluginId,
+      realm: realmOf(pluginId),
+      generation: manager.pluginGeneration(pluginId)!,
+    );
+  }
+
+  /// Tries a local API call as the identity stashed under [stash], lets a
+  /// marker from [observerId] through, and returns how the attempt settled.
+  ///
+  /// While the stashed realm is live, its own closure makes the call. Once
+  /// the identity is retired its realm is disposed, so no stale closure can
+  /// run at all; the call is then replayed from the plugin's current realm,
+  /// if it has one, under the stashed (retired) generation.
+  Future<String> staleLocalApiState(
+    String observerId,
     String path, {
     Map<String, Object?> options = const {},
     String stash = '__stale',
-  }) {
-    final call = 'host.localApi(${jsonEncode(path)}, ${jsonEncode(options)})';
-    return 'globalThis.$stash.run(${jsonEncode(call)})';
+  }) async {
+    final stashed = _stashes[stash]!;
+    final pluginId = stashed.pluginId;
+    if (stashed.realm.isRuntimeActive) {
+      return settledState(
+        observerId,
+        'host.localApi(${jsonEncode(path)}, ${jsonEncode(options)})',
+        actorId: pluginId,
+      );
+    }
+    expect(() => stashed.realm.evaluate('0'), throwsStateError);
+    if (!loader.isPluginLoaded(pluginId)) {
+      final marker = await localApi(observerId, fixtureMarker);
+      expect(marker.resolved, isTrue, reason: '$marker');
+      return 'retired: realm disposed';
+    }
+    return settledState(
+      observerId,
+      'globalThis.__reaprimePluginBridge.localApi(pluginId, '
+      '${stashed.generation}, pluginBridgeToken, ${jsonEncode(path)}, '
+      '${jsonEncode(options['method'] ?? 'GET')}, '
+      '${jsonEncode(options['body'])}, null)',
+      actorId: pluginId,
+    );
   }
-
-  void stash(String pluginId, {String as = '__stale'}) => evaluate(
-    'globalThis.$as = globalThis.__probes[${jsonEncode(pluginId)}];',
-  );
 
   Future<({int status, String body, Map<String, String> headers})>
   externalRequest(

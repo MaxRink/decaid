@@ -58,9 +58,9 @@ Future<void> _loadPlugin(
 }
 
 List<Map<String, dynamic>> _events(PluginManager manager, String id) {
-  final result = manager.js.evaluate(
-    'JSON.stringify(globalThis.__workflowEvents?.["$id"] ?? [])',
-  );
+  final result = manager
+      .jsRealmOf(id)
+      .evaluate('JSON.stringify(globalThis.__workflowEvents?.["$id"] ?? [])');
   return (jsonDecode(result.stringResult) as List<dynamic>)
       .cast<Map<String, dynamic>>();
 }
@@ -162,12 +162,11 @@ void main() {
     _advance(controller);
     final currentWorkflow = controller.currentWorkflow.toJson();
     await _loadPlugin(manager, 'reloaded.plugin');
+    expect(_events(manager, 'reloaded.plugin'), [currentWorkflow]);
     await _loadPlugin(manager, 'reloaded.plugin');
 
-    expect(_events(manager, 'reloaded.plugin'), [
-      currentWorkflow,
-      currentWorkflow,
-    ]);
+    // The reload runs in a fresh realm, so it must hold exactly its own one.
+    expect(_events(manager, 'reloaded.plugin'), [currentWorkflow]);
   });
 
   test('loading another plugin does not repeat existing snapshots', () async {
@@ -235,17 +234,36 @@ void main() {
   });
 
   test('failed loads do not receive snapshots', () async {
-    final manager = PluginManager(kvStore: FakeKeyValueStoreService());
+    // A failed load disposes its realm, so record deliveries on the Dart side.
+    final delivered = <String, List<Object?>>{};
+    final manager = PluginManager(
+      kvStore: FakeKeyValueStoreService(),
+      debugPrepareRealm: (pluginId, js) {
+        js.onMessage(
+          'workflowEvents',
+          (payload) => (delivered[pluginId] ??= []).add(payload),
+        );
+        final result = js.evaluate('''
+          const sink = [];
+          sink.push = (payload) =>
+            sendMessage("workflowEvents", JSON.stringify(payload));
+          globalThis.__workflowEvents = { [${jsonEncode(pluginId)}]: sink };
+        ''');
+        expect(result.isError, isFalse, reason: result.stringResult);
+      },
+    );
     final controller = WorkflowController();
     addTearDown(manager.dispose);
     addTearDown(controller.dispose);
 
     manager.attachWorkflowController(controller);
+    await _loadPlugin(manager, 'control.plugin');
+    expect(delivered['control.plugin'], hasLength(1));
     await expectLater(
       _loadPlugin(manager, 'failed.plugin', onLoad: 'throw new Error("boom");'),
       throwsException,
     );
 
-    expect(_events(manager, 'failed.plugin'), isEmpty);
+    expect(delivered['failed.plugin'], isNull);
   });
 }
