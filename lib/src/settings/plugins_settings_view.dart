@@ -13,6 +13,7 @@ import 'package:reaprime/src/plugins/plugin_loader_service.dart';
 import 'package:reaprime/src/plugins/plugin_device_surface_authority.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
 import 'package:reaprime/src/plugins/plugin_notifications.dart';
+import 'package:reaprime/src/plugins/plugin_replacement.dart';
 import 'package:reaprime/src/plugins/plugin_source.dart';
 import 'package:reaprime/src/plugins/plugin_source_service.dart';
 import 'package:reaprime/src/services/account/decent_account_service.dart';
@@ -688,11 +689,8 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
         children: [
           Expanded(
             child: Text(
-              pending.addedPermissions.isEmpty
-                  ? 'Update to ${pending.version} needs approval: the plugin '
-                        'holds stored secrets'
-                  : 'Update to ${pending.version} needs approval: adds '
-                        '${pending.addedPermissions.join(', ')}',
+              'Update to ${pending.version} needs approval: '
+              '${_pendingReasons(pending)}',
               style: Theme.of(context).textTheme.labelMedium,
             ),
           ),
@@ -706,49 +704,62 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
     );
   }
 
+  String _pendingReasons(PluginPendingUpdate pending) => [
+    if (pending.addedPermissions.isNotEmpty)
+      'adds ${pending.addedPermissions.join(', ')}',
+    if (pending.handsOverSecureSettings)
+      'the plugin holds stored passwords or tokens',
+  ].join('; ');
+
   Future<void> _approvePendingUpdate(
     BuildContext context,
     PluginManifest plugin,
     PluginPendingUpdate pending,
   ) async {
+    var keepSecureSettings = false;
     final approved = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text('Update ${plugin.name} to ${pending.version}?'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              pending.addedPermissions.isEmpty
-                  ? 'This plugin has stored passwords or tokens, so automatic '
-                        'updates wait for you to review the new version.'
-                  : 'This update requests new permissions:',
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Update ${plugin.name} to ${pending.version}?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (pending.addedPermissions.isNotEmpty) ...[
+                const Text('This update requests new permissions:'),
+                const SizedBox(height: 8),
+                ...pending.addedPermissions.map((p) => Text('• $p')),
+              ],
+              if (pending.addedPermissions.contains(
+                PluginPermissions.manageExtensions.wireName,
+              ))
+                const ExtensionManagementWarning(),
+              if (pending.handsOverSecureSettings)
+                _KeepSecureSettingsChoice(
+                  value: keepSecureSettings,
+                  onChanged: (value) =>
+                      setDialogState(() => keepSecureSettings = value),
+                ),
+              const SizedBox(height: 12),
+              Text(
+                'Current permissions: '
+                '${plugin.permissions.map((p) => p.wireName).join(', ')}',
+                style: Theme.of(context).textTheme.labelSmall,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
             ),
-            const SizedBox(height: 8),
-            ...pending.addedPermissions.map((p) => Text('• $p')),
-            if (pending.addedPermissions.contains(
-              PluginPermissions.manageExtensions.wireName,
-            ))
-              const ExtensionManagementWarning(),
-            const SizedBox(height: 12),
-            Text(
-              'Current permissions: '
-              '${plugin.permissions.map((p) => p.wireName).join(', ')}',
-              style: Theme.of(context).textTheme.labelSmall,
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Approve and update'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Approve and update'),
-          ),
-        ],
       ),
     );
 
@@ -756,7 +767,11 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
 
     await _runInstall(
       context,
-      () => _installReviewedUpdate(plugin.id, pending),
+      () => _installReviewedUpdate(
+        plugin.id,
+        pending,
+        keepSecureSettings: keepSecureSettings,
+      ),
       successMessage: 'Plugin updated',
       action: 'update the plugin',
       retry: () async {
@@ -802,13 +817,15 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
 
   Future<PluginManifest> _installReviewedUpdate(
     String pluginId,
-    PluginPendingUpdate reviewed,
-  ) {
+    PluginPendingUpdate reviewed, {
+    required bool keepSecureSettings,
+  }) {
     final current = _sourceService.sourceFor(pluginId)?.pendingUpdate;
     if (current == null ||
         current.version != reviewed.version ||
         current.releaseTag != reviewed.releaseTag ||
         current.commit != reviewed.commit ||
+        current.handsOverSecureSettings != reviewed.handsOverSecureSettings ||
         !setEquals(
           current.addedPermissions.toSet(),
           reviewed.addedPermissions.toSet(),
@@ -817,7 +834,10 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
         'The update changed. Review its permissions again.',
       );
     }
-    return _sourceService.approvePendingUpdate(pluginId);
+    return _sourceService.approvePendingUpdate(
+      pluginId,
+      keepSecureSettings: keepSecureSettings,
+    );
   }
 
   Future<void> _handleInstallAction(BuildContext context, String action) async {
@@ -895,12 +915,16 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
               assetName: detail.isEmpty ? null : detail,
               approveExtensionManagement: (candidate) =>
                   _approveExtensionManagement(context, candidate),
+              approveReplacement: (replacement) =>
+                  _approveReplacement(context, replacement),
             )
           : _sourceService.installFromGitHubBranch(
               repo,
               branch: detail.isEmpty ? 'main' : detail,
               approveExtensionManagement: (candidate) =>
                   _approveExtensionManagement(context, candidate),
+              approveReplacement: (replacement) =>
+                  _approveReplacement(context, replacement),
             ),
       successMessage: 'Plugin installed',
     );
@@ -920,6 +944,8 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
         path,
         approveExtensionManagement: (candidate) =>
             _approveExtensionManagement(context, candidate),
+        approveReplacement: (replacement) =>
+            _approveReplacement(context, replacement),
       ),
       successMessage: 'Plugin installed',
     );
@@ -1027,6 +1053,8 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
         tempDir.path,
         approveExtensionManagement: (candidate) =>
             _approveExtensionManagement(context, candidate),
+        approveReplacement: (replacement) =>
+            _approveReplacement(context, replacement),
       );
 
       if (context.mounted) {
@@ -1076,6 +1104,68 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
       ),
     );
     return approved == true;
+  }
+
+  Future<PluginReplacementDecision> _approveReplacement(
+    BuildContext context,
+    PluginReplacement replacement,
+  ) async {
+    final installed = replacement.installed;
+    final candidate = replacement.candidate;
+    final added = replacement.addedPermissions;
+    var keepSecureSettings = false;
+    final approved = mounted && context.mounted
+        ? await showDialog<bool>(
+            context: context,
+            builder: (context) => StatefulBuilder(
+              builder: (context, setDialogState) => AlertDialog(
+                title: Text(
+                  'Replace ${installed.name} ${installed.version} with '
+                  '${candidate.version}?',
+                ),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (replacement.sourceChanged)
+                      const Text(
+                        'This version comes from a different source than the '
+                        'installed one.',
+                      ),
+                    if (added.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      const Text('It requests new permissions:'),
+                      const SizedBox(height: 8),
+                      ...added.map((p) => Text('• $p')),
+                    ],
+                    if (replacement.handsOverSecureSettings)
+                      _KeepSecureSettingsChoice(
+                        value: keepSecureSettings,
+                        onChanged: (value) =>
+                            setDialogState(() => keepSecureSettings = value),
+                      ),
+                  ],
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('Cancel'),
+                  ),
+                  TextButton(
+                    key: const Key('approve-plugin-replacement'),
+                    onPressed: () => Navigator.of(context).pop(true),
+                    child: const Text('Replace'),
+                  ),
+                ],
+              ),
+            ),
+          )
+        : false;
+    if (approved != true) throw PluginInstallDeclinedException(candidate.id);
+    return PluginReplacementDecision(
+      approvedPermissions: added.toSet(),
+      keepSecureSettings: keepSecureSettings,
+    );
   }
 
   Future<void> _confirmRemovePlugin(
@@ -1618,6 +1708,33 @@ class _PluginsSettingsViewState extends State<PluginsSettingsView> {
       SnackBar(
         content: Text(message),
         backgroundColor: isError ? Colors.red : null,
+      ),
+    );
+  }
+}
+
+class _KeepSecureSettingsChoice extends StatelessWidget {
+  const _KeepSecureSettingsChoice({
+    required this.value,
+    required this.onChanged,
+  });
+
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return CheckboxListTile(
+      key: const Key('keep-secure-settings'),
+      contentPadding: EdgeInsets.zero,
+      controlAffinity: ListTileControlAffinity.leading,
+      value: value,
+      onChanged: (value) => onChanged(value ?? false),
+      title: const Text(
+        'Let the new version use the stored passwords and tokens',
+      ),
+      subtitle: const Text(
+        'Otherwise they are cleared and the plugin has to be set up again.',
       ),
     );
   }

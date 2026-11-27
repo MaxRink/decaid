@@ -8,6 +8,7 @@ import 'package:logging/logging.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
 import 'package:reaprime/src/plugins/plugin_package.dart';
+import 'package:reaprime/src/plugins/plugin_replacement.dart';
 import 'package:reaprime/src/plugins/plugin_source.dart';
 import 'package:reaprime/src/plugins/plugin_version.dart';
 import 'package:reaprime/src/services/github_credentials.dart';
@@ -99,7 +100,7 @@ class PluginSourceService {
     String? assetName,
     bool includePrerelease = false,
     ExtensionManagementApproval? approveExtensionManagement,
-    bool authorized = true,
+    PluginReplacementApprover? approveReplacement,
   }) async {
     final release = await fetchLatestGitHubRelease(
       repo,
@@ -129,7 +130,7 @@ class PluginSourceService {
           lastChecked: now,
         ),
         approveExtensionManagement: approveExtensionManagement,
-        authorized: authorized,
+        approveReplacement: approveReplacement,
       );
     });
   }
@@ -138,7 +139,7 @@ class PluginSourceService {
     String repo, {
     String branch = 'main',
     ExtensionManagementApproval? approveExtensionManagement,
-    bool authorized = true,
+    PluginReplacementApprover? approveReplacement,
   }) async {
     final commit = await fetchGitHubBranchCommit(
       repo,
@@ -166,7 +167,7 @@ class PluginSourceService {
           lastChecked: now,
         ),
         approveExtensionManagement: approveExtensionManagement,
-        authorized: authorized,
+        approveReplacement: approveReplacement,
       );
     });
   }
@@ -174,6 +175,7 @@ class PluginSourceService {
   Future<PluginManifest> installFromZip(
     String zipPath, {
     ExtensionManagementApproval? approveExtensionManagement,
+    PluginReplacementApprover? approveReplacement,
   }) async {
     final bytes = await File(zipPath).readAsBytes();
     return _withStaging((staging) async {
@@ -186,6 +188,7 @@ class PluginSourceService {
           installedAt: DateTime.now(),
         ),
         approveExtensionManagement: approveExtensionManagement,
+        approveReplacement: approveReplacement,
       );
     });
   }
@@ -193,6 +196,7 @@ class PluginSourceService {
   Future<PluginManifest> installFromFolder(
     String folderPath, {
     ExtensionManagementApproval? approveExtensionManagement,
+    PluginReplacementApprover? approveReplacement,
   }) async {
     final package = resolvePluginPackage(Directory(folderPath));
     return _install(
@@ -202,6 +206,7 @@ class PluginSourceService {
         installedAt: DateTime.now(),
       ),
       approveExtensionManagement: approveExtensionManagement,
+      approveReplacement: approveReplacement,
     );
   }
 
@@ -209,7 +214,7 @@ class PluginSourceService {
     PluginPackage package,
     PluginSource source, {
     ExtensionManagementApproval? approveExtensionManagement,
-    bool authorized = true,
+    PluginReplacementApprover? approveReplacement,
   }) async {
     final candidate = package.manifest;
     final installed = _loader.getPluginManifest(candidate.id);
@@ -224,10 +229,22 @@ class PluginSourceService {
     }
     final manifest = await _loader.installPluginPackage(
       package.root,
-      authorized: authorized,
+      sourceChanged: _changesSource(candidate.id, source),
+      approveReplacement: approveReplacement,
     );
     _writeSource(manifest.id, source);
     return manifest;
+  }
+
+  bool _changesSource(String pluginId, PluginSource candidate) {
+    final installed = _principalOf(sourceFor(pluginId));
+    return installed == null || installed != _principalOf(candidate);
+  }
+
+  static String? _principalOf(PluginSource? source) {
+    final repo = source?.repo;
+    if (source == null || !source.kind.isManaged || repo == null) return null;
+    return repo.toLowerCase();
   }
 
   /// Gives a bundled plugin the provenance of the repo it is published from,
@@ -319,7 +336,7 @@ class PluginSourceService {
         results.add(
           RemoteUpdateItemResult(
             item: manifest.id,
-            status: await _updatePlugin(manifest, source, automatic),
+            status: await _updatePlugin(manifest, source),
           ),
         );
       } catch (e, st) {
@@ -356,7 +373,6 @@ class PluginSourceService {
   Future<RemoteUpdateStatus> _updatePlugin(
     PluginManifest installed,
     PluginSource source,
-    bool automatic,
   ) async {
     final now = DateTime.now();
 
@@ -384,35 +400,8 @@ class PluginSourceService {
         _requireSamePlugin(installed, package);
         _requireTagMatchesManifest(release.tag, package.manifest.version);
 
-        final added = _addedPermissions(installed, package.manifest);
-        if (!await _mayAutoApproveAddedPermissions(
-              installed.id,
-              source,
-              added,
-            ) ||
-            (automatic &&
-                await _loader.hasStoredSecureSettings(installed.id))) {
-          _log.info(
-            'Update of ${installed.id} to ${release.tag} needs approval for: '
-            '${added.join(', ')}',
-          );
-          _writeSource(
-            installed.id,
-            source.copyWith(
-              lastChecked: now,
-              clearLastError: true,
-              pendingUpdate: PluginPendingUpdate(
-                version: package.manifest.version,
-                releaseTag: release.tag,
-                addedPermissions: added,
-                detectedAt: now,
-              ),
-            ),
-          );
-          return RemoteUpdateStatus.pendingApproval;
-        }
-
-        await _install(
+        return _applyUnattendedUpdate(
+          source,
           package,
           PluginSource(
             kind: PluginSourceKind.githubRelease,
@@ -423,8 +412,8 @@ class PluginSourceService {
             installedAt: now,
             lastChecked: now,
           ),
+          now: now,
         );
-        return RemoteUpdateStatus.updated;
       });
     }
 
@@ -451,30 +440,8 @@ class PluginSourceService {
       final package = resolvePluginPackage(staging);
       _requireSamePlugin(installed, package);
 
-      final added = _addedPermissions(installed, package.manifest);
-      if (!await _mayAutoApproveAddedPermissions(installed.id, source, added) ||
-          (automatic && await _loader.hasStoredSecureSettings(installed.id))) {
-        _log.info(
-          'Update of ${installed.id} to $commit needs approval for: '
-          '${added.join(', ')}',
-        );
-        _writeSource(
-          installed.id,
-          source.copyWith(
-            lastChecked: now,
-            clearLastError: true,
-            pendingUpdate: PluginPendingUpdate(
-              version: package.manifest.version,
-              commit: commit,
-              addedPermissions: added,
-              detectedAt: now,
-            ),
-          ),
-        );
-        return RemoteUpdateStatus.pendingApproval;
-      }
-
-      await _install(
+      return _applyUnattendedUpdate(
+        source,
         package,
         PluginSource(
           kind: PluginSourceKind.githubBranch,
@@ -484,12 +451,70 @@ class PluginSourceService {
           installedAt: now,
           lastChecked: now,
         ),
+        now: now,
       );
-      return RemoteUpdateStatus.updated;
     });
   }
 
-  Future<PluginManifest> approvePendingUpdate(String pluginId) async {
+  Future<RemoteUpdateStatus> _applyUnattendedUpdate(
+    PluginSource source,
+    PluginPackage package,
+    PluginSource candidateSource, {
+    required DateTime now,
+  }) async {
+    final pluginId = package.manifest.id;
+    try {
+      await _install(
+        package,
+        candidateSource,
+        approveReplacement: (replacement) =>
+            _approveUnattendedReplacement(pluginId, source, replacement),
+      );
+      return RemoteUpdateStatus.updated;
+    } on PluginReplacementApprovalRequiredException catch (e) {
+      final replacement = e.replacement;
+      final target = candidateSource.releaseTag ?? candidateSource.commit;
+      _log.info(
+        'Update of $pluginId to $target needs approval (added permissions: '
+        '${replacement.addedPermissions.join(', ')}; secure settings handed '
+        'over: ${replacement.handsOverSecureSettings})',
+      );
+      _writeSource(
+        pluginId,
+        source.copyWith(
+          lastChecked: now,
+          clearLastError: true,
+          pendingUpdate: PluginPendingUpdate(
+            version: package.manifest.version,
+            releaseTag: candidateSource.releaseTag,
+            commit: candidateSource.commit,
+            addedPermissions: replacement.addedPermissions,
+            handsOverSecureSettings: replacement.handsOverSecureSettings,
+            detectedAt: now,
+          ),
+        ),
+      );
+      return RemoteUpdateStatus.pendingApproval;
+    }
+  }
+
+  Future<PluginReplacementDecision?> _approveUnattendedReplacement(
+    String pluginId,
+    PluginSource source,
+    PluginReplacement replacement,
+  ) async {
+    if (replacement.handsOverSecureSettings) return null;
+    final added = replacement.addedPermissions;
+    if (!await _mayAutoApproveAddedPermissions(pluginId, source, added)) {
+      return null;
+    }
+    return PluginReplacementDecision(approvedPermissions: added.toSet());
+  }
+
+  Future<PluginManifest> approvePendingUpdate(
+    String pluginId, {
+    bool keepSecureSettings = false,
+  }) async {
     final source = sourceFor(pluginId);
     final pending = source?.pendingUpdate;
     final installed = _loader.getPluginManifest(pluginId);
@@ -498,6 +523,11 @@ class PluginSourceService {
         'Plugin $pluginId has no update awaiting approval',
       );
     }
+    PluginReplacementDecision approval(PluginReplacement _) =>
+        PluginReplacementDecision(
+          approvedPermissions: pending.addedPermissions.toSet(),
+          keepSecureSettings: keepSecureSettings,
+        );
 
     if (source.kind == PluginSourceKind.githubRelease) {
       final tag = pending.releaseTag;
@@ -542,6 +572,7 @@ class PluginSourceService {
             installedAt: now,
             lastChecked: now,
           ),
+          approveReplacement: approval,
         );
       });
     }
@@ -580,6 +611,7 @@ class PluginSourceService {
           installedAt: now,
           lastChecked: now,
         ),
+        approveReplacement: approval,
       );
     });
   }
@@ -595,7 +627,7 @@ class PluginSourceService {
     String? releaseTag,
     String? commit,
   }) {
-    final added = _addedPermissions(installed, package.manifest);
+    final added = addedPluginPermissions(installed, package.manifest);
     final unapproved = added
         .where((p) => !approved.addedPermissions.contains(p))
         .toList();
@@ -611,6 +643,7 @@ class PluginSourceService {
           releaseTag: releaseTag,
           commit: commit,
           addedPermissions: added,
+          handsOverSecureSettings: approved.handsOverSecureSettings,
           detectedAt: DateTime.now(),
         ),
       ),
@@ -626,14 +659,6 @@ class PluginSourceService {
     throw PluginPackageException(
       'Update for ${installed.id} carries plugin "${package.manifest.id}"',
     );
-  }
-
-  List<String> _addedPermissions(
-    PluginManifest installed,
-    PluginManifest candidate,
-  ) {
-    final added = candidate.permissions.difference(installed.permissions);
-    return added.map((p) => p.wireName).toList()..sort();
   }
 
   Future<bool> _mayAutoApproveAddedPermissions(

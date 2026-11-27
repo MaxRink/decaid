@@ -18,6 +18,7 @@ import '../notifications/native_notification.dart';
 import 'package:reaprime/src/plugins/plugin_manager.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
 import 'package:reaprime/src/plugins/plugin_package.dart';
+import 'package:reaprime/src/plugins/plugin_replacement.dart';
 import 'package:reaprime/src/plugins/plugin_runtime.dart';
 import 'package:reaprime/src/plugins/plugin_version.dart';
 import 'package:reaprime/src/services/account/decent_account_service.dart'
@@ -66,15 +67,6 @@ class PluginDowngradeException implements UserFacingException {
   @override
   final String message;
   PluginDowngradeException(this.message);
-
-  @override
-  String toString() => message;
-}
-
-class PluginPermissionApprovalRequiredException implements UserFacingException {
-  @override
-  final String message;
-  PluginPermissionApprovalRequiredException(this.message);
 
   @override
   String toString() => message;
@@ -230,7 +222,8 @@ class PluginLoaderService {
   Future<PluginManifest> installPluginPackage(
     Directory stagedDir, {
     bool allowDowngrade = false,
-    bool authorized = true,
+    bool sourceChanged = false,
+    PluginReplacementApprover? approveReplacement,
   }) async {
     final package = resolvePluginPackage(stagedDir);
     final manifest = package.manifest;
@@ -239,23 +232,29 @@ class PluginLoaderService {
     return _withPluginMutationLock(pluginId, () async {
       _ensureActive();
       if (!allowDowngrade) _ensureNotDowngrade(manifest);
-      final settingsSnapshot = await _capturePersistedSettings(pluginId);
 
       final pluginDir = Directory('${_pluginsDir.path}/$pluginId');
       final backupDir = Directory('${pluginDir.path}$_backupSuffix');
       final previousManifest = _availablePluginsCache[pluginId];
-      if (!authorized) _requireNoAddedPermissions(previousManifest, manifest);
-      final codeChanged =
-          previousManifest != null &&
-          _readSource(File('${pluginDir.path}/plugin.js')) !=
-              _readSource(File('${package.root.path}/plugin.js'));
+      final installedCode = _readText(File('${pluginDir.path}/plugin.js'));
+      final candidateCode = _readText(File('${package.root.path}/plugin.js'));
+      final keepSecureSettings = await _reviewReplacement(
+        installed: previousManifest,
+        candidate: manifest,
+        installedCode: installedCode,
+        candidateCode: candidateCode,
+        sourceChanged: sourceChanged,
+        approve: approveReplacement,
+      );
+      final settingsSnapshot = await _capturePersistedSettings(pluginId);
       final wasLoaded = isPluginLoaded(pluginId);
 
       if (wasLoaded) {
         await _unloadPlugin(pluginId, preserveNotifications: true);
       }
-      if (!authorized && codeChanged) {
-        await _forgetTrustForChangedCode(pluginId, settingsSnapshot.secure);
+      if (installedCode != candidateCode) {
+        // New code never inherits the grant the user gave the old code.
+        await _prefs.remove(_machineControlKey(pluginId));
       }
 
       if (backupDir.existsSync()) backupDir.deleteSync(recursive: true);
@@ -263,6 +262,7 @@ class PluginLoaderService {
       if (hadPrevious) pluginDir.renameSync(backupDir.path);
 
       try {
+        if (!keepSecureSettings) await _clearSecureSettings(pluginId);
         pluginDir.createSync(recursive: true);
         await _copyDirectory(package.root, pluginDir);
         _availablePluginsCache[pluginId] = manifest;
@@ -310,7 +310,7 @@ class PluginLoaderService {
     String pluginId, {
     required Map<String, dynamic> manifestJson,
     required String pluginJs,
-    bool authorized = false,
+    PluginReplacementApprover? approveReplacement,
   }) async {
     if (!isSafePathComponent(pluginId)) {
       throw FormatException(
@@ -334,19 +334,22 @@ class PluginLoaderService {
       _ensureActive();
       _ensureNotDowngrade(manifest);
       final previousManifest = _availablePluginsCache[pluginId];
-      if (!authorized) _requireNoAddedPermissions(previousManifest, manifest);
-      final settingsSnapshot = await _capturePersistedSettings(pluginId);
 
       final pluginDir = Directory('${_pluginsDir.path}/$pluginId');
       final manifestFile = File('${pluginDir.path}/manifest.json');
       final sourceFile = File('${pluginDir.path}/plugin.js');
       final directoryExisted = pluginDir.existsSync();
-      final previousManifestSource = manifestFile.existsSync()
-          ? manifestFile.readAsStringSync()
-          : null;
-      final previousSource = sourceFile.existsSync()
-          ? sourceFile.readAsStringSync()
-          : null;
+      final previousManifestSource = _readText(manifestFile);
+      final previousSource = _readText(sourceFile);
+      final keepSecureSettings = await _reviewReplacement(
+        installed: previousManifest,
+        candidate: manifest,
+        installedCode: previousSource,
+        candidateCode: pluginJs,
+        sourceChanged: false,
+        approve: approveReplacement,
+      );
+      final settingsSnapshot = await _capturePersistedSettings(pluginId);
       final wasLoaded = isPluginLoaded(pluginId);
 
       pluginDir.createSync(recursive: true);
@@ -369,13 +372,11 @@ class PluginLoaderService {
       }
 
       try {
+        // New code never inherits the grant the user gave the old code.
         if (previousSource != pluginJs) {
-          if (authorized) {
-            await _prefs.remove(_machineControlKey(pluginId));
-          } else {
-            await _forgetTrustForChangedCode(pluginId, settingsSnapshot.secure);
-          }
+          await _prefs.remove(_machineControlKey(pluginId));
         }
+        if (!keepSecureSettings) await _clearSecureSettings(pluginId);
         stagedManifest.renameSync(manifestFile.path);
         stagedSource.renameSync(sourceFile.path);
         _availablePluginsCache[pluginId] = manifest;
@@ -466,6 +467,59 @@ class PluginLoaderService {
     file.writeAsStringSync(contents);
   }
 
+  Future<bool> _reviewReplacement({
+    required PluginManifest? installed,
+    required PluginManifest candidate,
+    required String? installedCode,
+    required String? candidateCode,
+    required bool sourceChanged,
+    required PluginReplacementApprover? approve,
+  }) async {
+    final holdsSecureSettings = await hasStoredSecureSettings(candidate.id);
+    if (installed == null) {
+      if (holdsSecureSettings) {
+        _log.warning(
+          'Clearing secure settings left behind by a removed ${candidate.id}',
+        );
+      }
+      return !holdsSecureSettings;
+    }
+    final replacement = PluginReplacement(
+      installed: installed,
+      candidate: candidate,
+      addedPermissions: addedPluginPermissions(installed, candidate),
+      codeChanged: installedCode != candidateCode,
+      sourceChanged: sourceChanged,
+      holdsSecureSettings: holdsSecureSettings,
+    );
+    if (!replacement.needsReview) return true;
+
+    final decision = await approve?.call(replacement);
+    if (decision == null || !decision.approvesPermissionsOf(replacement)) {
+      _log.warning(
+        'Replacement of ${candidate.id} refused without approval '
+        '(added permissions: ${replacement.addedPermissions}, secure '
+        'settings handed over: ${replacement.handsOverSecureSettings})',
+      );
+      throw PluginReplacementApprovalRequiredException(replacement);
+    }
+    final keep =
+        !replacement.handsOverSecureSettings || decision.keepSecureSettings;
+    if (!keep) {
+      _log.warning(
+        'Replacement of ${candidate.id} changes its code or source; clearing '
+        'its stored secure settings',
+      );
+    }
+    return keep;
+  }
+
+  Future<void> _clearSecureSettings(String pluginId) =>
+      _withPluginSettingsLock(pluginId, () => _deleteSecureSettings(pluginId));
+
+  static String? _readText(File file) =>
+      file.existsSync() ? file.readAsStringSync() : null;
+
   void _ensureNotDowngrade(PluginManifest manifest) {
     final installed = _availablePluginsCache[manifest.id];
     if (installed == null) return;
@@ -473,41 +527,6 @@ class PluginLoaderService {
     throw PluginDowngradeException(
       'Plugin ${manifest.id} ${installed.version} is installed; '
       'remove it before installing ${manifest.version}',
-    );
-  }
-
-  String? _readSource(File file) =>
-      file.existsSync() ? file.readAsStringSync() : null;
-
-  Future<void> _forgetTrustForChangedCode(
-    String pluginId,
-    Map<String, dynamic> secure,
-  ) async {
-    _log.warning(
-      'Code of $pluginId changed without extension-management '
-      'authorization; clearing its secure settings and machine-control grant',
-    );
-    await _prefs.remove(_machineControlKey(pluginId));
-    if (secure.isEmpty) return;
-    await _withPluginSettingsLock(
-      pluginId,
-      () => _deleteSecureSettings(pluginId),
-    );
-  }
-
-  void _requireNoAddedPermissions(
-    PluginManifest? installed,
-    PluginManifest candidate,
-  ) {
-    if (installed == null) return;
-    final added = candidate.permissions
-        .difference(installed.permissions)
-        .map((permission) => permission.wireName)
-        .toList();
-    if (added.isEmpty) return;
-    throw PluginPermissionApprovalRequiredException(
-      'A source write that adds permissions (${added.join(', ')}) needs an '
-      'extensions:manage token or a native install',
     );
   }
 
