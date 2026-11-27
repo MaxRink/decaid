@@ -24,9 +24,22 @@ void main() {
     return events;
   }
 
-  String jsTimerCount() => manager.js
-      .evaluate('String(globalThis.__debugTimerCount())')
-      .stringResult;
+  // The JS timer registry lives in the plugin's realm. Once the plugin is
+  // gone (unload or failed load) the realm must be disposed with it.
+  void expectNoJsTimers() {
+    if (manager.loadedPlugins.isEmpty) {
+      expect(manager.liveRealmCount, 0);
+      expect(() => manager.jsRealmOf('timer.plugin'), throwsStateError);
+      return;
+    }
+    expect(
+      manager
+          .jsRealmOf('timer.plugin')
+          .evaluate('String(globalThis.__debugTimerCount())')
+          .stringResult,
+      '0',
+    );
+  }
 
   Future<void> loadTimerPlugin(String jsBody) async {
     await manager.loadPlugin(
@@ -58,7 +71,7 @@ void main() {
 
       expect(events, ['fired']);
       expect(manager.activeTimerCount, 0);
-      expect(jsTimerCount(), '0');
+      expectNoJsTimers();
     },
   );
 
@@ -73,7 +86,7 @@ void main() {
 
     expect(events, ['good']);
     expect(manager.activeTimerCount, 0);
-    expect(jsTimerCount(), '0');
+    expectNoJsTimers();
   });
 
   test('plugin unload cancels armed timers', () async {
@@ -86,7 +99,7 @@ void main() {
 
     expect(events, isEmpty);
     expect(manager.activeTimerCount, 0);
-    expect(jsTimerCount(), '0');
+    expectNoJsTimers();
   });
 
   test('throwing callback still removes timer and registry entry', () async {
@@ -99,7 +112,7 @@ void main() {
 
     expect(events, ['afterThrow']);
     expect(manager.activeTimerCount, 0);
-    expect(jsTimerCount(), '0');
+    expectNoJsTimers();
   });
 
   test(
@@ -128,7 +141,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       expect(manager.activeTimerCount, 0);
       expect(manager.activePendingOpCount, 0);
-      expect(jsTimerCount(), '0');
+      expectNoJsTimers();
     },
   );
 
@@ -166,12 +179,12 @@ void main() {
     await manager.unloadPlugin('timer.plugin');
 
     expect(manager.activeTimerCount, 0);
-    expect(jsTimerCount(), '0');
+    expectNoJsTimers();
 
     final events = await collectEvents(const Duration(milliseconds: 1100));
     expect(events, isEmpty);
     expect(manager.activeTimerCount, 0);
-    expect(jsTimerCount(), '0');
+    expectNoJsTimers();
   });
 
   test('timer from a previous plugin generation is not registered', () async {
@@ -188,7 +201,7 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
     expect(manager.activeTimerCount, 0);
-    expect(jsTimerCount(), '0');
+    expectNoJsTimers();
 
     final events = await collectEvents(const Duration(milliseconds: 1100));
     expect(events, isEmpty);
@@ -208,6 +221,6 @@ void main() {
     final events = await collectEvents(const Duration(milliseconds: 200));
 
     expect(events, isEmpty);
-    expect(jsTimerCount(), '0');
+    expectNoJsTimers();
   });
 }

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter_js/flutter_js.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart' as http_testing;
@@ -119,8 +120,10 @@ class _Harness {
   final PluginManager manager;
   final List<http.Request> requests;
 
+  JavascriptRuntime get js => manager.jsRealmOf(_manifest().id);
+
   Future<bool> runNextTimer({bool pumpJobs = true}) async {
-    final result = manager.js.evaluate('String(globalThis.__runNextTimer())');
+    final result = js.evaluate('String(globalThis.__runNextTimer())');
     expect(result.isError, isFalse, reason: result.stringResult);
     if (pumpJobs) await pump();
     return result.stringResult == 'true';
@@ -128,13 +131,13 @@ class _Harness {
 
   Future<void> pump() async {
     for (var i = 0; i < 50; i++) {
-      while (manager.js.executePendingJob() > 0) {}
+      while (js.executePendingJob() > 0) {}
       await Future<void>.delayed(Duration.zero);
     }
   }
 
   List<Map<String, dynamic>> putBodies() {
-    final result = manager.js.evaluate('JSON.stringify(globalThis.__puts)');
+    final result = js.evaluate('JSON.stringify(globalThis.__puts)');
     expect(result.isError, isFalse, reason: result.stringResult);
     return (jsonDecode(result.stringResult) as List)
         .cast<Map<String, dynamic>>()
@@ -143,7 +146,7 @@ class _Harness {
   }
 
   List<String> fetches() {
-    final result = manager.js.evaluate('JSON.stringify(globalThis.__fetches)');
+    final result = js.evaluate('JSON.stringify(globalThis.__fetches)');
     expect(result.isError, isFalse, reason: result.stringResult);
     return (jsonDecode(result.stringResult) as List).cast<String>();
   }
@@ -200,6 +203,7 @@ Future<_Harness> _load({
   final statuses = List<int>.from(responseStatuses);
   final accountSerials =
       linkedSerials ?? _defaultLinkedSerials(shots, connectedMachine);
+  final fullShots = {for (final shot in shots) shot['id'] as String: shot};
   late final PluginManager manager;
   manager = PluginManager(
     kvStore: _FakeKeyValueStore(),
@@ -228,9 +232,8 @@ Future<_Harness> _load({
         );
       }),
     ),
-  );
-  final fullShots = {for (final shot in shots) shot['id'] as String: shot};
-  final setup = manager.js.evaluate('''
+    debugPrepareRealm: (_, js) {
+      final setup = js.evaluate('''
     globalThis.__shots = ${jsonEncode(shots)};
     globalThis.__fullShots = ${jsonEncode(fullShots)};
     globalThis.__machineState = ${jsonEncode(machineState)};
@@ -323,7 +326,9 @@ Future<_Harness> _load({
       throw new Error('Unexpected URL: ' + value);
     };
   ''');
-  expect(setup.isError, isFalse, reason: setup.stringResult);
+      expect(setup.isError, isFalse, reason: setup.stringResult);
+    },
+  );
   await manager.loadPlugin(
     id: _manifest().id,
     manifest: _manifest(),
@@ -665,7 +670,7 @@ void main() {
     expect(await harness.runNextTimer(), isTrue);
     expect(harness.requests, isEmpty);
 
-    harness.manager.js.evaluate("globalThis.__machineState = 'idle'");
+    harness.js.evaluate("globalThis.__machineState = 'idle'");
     harness.manager.dispatchEvent(_manifest().id, 'stateUpdate', {
       'state': {'state': 'idle'},
     });
@@ -889,7 +894,7 @@ void main() {
 
       expect(harness.requests, hasLength(1));
       expect(harness.putBodies(), isEmpty);
-      final result = harness.manager.js.evaluate(
+      final result = harness.js.evaluate(
         'JSON.stringify(globalThis.__shots[0].annotations.extras)',
       );
       expect(result.isError, isFalse, reason: result.stringResult);
@@ -911,7 +916,7 @@ void main() {
 
     expect(harness.requests, isEmpty);
     expect(harness.putBodies(), isEmpty);
-    final result = harness.manager.js.evaluate(
+    final result = harness.js.evaluate(
       'JSON.stringify(globalThis.__shots[0].annotations.extras)',
     );
     expect(result.isError, isFalse, reason: result.stringResult);

@@ -395,20 +395,24 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
       });
 
       test('a forged generation is refused before dispatch', () async {
-        final outcome = await harness.probe(
-          attacker,
+        // A forged generation is dropped without a reply, so check how it had
+        // settled once a later marker from a granted plugin got through.
+        final state = await harness.settledState(
+          steward,
           'globalThis.__reaprimePluginBridge.localApi(pluginId, pluginGeneration + 1, pluginBridgeToken, "/api/v1/plugins/$target/disable", "POST", null, null)',
+          actorId: attacker,
         );
 
-        expect(outcome.resolved, isFalse);
-        expect(harness.bridged, isEmpty);
+        expect(state, isNot(startsWith('resolved')), reason: state);
+        expect(harness.bridged, ['GET $fixtureMarker']);
         await expectNoSideEffect();
       });
 
       test('it cannot claim the identity of a plugin that holds the grant', () async {
         final state = await harness.settledState(
           steward,
-          'globalThis.__probes[${jsonEncode(attacker)}].run(${jsonEncode('globalThis.__reaprimePluginBridge.localApi(${jsonEncode(steward)}, pluginGeneration, pluginBridgeToken, "/api/v1/webui/server/stop", "POST", null, null)')})',
+          'globalThis.__reaprimePluginBridge.localApi(${jsonEncode(steward)}, pluginGeneration, pluginBridgeToken, "/api/v1/webui/server/stop", "POST", null, null)',
+          actorId: attacker,
         );
 
         expect(state, isNot(startsWith('resolved')), reason: state);
@@ -635,11 +639,15 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
             expect(echo.jsonBody['hasGrant'], isTrue);
             expect(echo.jsonBody['mayManage'], isTrue);
 
-            final forged = await harness.probe(
+            // A forged generation is dropped without a reply, so check how it
+            // had settled once a later marker got through.
+            harness.bridged.clear();
+            final forged = await harness.settledState(
               steward,
               'globalThis.__reaprimePluginBridge.localApi(pluginId, pluginGeneration + 1, pluginBridgeToken, "/api/v1/plugins/$dormant/disable", "POST", null, null)',
             );
-            expect(forged.resolved, isFalse, reason: '$forged');
+            expect(forged, isNot(startsWith('resolved')), reason: forged);
+            expect(harness.bridged, ['GET $fixtureMarker']);
             expect(harness.loader.isPluginLoaded(dormant), isTrue);
           });
 
@@ -857,7 +865,6 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
             steward,
             '/api/v1/plugins/$steward/update/approve',
             options: {'method': 'POST'},
-            reportVia: observer,
           );
           await harness.settleBridgedHandlers();
           final approval = await harness.bridgedResponses.single;

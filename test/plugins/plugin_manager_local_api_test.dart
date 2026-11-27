@@ -552,12 +552,10 @@ void main() {
 
     Future<void> expectStaleCallRefused() async {
       harness.bridged.clear();
-      final state = await harness.settledState(
+      final state = await harness.staleLocalApiState(
         observer,
-        harness.staleLocalApi(
-          '/api/v1/plugins/$target/disable',
-          options: {'method': 'POST'},
-        ),
+        '/api/v1/plugins/$target/disable',
+        options: {'method': 'POST'},
       );
 
       expect(state, isNot(startsWith('resolved')), reason: state);
@@ -591,17 +589,25 @@ void main() {
         unloading,
         permissions: privilegedPermissions,
         onUnload:
-            'globalThis.__unloadAttempt = host.localApi("/api/v1/plugins/$target/disable", { method: "POST" });',
+            'host.localApi("/api/v1/plugins/$target/disable", { method: "POST" }).then('
+            '(value) => sendMessage("unloadAttempt", JSON.stringify("resolved:" + JSON.stringify(value))), '
+            '(error) => sendMessage("unloadAttempt", JSON.stringify("rejected:" + String(error && error.message))));',
       );
+      // The unloading plugin's realm is disposed with it, so the attempt
+      // reports how it settled straight to Dart.
+      final attempts = <Object?>[];
+      harness.manager.jsRealmOf(unloading).onMessage('unloadAttempt', (
+        attempt,
+      ) {
+        attempts.add(attempt);
+      });
 
       await harness.loader.unloadPlugin(unloading);
       harness.bridged.clear();
-      final state = await harness.settledState(
-        observer,
-        'globalThis.__unloadAttempt',
-      );
+      final marker = await harness.localApi(observer, fixtureMarker);
 
-      expect(state, startsWith('rejected'), reason: state);
+      expect(marker.resolved, isTrue, reason: '$marker');
+      expect(attempts, [startsWith('rejected')]);
       expect(harness.bridged, ['GET $fixtureMarker']);
       expect(harness.loader.isPluginLoaded(target), isTrue);
     });
@@ -647,7 +653,6 @@ void main() {
         actor,
         fixtureSlow('inflight'),
         options: {'method': 'POST'},
-        reportVia: observer,
       );
       final entered = await slow.entered.future;
       expect(entered.mayManage, isTrue);
@@ -694,7 +699,6 @@ void main() {
             actor,
             request['path'],
             options: request['options'] as Map<String, Object?>,
-            reportVia: observer,
           );
           await harness.settleBridgedHandlers();
 
@@ -895,7 +899,8 @@ void main() {
         ''',
       );
       await pumpEventQueue();
-      final bridgeToken = manager.js
+      final bridgeToken = manager
+          .jsRealmOf(id)
           .evaluate('globalThis.__loggedPluginToken')
           .stringResult;
 

@@ -26,7 +26,7 @@ class PluginBleService {
   final bool Function(PluginBleDriver, String, String) hasHandler;
   final Future<void> Function(PluginBleDriver, String, Map<String, dynamic>)
   eventSink;
-  final void Function(String) removeHandlers;
+  final void Function(PluginBleDriver, String) removeHandlers;
   final Duration invocationTimeout;
   final Map<String, PluginBleBinding> _bindings = {};
   bool _disposed = false;
@@ -191,7 +191,7 @@ class PluginBleService {
       _bindings[handle] = binding;
       return binding.device;
     } catch (_) {
-      removeHandlers(handle);
+      removeHandlers(driver, handle);
       rethrow;
     }
   }
@@ -261,7 +261,7 @@ class PluginBleService {
         await entry.value.dispose();
       } finally {
         _bindings.remove(entry.key);
-        removeHandlers(entry.key);
+        removeHandlers(entry.value.driver, entry.key);
       }
     }
   }

@@ -24,13 +24,29 @@ void main() {
   test(
     'device payload guard tolerates an unavailable BigInt intrinsic',
     () async {
-      final js = getJavascriptRuntime(xhr: false);
-      js.evaluate('delete globalThis.BigInt');
       final manager = PluginManager(
         kvStore: FakeKeyValueStoreService(),
-        js: js,
+        // Remove BigInt before the host bootstrap runs, as the old shared
+        // runtime test did before constructing the manager.
+        createJsRuntime: () {
+          final js = getJavascriptRuntime(xhr: false);
+          final removed = js.evaluate('delete globalThis.BigInt');
+          expect(removed.isError, isFalse, reason: removed.stringResult);
+          return js;
+        },
       );
       addTearDown(manager.dispose);
+      await manager.loadPlugin(
+        id: 'nobigint.plugin',
+        manifest: testManifest('nobigint.plugin'),
+        settings: const {},
+        jsCode: '''
+          function createPlugin(host) {
+            return { id: "nobigint.plugin" };
+          }
+        ''',
+      );
+      final js = manager.jsRealmOf('nobigint.plugin');
       expect(js.evaluate('typeof BigInt').stringResult, 'undefined');
       for (final (value, expected) in [
         ('null', 'accepted'),
@@ -134,8 +150,10 @@ void main() {
         final result = manager.emitStream.firstWhere(
           (e) => e['event'] == 'infoResult',
         );
-        manager.js.evaluate('globalThis.publishScaleInfo($value)');
-        while (manager.js.executePendingJob() > 0) {}
+        manager
+            .jsRealmOf('finite.scale')
+            .evaluate('globalThis.publishScaleInfo($value)');
+        while (manager.jsRealmOf('finite.scale').executePendingJob() > 0) {}
         return (await result.timeout(const Duration(seconds: 2)))['payload']
             as String;
       }
@@ -300,13 +318,13 @@ void main() {
               final result = manager.emitStream.firstWhere(
                 (e) => e['event'] == 'infoResult',
               );
-              manager.js.evaluate('''
+              manager.jsRealmOf('api.scale').evaluate('''
                 ${stale ? 'retainedScaleContext' : 'currentScaleContext'}.publishInfo($value).then(
                   () => globalThis.emitInfoResult('infoResult', 'accepted'),
                   error => globalThis.emitInfoResult('infoResult', error.code)
                 );
               ''');
-              while (manager.js.executePendingJob() > 0) {}
+              while (manager.jsRealmOf('api.scale').executePendingJob() > 0) {}
               return (await result.timeout(
                     const Duration(seconds: 2),
                   ))['payload']
