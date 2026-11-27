@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
+import 'package:reaprime/src/plugins/plugin_manifest.dart';
+import 'package:reaprime/src/plugins/plugin_package.dart';
 import 'package:reaprime/src/plugins/plugin_replacement.dart';
 import 'package:reaprime/src/services/account/decent_account_service.dart'
     show CredentialStore;
@@ -35,8 +38,10 @@ void main() {
   Map<String, dynamic> manifestJson({
     String version = '1.0.0',
     List<String> permissions = const ['emit'],
+    List<Map<String, dynamic>>? drivers,
   }) => {
     'id': id,
+    'drivers': ?drivers,
     'author': 'Test',
     'name': 'Secret plugin',
     'description': 'Stores a token',
@@ -353,6 +358,185 @@ function createPlugin(host) {
 
       expect(loaded['settings'], isNot(contains('token')));
       expect(store.values, isEmpty);
+    });
+  });
+
+  group('review findings', () {
+    test('a legacy plaintext secure value never reaches new code', () async {
+      await loader.installPluginPackage(package());
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        'plugin.settings.$id',
+        jsonEncode({'token': 'legacy', 'name': 'n'}),
+      );
+
+      final loaded = await nextLoad(() async {
+        await loader.updatePluginSource(
+          id,
+          manifestJson: manifestJson(version: '1.0.1'),
+          pluginJs: pluginJs(marker: 'replacement'),
+          approveReplacement: (_) => PluginReplacementDecision.unattended,
+        );
+        await loader.enablePlugin(id);
+      });
+
+      expect(loaded['marker'], 'replacement');
+      expect(loaded['settings'], isNot(containsPair('token', 'legacy')));
+      expect(loaded['settings'], containsPair('name', 'n'));
+    });
+
+    test('a legacy plaintext secure value counts as a stored secret', () async {
+      await loader.installPluginPackage(package());
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        'plugin.settings.$id',
+        jsonEncode({'token': 'legacy'}),
+      );
+
+      expect(await loader.hasStoredSecureSettings(id), isTrue);
+    });
+
+    test('an id differing only in letter case is refused', () async {
+      await installConfigured();
+      final dir = Directory('${tempDir.path}/pkg_upper')
+        ..createSync(recursive: true);
+      File('${dir.path}/manifest.json').writeAsStringSync(
+        jsonEncode({
+          ...manifestJson(version: '2.0.0'),
+          'id': 'Secret.reaplugin',
+        }),
+      );
+      File('${dir.path}/plugin.js').writeAsStringSync(pluginJs(marker: 'evil'));
+      var asked = 0;
+
+      await expectLater(
+        loader.installPluginPackage(
+          dir,
+          approveReplacement: (_) {
+            asked++;
+            return const PluginReplacementDecision(keepSecureSettings: true);
+          },
+        ),
+        throwsA(isA<PluginPackageException>()),
+      );
+      await expectLater(
+        loader.updatePluginSource(
+          'Secret.reaplugin',
+          manifestJson: {
+            ...manifestJson(version: '2.0.0'),
+            'id': 'Secret.reaplugin',
+          },
+          pluginJs: pluginJs(marker: 'evil'),
+          approveReplacement: (_) => PluginReplacementDecision.unattended,
+        ),
+        throwsA(isA<FormatException>()),
+      );
+
+      expect(asked, 0);
+      final loaded = await nextLoad(
+        () => loader.savePluginSettings(id, {'name': 'x'}),
+      );
+      expect(loaded['marker'], 'original');
+      expect(loaded['settings'], containsPair('token', 's3cret'));
+    });
+
+    test('a plugin directory missing from the cache is reviewed', () async {
+      final dir = Directory('${tempDir.path}/plugins/$id')
+        ..createSync(recursive: true);
+      File('${dir.path}/manifest.json')
+          .writeAsStringSync(jsonEncode(manifestJson()));
+      File('${dir.path}/plugin.js').writeAsStringSync(pluginJs());
+      expect(loader.getPluginManifest(id), isNull);
+
+      await expectLater(
+        loader.updatePluginSource(
+          id,
+          manifestJson: manifestJson(
+            version: '1.0.1',
+            permissions: ['emit', 'api'],
+          ),
+          pluginJs: pluginJs(marker: 'replacement'),
+          approveReplacement: (_) => PluginReplacementDecision.unattended,
+        ),
+        throwsA(
+          isA<PluginReplacementApprovalRequiredException>().having(
+            (e) => e.replacement.addedPermissions,
+            'addedPermissions',
+            ['api'],
+          ),
+        ),
+      );
+    });
+
+    test(
+      'secrets saved while the approver runs do not reach new code',
+      () async {
+        await loader.installPluginPackage(package());
+
+        final loaded = await nextLoad(() async {
+          await loader.updatePluginSource(
+            id,
+            manifestJson: manifestJson(
+              version: '1.0.1',
+              permissions: ['emit', 'api'],
+            ),
+            pluginJs: pluginJs(marker: 'replacement'),
+            approveReplacement: (replacement) async {
+              expect(replacement.holdsSecureSettings, isFalse);
+              unawaited(loader.savePluginSettings(id, {'token': 'late'}));
+              await Future<void>.delayed(const Duration(milliseconds: 200));
+              return const PluginReplacementDecision(
+                approvedPermissions: {'api'},
+              );
+            },
+          );
+          await loader.enablePlugin(id);
+        });
+
+        expect(loaded['marker'], 'replacement');
+        expect(loaded['settings'], isNot(contains('token')));
+      },
+    );
+
+    test('a new or changed device driver is an added grant', () async {
+      Map<String, dynamic> scale(String name) => {
+        'id': 'stall',
+        'type': 'scale',
+        'ble': {
+          'match': {
+            'name': {'contains': name},
+          },
+        },
+      };
+      PluginManifest withDrivers(List<Map<String, dynamic>> drivers) =>
+          PluginManifest.fromJson(
+            manifestJson(permissions: ['transport.ble'], drivers: drivers),
+          );
+
+      final none = withDrivers(const []);
+      final stall = withDrivers([scale('stall')]);
+      final wider = withDrivers([scale('st')]);
+      expect(addedPluginPermissions(none, stall), ['driver:stall']);
+      expect(addedPluginPermissions(stall, stall), isEmpty);
+      expect(addedPluginPermissions(stall, wider), ['driver:stall']);
+      expect(addedPluginPermissions(stall, none), isEmpty);
+
+      await loader.installPluginPackage(package());
+      await expectLater(
+        loader.updatePluginSource(
+          id,
+          manifestJson: manifestJson(version: '1.0.1', drivers: [scale('x')]),
+          pluginJs: pluginJs(),
+          approveReplacement: (_) => PluginReplacementDecision.unattended,
+        ),
+        throwsA(
+          isA<PluginReplacementApprovalRequiredException>().having(
+            (e) => e.replacement.addedPermissions,
+            'addedPermissions',
+            ['driver:stall'],
+          ),
+        ),
+      );
     });
   });
 }

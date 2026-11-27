@@ -232,6 +232,7 @@ class PluginLoaderService {
 
     return _withPluginMutationLock(pluginId, () async {
       _ensureActive();
+      _ensureNoCaseVariant(pluginId);
       if (!allowDowngrade) _ensureNotDowngrade(manifest);
 
       final pluginDir = Directory('${_pluginsDir.path}/$pluginId');
@@ -240,7 +241,7 @@ class PluginLoaderService {
       final installedCode = _readText(File('${pluginDir.path}/plugin.js'));
       final candidateCode = _readText(File('${package.root.path}/plugin.js'));
       final keepSecureSettings = await _reviewReplacement(
-        installed: previousManifest,
+        installed: previousManifest ?? _manifestOnDisk(pluginDir),
         candidate: manifest,
         installedCode: installedCode,
         candidateCode: candidateCode,
@@ -333,10 +334,11 @@ class PluginLoaderService {
 
     return _withPluginMutationLock(pluginId, () async {
       _ensureActive();
+      _ensureNoCaseVariant(pluginId);
       _ensureNotDowngrade(manifest);
-      final previousManifest = _availablePluginsCache[pluginId];
 
       final pluginDir = Directory('${_pluginsDir.path}/$pluginId');
+      final previousManifest = _availablePluginsCache[pluginId];
       final manifestFile = File('${pluginDir.path}/manifest.json');
       final sourceFile = File('${pluginDir.path}/plugin.js');
       final provenanceFile = File(
@@ -347,7 +349,7 @@ class PluginLoaderService {
       final previousSource = _readText(sourceFile);
       final previousProvenance = _readText(provenanceFile);
       final keepSecureSettings = await _reviewReplacement(
-        installed: previousManifest,
+        installed: previousManifest ?? _manifestOnDisk(pluginDir),
         candidate: manifest,
         installedCode: previousSource,
         candidateCode: pluginJs,
@@ -484,14 +486,17 @@ class PluginLoaderService {
     required bool sourceChanged,
     required PluginReplacementApprover? approve,
   }) async {
-    final holdsSecureSettings = await hasStoredSecureSettings(candidate.id);
+    final holdsSecureSettings = await _holdsSecureSettings(
+      candidate.id,
+      installed,
+    );
     if (installed == null) {
       if (holdsSecureSettings) {
         _log.warning(
           'Clearing secure settings left behind by a removed ${candidate.id}',
         );
       }
-      return !holdsSecureSettings;
+      return false;
     }
     final replacement = PluginReplacement(
       installed: installed,
@@ -501,7 +506,8 @@ class PluginLoaderService {
       sourceChanged: sourceChanged,
       holdsSecureSettings: holdsSecureSettings,
     );
-    if (!replacement.needsReview) return true;
+    final changesPrincipal = replacement.codeChanged || sourceChanged;
+    if (!replacement.needsReview) return !changesPrincipal;
 
     final decision = await approve?.call(replacement);
     if (decision == null || !decision.approvesPermissionsOf(replacement)) {
@@ -512,9 +518,8 @@ class PluginLoaderService {
       );
       throw PluginReplacementApprovalRequiredException(replacement);
     }
-    final keep =
-        !replacement.handsOverSecureSettings || decision.keepSecureSettings;
-    if (!keep) {
+    final keep = !changesPrincipal || decision.keepSecureSettings;
+    if (!keep && replacement.holdsSecureSettings) {
       _log.warning(
         'Replacement of ${candidate.id} changes its code or source; clearing '
         'its stored secure settings',
@@ -543,6 +548,34 @@ class PluginLoaderService {
         file.deleteSync();
       }
     } catch (_) {}
+  }
+
+  void _ensureNoCaseVariant(String pluginId) {
+    final key = pluginId.toLowerCase();
+    final names = {
+      ..._availablePluginsCache.keys,
+      if (_pluginsDir.existsSync())
+        for (final dir in _pluginsDir.listSync().whereType<Directory>())
+          p.basename(dir.path),
+    };
+    for (final name in names) {
+      if (name != pluginId && name.toLowerCase() == key) {
+        throw PluginPackageException(
+          'Plugin id "$pluginId" differs from the installed "$name" only in '
+          'letter case; remove "$name" first or use its exact id',
+        );
+      }
+    }
+  }
+
+  PluginManifest? _manifestOnDisk(Directory pluginDir) {
+    final text = _readText(File('${pluginDir.path}/manifest.json'));
+    if (text == null) return null;
+    try {
+      return PluginManifest.fromJson(jsonDecode(text) as Map<String, dynamic>);
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> _clearSecureSettings(String pluginId) =>
@@ -791,10 +824,15 @@ class PluginLoaderService {
   }
 
   Future<bool> hasStoredSecureSettings(String pluginId) =>
-      _withPluginSettingsLock(
-        pluginId,
-        () async => (await _readSecureSettings(pluginId)).isNotEmpty,
-      );
+      _holdsSecureSettings(pluginId, _availablePluginsCache[pluginId]);
+
+  Future<bool> _holdsSecureSettings(
+    String pluginId,
+    PluginManifest? manifest,
+  ) => _withPluginSettingsLock(pluginId, () async {
+    if (manifest != null) await _storedSettings(manifest);
+    return (await _readSecureSettings(pluginId)).isNotEmpty;
+  });
 
   Future<void> savePluginSettings(
     String pluginId,
@@ -908,13 +946,14 @@ class PluginLoaderService {
     String pluginId,
     Future<T> Function() action,
   ) {
-    final previous = locks[pluginId] ?? Future<void>.value();
+    final key = pluginId.toLowerCase();
+    final previous = locks[key] ?? Future<void>.value();
     final next = Completer<void>();
-    locks[pluginId] = next.future;
+    locks[key] = next.future;
     return previous.then((_) => action()).whenComplete(() {
       next.complete();
-      if (identical(locks[pluginId], next.future)) {
-        locks.remove(pluginId);
+      if (identical(locks[key], next.future)) {
+        locks.remove(key);
       }
     });
   }

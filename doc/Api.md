@@ -198,8 +198,9 @@ modes:
 - **Added permissions** are never granted silently. The request has to carry an
   `extensions:manage` credential (a bearer with that scope or a
   `manage.extensions` plugin via `host.localApi`) and list every added
-  permission in `approvePermissions`. Otherwise it is refused with `409` before
-  anything changes:
+  permission in `approvePermissions`. A device driver that is new or whose
+  type or BLE matcher changed is listed as `driver:<id>` and approved the same
+  way. Otherwise it is refused with `409` before anything changes:
 
   ```json
   {

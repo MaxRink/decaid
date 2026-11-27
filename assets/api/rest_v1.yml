@@ -9474,8 +9474,9 @@ components:
           items:
             type: string
           description: >
-            Permissions the replacement adds; resend with these in
-            approvePermissions to approve them
+            Permissions the replacement adds, plus `driver:<id>` for each
+            device driver that is new or whose type or BLE matcher changed;
+            resend with these in approvePermissions to approve them
         credentialRequired:
           type: boolean
           description: >

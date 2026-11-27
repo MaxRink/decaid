@@ -2096,9 +2096,19 @@ it in Decaid UI.
 - No filesystem access beyond the plugin's own directory
 - Secure settings are bound to the code and source they were entered for. No
   install, source write or update hands them to different code, or adds a
-  permission, without a decision from the user on the Plugins screen or from
-  an `extensions:manage` credential; see
-  [Replacing an installed plugin](#replacing-an-installed-plugin)
+  permission or device driver, without a decision from the user on the Plugins
+  screen or from an `extensions:manage` credential; see
+  [Replacing an installed plugin](#replacing-an-installed-plugin). What this
+  does not cover in compatibility mode (protection OFF): a client on the LAN
+  can still replace the code of a plugin that holds no secrets, or replace
+  code and so clear a plugin's secrets. If the user then enters the
+  credentials again, they go to the replaced code. Check where a plugin came
+  from before configuring it again; turning on
+  **Settings → Security → "Require authorization for extension management"**
+  closes this, because every replacement then needs a token
+- The review compares permissions and device drivers only. Other things a
+  manifest declares, such as new `api` endpoints and plugin surfaces, are not
+  reviewed: they act within the permissions the plugin already holds
 - Apart from the machine control limits below, `fetch` and `host.transport`
   are not limited by destination, so they can reach Decaid's own API like any
   client on the network. They carry no
@@ -2344,7 +2354,13 @@ The review compares the installed plugin with the candidate:
 
 - **Added permissions**: every permission in the candidate manifest that the
   installed one lacks, `api`, `notifications`, `network.*`, `transport.ble` and
-  `manage.extensions` included.
+  `manage.extensions` included. A device driver that is new, or whose type or
+  BLE matcher changed, counts as an added grant too, because it gives the
+  plugin access to devices it could not claim before. It is listed as
+  `driver:<id>` next to the permissions and approved the same way.
+- **Letter case**: an id that differs from an installed plugin's id only in
+  letter case is refused (400 on REST), because the plugin directory resolves
+  case-insensitively on macOS, iOS and Windows.
 - **Secure settings handed over**: the plugin has stored secure settings and the
   candidate's `plugin.js` differs from the installed one, or the candidate comes
   from a different repository than the one the plugin was installed from. A

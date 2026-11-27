@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
 import 'package:reaprime/src/util/user_facing_exception.dart';
@@ -70,12 +71,24 @@ class PluginReplacementApprovalRequiredException
   String toString() => message;
 }
 
+const pluginDriverGrantPrefix = 'driver:';
+
 List<String> addedPluginPermissions(
   PluginManifest installed,
   PluginManifest candidate,
-) =>
-    candidate.permissions
+) {
+  final installedDrivers = {
+    for (final driver in installed.drivers) driver.id: _driverGrant(driver),
+  };
+  return [
+    ...candidate.permissions
         .difference(installed.permissions)
-        .map((permission) => permission.wireName)
-        .toList()
-      ..sort();
+        .map((permission) => permission.wireName),
+    for (final driver in candidate.drivers)
+      if (installedDrivers[driver.id] != _driverGrant(driver))
+        '$pluginDriverGrantPrefix${driver.id}',
+  ]..sort();
+}
+
+String _driverGrant(PluginDriverDeclaration driver) =>
+    jsonEncode([driver.type.name, driver.ble?.toJson()]);
