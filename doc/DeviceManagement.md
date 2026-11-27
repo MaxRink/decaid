@@ -897,7 +897,10 @@ publications. `ConnectionManager.connectGrinder()` connects
 machine and primary-scale selection resolves, and again when that device leaves
 the device list and returns outside a scan (a plugin reload, for example after a
 plugin settings save, unregisters and re-registers its grinder). A first
-sighting is left to the scan. Grinder failures do not change machine or scale
+sighting is left to the scan. A connected preferred grinder whose connection
+drops without a requested disconnect is reconnected with a bounded backoff
+(5 s, 15 s, 1 min, then every 5 min) while it stays listed; a user or API
+disconnect is left alone. Grinder failures do not change machine or scale
 connection status.
 
 Runtime grinder identity is not equipment metadata. Persisted `Grinder.id` is a
