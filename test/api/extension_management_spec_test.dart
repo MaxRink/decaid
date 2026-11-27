@@ -99,7 +99,10 @@ void main() {
   final spec = _spec();
   final operations = _operations(spec);
   final protectedRoutes = {
-    for (final route in [...extensionManagementRoutes, ...machineControlRoutes])
+    for (final route in [
+      ...extensionManagementRoutes,
+      ...privilegedMachineRoutes,
+    ])
       if (!route.path.startsWith('/ws/'))
         _key(route.method, _specPath(route.path)),
   };

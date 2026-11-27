@@ -89,7 +89,6 @@ import 'package:reaprime/src/models/device/transport/ble_timeout_exception.dart'
 import 'package:reaprime/src/services/webserver/port_binding.dart';
 import 'package:reaprime/src/services/webserver/api_listener.dart';
 import 'package:shelf_web_socket/shelf_web_socket.dart' as sws;
-import 'package:shelf_cors_headers/shelf_cors_headers.dart';
 import 'package:stack_trace/stack_trace.dart';
 import 'package:reaprime/src/models/device/de1_rawmessage.dart';
 import 'package:reaprime/src/plugins/plugin_manager.dart';
@@ -143,14 +142,7 @@ part 'webserver/account_proxy_handler.dart';
 part 'webserver/derek_handler.dart';
 part 'webserver/update_handler.dart';
 part 'webserver/admission_control.dart';
-
-const _corsExposedResponseHeaders = [
-  'ETag',
-  'Location',
-  'Content-Disposition',
-  'Retry-After',
-  'X-Request-Id',
-];
+part 'webserver/browser_admission.dart';
 
 final log = Logger("Webservice");
 
@@ -834,7 +826,7 @@ Handler buildWebServerHandler(
   ProxyTokenService? proxyTokenService,
   Set<String> Function() accountProxyAllowedOrigins = _noAccountProxyOrigins,
   Future<bool> Function()? requireExtensionManagementAuthorization,
-  ExtensionManagementBrowserOrigins? browserOrigins,
+  required ExtensionManagementBrowserOrigins browserOrigins,
   AdmissionGate? admissionGate,
   BuiltinPageListener? pageListener,
 }) {
@@ -848,26 +840,13 @@ Handler buildWebServerHandler(
       ),
     );
   }
-  final origins = browserOrigins;
-  if (origins != null) {
-    pipeline = pipeline
-        .addMiddleware(extensionManagementBrowserOriginMiddleware(origins))
-        .addMiddleware(apiBrowserBoundaryMiddleware(origins));
-  }
   return pipeline
+      .addMiddleware(extensionManagementBrowserOriginMiddleware(browserOrigins))
+      .addMiddleware(browserAdmissionMiddleware(browserOrigins))
       .addMiddleware(accountProxyCorsMiddleware(accountProxyAllowedOrigins))
       .addMiddleware(frameProtectionMiddleware(skinPorts: origins?.pagePorts))
       .addMiddleware(logRequestsWithClientIp())
-      .addMiddleware(
-        corsHeaders(
-          headers: {
-            'Access-Control-Expose-Headers': _corsExposedResponseHeaders.join(
-              ', ',
-            ),
-            'Access-Control-Allow-Headers': 'Accept, Accept-Encoding, Authorization, Content-Type, DNT, Origin, User-Agent, If-None-Match',
-          },
-        ),
-      )
+      .addMiddleware(browserCorsMiddleware())
       .addMiddleware(
         proxyTokenService == null
             ? (Handler h) => h

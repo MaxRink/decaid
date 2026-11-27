@@ -188,12 +188,17 @@ class _SecurityPageState extends State<SecurityPage> {
             'extensions:manage API token or an approved plugin grant.',
           ),
           Text(
-            'Protection covers extension management only. Tokens are bearer '
-            'credentials sent over plain HTTP on port 8080, so anyone on the '
-            'same network can observe them; HTTPS for the web server is '
-            'proposed in #925. Other REST and WebSocket APIs are not covered by '
-            'this setting, and optional full API authentication is tracked in '
-            '#1135.',
+            'The same token is required for raw machine access, firmware '
+            'updates, calibration, advanced machine settings and machine '
+            'settings reset over the API, so skins cannot use those screens '
+            'while protection is on.',
+          ),
+          Text(
+            'Tokens are bearer credentials sent over plain HTTP on port 8080, '
+            'so anyone on the same network can observe them; HTTPS for the web '
+            'server is proposed in #925. Other REST and WebSocket APIs are not '
+            'covered by this setting, and optional full API authentication is '
+            'tracked in #1135.',
           ),
         ],
       ),

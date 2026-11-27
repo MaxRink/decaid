@@ -207,7 +207,7 @@ const extensionManagementRoutes = <ExtensionManagementRoute>[
   ExtensionManagementRoute('POST', '/api/v1/webui/server/stop'),
 ];
 
-const machineControlRoutes = <ExtensionManagementRoute>[
+const privilegedMachineRoutes = <ExtensionManagementRoute>[
   ExtensionManagementRoute('GET', '/ws/v1/machine/raw'),
   ExtensionManagementRoute('POST', '/api/v1/machine/firmware'),
   ExtensionManagementRoute('POST', '/api/v1/machine/firmware/apply'),
@@ -385,45 +385,6 @@ Middleware extensionManagementBrowserOriginMiddleware(
   };
 }
 
-const crossOriginRequestError =
-    'This API does not accept requests from this browser origin';
-
-const untrustedBrowserHostError =
-    'This API only answers browsers on the device address';
-
-Middleware apiBrowserBoundaryMiddleware(
-  ExtensionManagementBrowserOrigins origins,
-) {
-  return (Handler inner) {
-    return (Request request) async {
-      final origin = request.headers['origin'];
-      if (origin == null && !request.headers.containsKey('sec-fetch-site')) {
-        return inner(request);
-      }
-      final action = '${request.method} /${request.url.path}';
-      if (!await origins.isDeviceHost(request.requestedUri.host)) {
-        _log.warning('$action refused (403) for a browser on a foreign host');
-        return _json(403, untrustedBrowserHostError);
-      }
-      if (origin == null) return inner(request);
-      final verdict = await origins.classify(
-        origin,
-        connectionInfo: request.context[_shelfConnectionInfoContextKey],
-      );
-      if (verdict != BrowserOriginVerdict.untrusted) return inner(request);
-      if (_isSafeRead(request)) {
-        return _withoutAffirmativeCors(await inner(request));
-      }
-      _log.warning('$action refused (403) for an untrusted browser origin');
-      return _json(403, crossOriginRequestError);
-    };
-  };
-}
-
-bool _isSafeRead(Request request) =>
-    (request.method == 'GET' || request.method == 'HEAD') &&
-    request.headers['upgrade']?.toLowerCase() != 'websocket';
-
 bool _isBrowserOriginRefusal(Response response) =>
     response.context[_originRefusalContextKey] == true;
 
@@ -470,10 +431,12 @@ Response? requireTrustedBrowserOrigin(
 Middleware extensionManagementAuthMiddleware(
   ProxyTokenService? tokens, {
   List<ExtensionManagementRoute> routes = extensionManagementRoutes,
-  List<ExtensionManagementRoute> machineRoutes = machineControlRoutes,
   Future<bool> Function()? requireExtensionManagementAuthorization,
 }) {
-  final policy = ExtensionManagementRouteMatcher([...routes, ...machineRoutes]);
+  final policy = ExtensionManagementRouteMatcher([
+    ...routes,
+    ...privilegedMachineRoutes,
+  ]);
   return (Handler inner) {
     return (Request request) async {
       final grant = request.context[extensionManagementGrantContextKey];

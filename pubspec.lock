@@ -1499,7 +1499,7 @@ packages:
     source: hosted
     version: "1.4.2"
   shelf_cors_headers:
-    dependency: "direct main"
+    dependency: "direct dev"
     description:
       name: shelf_cors_headers
       sha256: a127c80f99bbef3474293db67a7608e3a0f1f0fcdb171dad77fa9bd2cd123ae4

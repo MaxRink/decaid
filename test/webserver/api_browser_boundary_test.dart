@@ -6,6 +6,7 @@ import 'package:reaprime/src/services/account/proxy_token_service.dart';
 import 'package:reaprime/src/services/webserver/extension_management_auth.dart';
 import 'package:reaprime/src/services/webserver_service.dart';
 import 'package:shelf/shelf.dart';
+import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 
 class _Peer implements HttpConnectionInfo {
@@ -191,15 +192,28 @@ void main() {
       expect(response.headers['access-control-allow-credentials'], isNull);
     });
 
-    test('a foreign origin cannot read API responses', () async {
+    test('a foreign origin cannot read or trigger GET routes', () async {
       final response = await send(
         'GET',
         '/api/v1/machine/state',
         origin: 'https://evil.example',
       );
-      expect(response.statusCode, 200);
+      expect(response.statusCode, 403);
+      expect(await errorOf(response), _crossOriginError);
       expect(response.headers['access-control-allow-origin'], isNull);
       expect(response.headers['access-control-allow-credentials'], isNull);
+      expect(reached, isEmpty);
+    });
+
+    test('a foreign origin with a token is still refused', () async {
+      final response = await send(
+        'POST',
+        '/api/v1/machine/calibration',
+        origin: 'https://evil.example',
+        headers: {'authorization': 'Bearer $_managerToken'},
+      );
+      expect(response.statusCode, 403);
+      expect(reached, isEmpty);
     });
 
     test('the literal null origin is foreign', () async {
@@ -270,6 +284,8 @@ void main() {
             host: host,
           );
           expect(read.headers['access-control-allow-origin'], origin);
+          expect(read.headers['access-control-allow-credentials'], 'true');
+          expect(read.headers['vary'], contains('Origin'));
           final preflight = await send(
             'OPTIONS',
             '/api/v1/machine/state/espresso',
@@ -506,7 +522,7 @@ void main() {
     });
   });
 
-  group('machine control routes in protected mode', () {
+  group('privileged machine routes in protected mode', () {
     final routes = <(String, String, Map<String, String>)>[
       ('GET', '/ws/v1/machine/raw', websocket),
       ('POST', '/api/v1/machine/firmware', {}),
@@ -545,5 +561,196 @@ void main() {
         expect(response.statusCode, 200);
       },
     );
+  });
+
+  group('the WebSocket upgrade path', () {
+    test('refuses a browser upgrade that the API did not admit', () async {
+      var opened = false;
+      final upgrade = admittedWebSocketHandler((channel, _) => opened = true);
+      final response = await upgrade(
+        Request(
+          'GET',
+          Uri.parse('http://localhost:8080/ws/v1/machine/raw'),
+          headers: {'origin': 'https://evil.example', ...websocket},
+        ),
+      );
+      expect(response.statusCode, 403);
+      expect(await errorOf(response), _crossOriginError);
+      expect(opened, isFalse);
+    });
+  });
+
+  group('over a real loopback socket', () {
+    late HttpServer server;
+    late List<String> served;
+
+    setUp(() async {
+      served = [];
+      final routes = Router()
+        ..put('/api/v1/machine/state/<s>', (Request r, String s) {
+          served.add('PUT state');
+          return Response.ok('{}');
+        })
+        ..post('/api/v1/machine/profile', (Request r) {
+          served.add('POST profile');
+          return Response.ok('{}');
+        })
+        ..get(
+          '/ws/v1/machine/raw',
+          admittedWebSocketHandler((channel, _) {
+            served.add('raw');
+            channel.sink.add('raw');
+          }),
+        );
+      final tokens = ProxyTokenService(skinToken: 'skin-token')
+        ..registerToken(
+          _managerToken,
+          const ProxyCaller(
+            id: 'api:manager',
+            scopes: {ProxyTokenService.scopeExtensionsManage},
+          ),
+        );
+      server = await shelf_io.serve(
+        buildWebServerHandler(
+          routes.call,
+          proxyTokenService: tokens,
+          requireExtensionManagementAuthorization: () async => protectedMode,
+          browserOrigins: ExtensionManagementBrowserOrigins(
+            apiListenerPort: () => server.port,
+            pagePorts: () => const {_skinPort},
+            deviceAddresses: () async => const {},
+          ),
+        ),
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      addTearDown(() => server.close(force: true));
+    });
+
+    Future<HttpClientResponse> request(
+      String method,
+      String path, {
+      Map<String, String> headers = const {},
+      String? body,
+    }) async {
+      final client = HttpClient();
+      addTearDown(client.close);
+      final request = await client.open(method, '127.0.0.1', server.port, path);
+      headers.forEach(request.headers.set);
+      if (body != null) request.write(body);
+      final response = await request.close();
+      await response.drain<void>();
+      return response;
+    }
+
+    Future<WebSocket> openRaw(Map<String, String> headers) async {
+      final socket = await WebSocket.connect(
+        'ws://127.0.0.1:${server.port}/ws/v1/machine/raw',
+        headers: headers,
+      );
+      addTearDown(socket.close);
+      return socket;
+    }
+
+    const foreign = 'https://evil.example';
+    const skin = 'http://localhost:$_skinPort';
+
+    test('a foreign preflight is refused without a CORS grant', () async {
+      final response = await request(
+        'OPTIONS',
+        '/api/v1/machine/state/espresso',
+        headers: {'origin': foreign, 'access-control-request-method': 'PUT'},
+      );
+      expect(response.statusCode, 403);
+      expect(response.headers.value('access-control-allow-origin'), isNull);
+      expect(
+        response.headers.value('access-control-allow-credentials'),
+        isNull,
+      );
+    });
+
+    test('a foreign text/plain POST never reaches the handler', () async {
+      final response = await request(
+        'POST',
+        '/api/v1/machine/profile',
+        headers: {'origin': foreign, 'content-type': 'text/plain'},
+        body: '{}',
+      );
+      expect(response.statusCode, 403);
+      expect(served, isEmpty);
+    });
+
+    test('a foreign WebSocket upgrade is refused', () async {
+      await expectLater(
+        openRaw({'origin': foreign}),
+        throwsA(isA<WebSocketException>()),
+      );
+      expect(served, isEmpty);
+    });
+
+    test('a rebound host name is refused for a browser', () async {
+      final read = await request(
+        'PUT',
+        '/api/v1/machine/state/espresso',
+        headers: {
+          'host': 'rebind.attacker.example:${server.port}',
+          'origin': 'http://rebind.attacker.example:${server.port}',
+        },
+      );
+      expect(read.statusCode, 403);
+      await expectLater(
+        openRaw({
+          'host': 'rebind.attacker.example:${server.port}',
+          'origin': 'http://rebind.attacker.example:${server.port}',
+        }),
+        throwsA(isA<WebSocketException>()),
+      );
+      expect(served, isEmpty);
+    });
+
+    test('the device skin origin and originless clients work', () async {
+      final preflight = await request(
+        'OPTIONS',
+        '/api/v1/machine/state/espresso',
+        headers: {'origin': skin, 'access-control-request-method': 'PUT'},
+      );
+      expect(preflight.statusCode, 200);
+      expect(preflight.headers.value('access-control-allow-origin'), skin);
+      final write = await request(
+        'PUT',
+        '/api/v1/machine/state/espresso',
+        headers: {'origin': skin},
+      );
+      expect(write.statusCode, 200);
+      final plain = await request(
+        'POST',
+        '/api/v1/machine/profile',
+        headers: {'host': 'decaid.lan:${server.port}'},
+        body: '{}',
+      );
+      expect(plain.statusCode, 200);
+      for (final headers in [
+        {'origin': skin},
+        <String, String>{},
+      ]) {
+        final socket = await openRaw(headers);
+        expect(await socket.first, 'raw', reason: '$headers');
+      }
+      expect(served, ['PUT state', 'POST profile', 'raw', 'raw']);
+    });
+
+    test('protected mode gates the raw socket on extensions:manage', () async {
+      protectedMode = true;
+      await expectLater(openRaw(const {}), throwsA(isA<WebSocketException>()));
+      await expectLater(
+        openRaw(const {'origin': skin}),
+        throwsA(isA<WebSocketException>()),
+      );
+      expect(served, isEmpty);
+      final socket = await openRaw(const {
+        'authorization': 'Bearer $_managerToken',
+      });
+      expect(await socket.first, 'raw');
+    });
   });
 }

@@ -194,6 +194,12 @@ void main() {
         find.textContaining('not covered by this setting'),
         findsOneWidget,
       );
+      expect(
+        find.textContaining(
+          'raw machine access, firmware updates, calibration',
+        ),
+        findsOneWidget,
+      );
       expect(find.text('Compatibility mode (OFF)'), findsNothing);
       expect(find.textContaining('0.9.3 removes'), findsNothing);
     });

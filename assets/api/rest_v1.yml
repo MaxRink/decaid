@@ -20,8 +20,24 @@ info:
     `extensions:manage` (or an approved plugin grant in process). Each such
     operation lists both security alternatives, the empty requirement and the
     `extensionsManage` scheme, so a client reads the credential as optional.
-    This setting covers extension management only; the rest of the API is
-    unchanged.
+    While the option is ON the same credential is also required for the
+    privileged machine routes: the raw machine WebSocket, firmware upload and
+    apply, calibration and scale calibration writes, advanced machine
+    settings and settings reset. The rest of the API is unchanged.
+
+    Every route, in both modes, applies one browser admission policy before
+    any handler runs. A request that carries `Origin` is admitted only from
+    one of the device's own origins (defined below); any other origin is
+    answered 403 with
+    `{"error":"This API does not accept requests from this browser origin"}`
+    for every method, preflights and WebSocket upgrades included, and
+    without `Access-Control-*` headers. CORS headers are sent only to the
+    device's own origins. A request that carries `Origin` or
+    `Sec-Fetch-Site` (a browser) is also refused with 403 and
+    `{"error":"This API only answers browsers on the device address"}` when
+    its `Host` is not `localhost`, a loopback address or a numeric address
+    currently assigned to the device. Requests without either header
+    (native apps, Home Assistant, scripts) are unaffected.
 
     Extension management also refuses a request whose browser `Origin` is not
     the device's own origin. That check applies in both modes, before any
@@ -950,7 +966,7 @@ paths:
         the integrated-scale tare path. Returns 404 when the connected
         machine is not a Bengle.
 
-        Machine control route: when protection is ON, this operation needs
+        Privileged machine route: when protection is ON, this operation needs
         `Authorization: Bearer <token>` scoped `extensions:manage` (see the
         extensionsManage security scheme). When protection is OFF (the
         default), it needs no credential. In both modes a browser request
@@ -1074,7 +1090,7 @@ paths:
         created. The connect-time
         detection read and firmware handoff remain separate from this override.
 
-        Machine control route: when protection is ON, this operation needs
+        Privileged machine route: when protection is ON, this operation needs
         `Authorization: Bearer <token>` scoped `extensions:manage` (see the
         extensionsManage security scheme). When protection is OFF (the
         default), it needs no credential. In both modes a browser request
@@ -1133,7 +1149,7 @@ paths:
         Profile and workflow are not touched. A reset acknowledgement is not evidence
         of factory restoration.
 
-        Machine control route: when protection is ON, this operation needs
+        Privileged machine route: when protection is ON, this operation needs
         `Authorization: Bearer <token>` scoped `extensions:manage` (see the
         extensionsManage security scheme). When protection is OFF (the
         default), it needs no credential. In both modes a browser request
@@ -1199,7 +1215,7 @@ paths:
         after power loss. For DE1 sensor calibration (flow/pressure/temperature) see
         PUT /api/v1/machine/calibration/{target}.
 
-        Machine control route: when protection is ON, this operation needs
+        Privileged machine route: when protection is ON, this operation needs
         `Authorization: Bearer <token>` scoped `extensions:manage` (see the
         extensionsManage security scheme). When protection is OFF (the
         default), it needs no credential. In both modes a browser request
@@ -1298,7 +1314,7 @@ paths:
         read the current calibration C, then write
         `de1ReportedValue: C, measuredValue: X`.
 
-        Machine control route: when protection is ON, this operation needs
+        Privileged machine route: when protection is ON, this operation needs
         `Authorization: Bearer <token>` scoped `extensions:manage` (see the
         extensionsManage security scheme). When protection is OFF (the
         default), it needs no credential. In both modes a browser request
@@ -1437,7 +1453,7 @@ paths:
         operation starts and remains silent during verification until either
         `done` or `error`.
 
-        Machine control route: when protection is ON, this operation needs
+        Privileged machine route: when protection is ON, this operation needs
         `Authorization: Bearer <token>` scoped `extensions:manage` (see the
         extensionsManage security scheme). When protection is OFF (the
         default), it needs no credential. In both modes a browser request
@@ -1517,7 +1533,7 @@ paths:
         bypass version-newer policy (never bypasses integrity or compatibility
         checks).
 
-        Machine control route: when protection is ON, this operation needs
+        Privileged machine route: when protection is ON, this operation needs
         `Authorization: Bearer <token>` scoped `extensions:manage` (see the
         extensionsManage security scheme). When protection is OFF (the
         default), it needs no credential. In both modes a browser request

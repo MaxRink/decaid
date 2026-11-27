@@ -3520,43 +3520,89 @@ curl -X POST http://localhost:8080/api/v1/webui/skins/install/url \
   -d '{"url": "file:///path/to/my-skin.zip"}'
 ```
 
-**Option D: Serve Locally and Point Browser** (during development):
+**Option D: Serve Locally Through a Proxy** (during development):
 
 ```bash
-# In your Next.js project
+# In your skin project
 npm run dev
 
-# Access directly at http://localhost:3000
-# Connect to Decaid API at http://<gateway-ip>:8080
+# Open the dev server (for example http://localhost:5173); it proxies the
+# Decaid API, see below
 ```
 
 ### 3. Connect to Gateway During Development
 
-When developing locally, your skin needs to connect to the Decaid gateway:
+Decaid answers browsers only from its own origins: the skin page it serves, the
+API port and the API docs port, on `localhost` or the device's numeric address
+(see [Browser origins](Api.md#browser-origins)). A page served by a dev server
+on your computer is a different origin, so a `fetch` or WebSocket from it
+straight to `http://<gateway-ip>:8080` is refused with 403 and gets no CORS
+grant. Let the dev server proxy the API instead: the page then only talks to
+its own origin, and the proxy forwards the requests to the device without the
+browser's `Origin` header, like any other non-browser client. The proxy then
+carries the device's trust, so it must itself refuse requests from any origin
+other than the dev page; otherwise every website open in the same browser could
+use the device through it.
+
+With Vite:
 
 ```javascript
-// Use environment variable or config
-const GATEWAY_URL = process.env.NEXT_PUBLIC_GATEWAY_URL || 'http://192.168.1.100:8080';
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://192.168.1.100:8080';
+// vite.config.js
+const gateway = 'http://192.168.1.100:8080';
+const devOrigins = new Set(['http://localhost:5173', 'http://127.0.0.1:5173']);
+const forwardDevPageOnly = (proxy) => {
+  const forward = (proxyRequest, request) => {
+    const origin = request.headers.origin;
+    if (origin !== undefined && !devOrigins.has(origin)) {
+      proxyRequest.destroy();
+      return;
+    }
+    proxyRequest.removeHeader('origin');
+  };
+  proxy.on('proxyReq', forward);
+  proxy.on('proxyReqWs', forward);
+};
 
-// In your API client
-export const apiClient = {
-  async getMachineState() {
-    const response = await fetch(`${GATEWAY_URL}/api/v1/machine/state`);
-    return response.json();
+export default {
+  base: './',
+  server: {
+    proxy: {
+      '/api': {
+        target: gateway,
+        changeOrigin: true,
+        configure: forwardDevPageOnly,
+      },
+      '/ws': {
+        target: gateway,
+        changeOrigin: true,
+        ws: true,
+        configure: forwardDevPageOnly,
+      },
+    },
   },
-  
-  connectSnapshot() {
-    return new WebSocket(`${WS_URL}/ws/v1/machine/snapshot`);
-  }
 };
 ```
 
-**Development `.env.local`:**
-```bash
-NEXT_PUBLIC_GATEWAY_URL=http://192.168.1.100:8080
-NEXT_PUBLIC_WS_URL=ws://192.168.1.100:8080
+In the skin, use the proxy paths on the dev server and the API port of the
+page's host when Decaid serves it:
+
+```javascript
+const apiHost = import.meta.env.DEV ? location.host : `${location.hostname}:8080`;
+
+export const apiClient = {
+  async getMachineState() {
+    const response = await fetch(`http://${apiHost}/api/v1/machine/state`);
+    return response.json();
+  },
+
+  connectSnapshot() {
+    return new WebSocket(`ws://${apiHost}/ws/v1/machine/snapshot`);
+  },
+};
 ```
+
+Other dev servers work the same way as long as the proxy forwards WebSockets,
+refuses other origins and removes the `Origin` header of the dev page.
 
 ---
 
@@ -4249,15 +4295,14 @@ Check asset paths are relative:
 ### WebSocket Connection Fails
 
 During development with skin on `localhost:3000` and gateway on `192.168.1.100:8080`:
-- The gateway only accepts browser writes and WebSocket upgrades from its own
-  origins and only grants CORS to them (see
-  [Browser origins](Api.md#browser-origins)), so a dev server on your computer
-  is refused with 403. Proxy the API through the dev server instead, so the
-  browser talks to its own origin, and drop the `Origin` header on the proxied
-  request (Vite: `server.proxy` with a `configure` hook that calls
-  `proxyReq.removeHeader('origin')`, plus `ws: true` for WebSockets), or
-  install the build on the device and test it there
-- Use explicit gateway IP in `NEXT_PUBLIC_WS_URL` only for that proxy target
+- The gateway only answers browsers from its own origins and only grants CORS to
+  them (see [Browser origins](Api.md#browser-origins)), so a page on a dev
+  server is refused with 403. Proxy the API through the dev server and drop the
+  `Origin` header, as in
+  [Connect to Gateway During Development](#3-connect-to-gateway-during-development),
+  or install the build on the device and test it there
+- Open skins by the device's numeric address or `localhost`; a browser that
+  reaches the device through a DNS or mDNS name is refused
 - Check browser console for connection errors
 
 ### Skin Not Appearing in Decaid

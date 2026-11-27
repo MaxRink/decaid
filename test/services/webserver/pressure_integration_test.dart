@@ -7,6 +7,7 @@ import 'package:reaprime/src/controllers/de1_controller.dart';
 import 'package:reaprime/src/controllers/device_controller.dart';
 import 'package:reaprime/src/controllers/workflow_controller.dart';
 import 'package:reaprime/src/models/device/impl/mock_de1/mock_de1.dart';
+import 'package:reaprime/src/services/webserver/extension_management_auth.dart';
 import 'package:reaprime/src/services/webserver/info_handler.dart';
 import 'package:reaprime/src/services/webserver/workflow_handler.dart';
 import 'package:reaprime/src/services/webserver_service.dart';
@@ -28,6 +29,9 @@ final class _ConnectionInfo implements HttpConnectionInfo {
   @override
   int get localPort => 0;
 }
+
+const _deviceAddress = '192.168.12.64';
+const _deviceOrigin = 'http://$_deviceAddress:8080';
 
 void main() {
   test(
@@ -58,7 +62,15 @@ void main() {
         controller: WorkflowController(),
         de1controller: de1Controller,
       ).addRoutes(router);
-      final handler = buildWebServerHandler(router.call, admissionGate: gate);
+      final handler = buildWebServerHandler(
+        router.call,
+        admissionGate: gate,
+        browserOrigins: ExtensionManagementBrowserOrigins(
+          apiListenerPort: () => 8080,
+          pagePorts: () => const {},
+          deviceAddresses: () async => const {_deviceAddress},
+        ),
+      );
       final activeWrite = de1Controller.runDeviceWrite((_) async {
         entered.complete();
         await release.future;
@@ -77,10 +89,7 @@ void main() {
       final rejected = await handler(_request('GET', '/api/v1/info'));
       expect(rejected.statusCode, 429);
       expect(rejected.headers['retry-after'], '1');
-      expect(
-        rejected.headers['access-control-allow-origin'],
-        'http://localhost',
-      );
+      expect(rejected.headers['access-control-allow-origin'], _deviceOrigin);
 
       release.complete();
       await activeWrite;
@@ -96,9 +105,9 @@ void main() {
 Request _request(String method, String path, {Object? body}) {
   return Request(
     method,
-    Uri.parse('http://localhost$path'),
+    Uri.parse('$_deviceOrigin$path'),
     body: body,
-    headers: {'origin': 'http://localhost', 'content-type': 'application/json'},
+    headers: {'origin': _deviceOrigin, 'content-type': 'application/json'},
     context: {'shelf.io.connection_info': _ConnectionInfo('10.0.0.1')},
   );
 }

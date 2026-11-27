@@ -318,7 +318,8 @@ section, or for development and automation from `--extensions-token` or the
   `automaticUpdateCheck` inside the update services.
 - The browser boundary is `extensionManagementBrowserOriginMiddleware`, the
   outermost middleware in `buildWebServerHandler`, so it runs before
-  `accountProxyCorsMiddleware`, the general `corsHeaders` echo, authentication
+  `browserAdmissionMiddleware`, `accountProxyCorsMiddleware`, the CORS
+  allowlist, authentication
   and body reading. It classifies `Origin` through
   `ExtensionManagementBrowserOrigins`: originless (no header) passes, trusted
   means scheme `http`, a literal local host (`localhost`, `127.0.0.1`, `::1` or
@@ -359,24 +360,30 @@ section, or for development and automation from `--extensions-token` or the
   originless or forged-origin LAN client is unaffected, which is why
   originless LAN compatibility and the protected-mode recommendation for shared
   deployments both stay explicit in `doc/Api.md`.
-- `apiBrowserBoundaryMiddleware` runs directly inside the extension-management
-  origin middleware and applies to every route on the API port. It only acts on
+- `browserAdmissionMiddleware` (`webserver/browser_admission.dart`) runs
+  directly inside the extension-management origin middleware and applies to
+  every route on the API port; `buildWebServerHandler` requires
+  `browserOrigins`, so the pipeline cannot be built without it. It only acts on
   requests that carry `Origin` or `Sec-Fetch-Site` (browsers), so originless
   LAN clients are untouched. It first checks `requestedUri.host` (which
   `shelf_io` builds from `Host`) with `ExtensionManagementBrowserOrigins.isDeviceHost`
   (loopback names or a numeric address from the same live interface listing),
   which is the DNS-rebinding guard: a rebound name is never a device host even
   though it resolves to one. It then classifies `Origin` with the same
-  `classify`; an untrusted origin may only `GET`/`HEAD` without an upgrade, and
-  those responses lose every `access-control-*` header, so the general
-  `corsHeaders` echo effectively becomes an allowlist. Everything else
-  (including preflights and simple `text/plain` POSTs) is refused before the
-  handler. Because untrusted origins never reach a write handler now, the
-  handler-level `requireTrustedBrowserOrigin` checks in the settings, import
-  and sync handlers are defence in depth only. Machine control routes
-  (`machineControlRoutes`) share the extension-management credential gate in
-  `extensionManagementAuthMiddleware`, so they read the protection mode and need
-  `extensions:manage` only while it is ON.
+  `classify` and refuses every method from an untrusted origin, `GET` included:
+  `GET /api/v1/devices/scan` scans and connects, so "safe" methods are not
+  assumed to be side-effect free. An admitted origin is recorded in the request
+  context; `browserCorsMiddleware`, which replaced the reflecting
+  `shelf_cors_headers` middleware at the same pipeline position, emits CORS
+  headers only for that recorded origin, and `admittedWebSocketHandler` refuses
+  an upgrade whose `Origin` is not the recorded one, so a socket reached
+  without the pipeline still fails closed. Because untrusted origins never
+  reach a handler now, the handler-level `requireTrustedBrowserOrigin` checks in
+  the settings, import and sync handlers are defence in depth only. The
+  privileged machine routes (`privilegedMachineRoutes`) share the
+  extension-management credential gate in `extensionManagementAuthMiddleware`,
+  so they read the protection mode and need `extensions:manage` only while it
+  is ON.
 - A name is still never authority, but a browser that reached a built-in page
   through one would load a page whose every management request is then refused.
   `builtinBrowserCanonicalRedirect` therefore canonicalises the *page entry*
