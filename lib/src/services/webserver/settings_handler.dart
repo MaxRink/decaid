@@ -92,20 +92,12 @@ class SettingsHandler {
           json['automaticUpdateCheck'] == true &&
           !_controller.automaticUpdateCheck;
       if (changesSkin || enablesAutomaticUpdates) {
-        final originRefusal = requireTrustedBrowserOrigin(
-          request,
-          action: 'POST /api/v1/settings extension settings',
-        );
-        if (originRefusal != null) return originRefusal;
         final denial = await requireExtensionManagement(
           request,
           action: 'POST /api/v1/settings extension settings',
         );
         if (denial != null) return denial;
       }
-      final freezeUntrustedExtensionSettings = isUntrustedBrowserOrigin(
-        request,
-      );
       if (json.containsKey('webUiPath') &&
           !_webUIStorage.containsSkinPath(json['webUiPath'].toString())) {
         return jsonBadRequest({
@@ -244,7 +236,6 @@ class SettingsHandler {
         }
       }
       if (json.containsKey('defaultSkinId') &&
-          !freezeUntrustedExtensionSettings &&
           await mayManageExtensions(request)) {
         final value = json['defaultSkinId'];
         if (value is String) {
@@ -262,9 +253,7 @@ class SettingsHandler {
       if (json.containsKey('automaticUpdateCheck')) {
         final value = json['automaticUpdateCheck'];
         if (value is bool) {
-          if (!value ||
-              (!freezeUntrustedExtensionSettings &&
-                  await mayManageExtensions(request))) {
+          if (!value || await mayManageExtensions(request)) {
             await _controller.setAutomaticUpdateCheck(value);
           }
         } else {

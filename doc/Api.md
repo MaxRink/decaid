@@ -131,6 +131,7 @@ working:
 | GET (WebSocket upgrade) | `/ws/v1/machine/raw` |
 | POST | `/api/v1/machine/firmware` |
 | POST | `/api/v1/machine/firmware/apply` |
+| DELETE | `/api/v1/machine/firmware` |
 | POST | `/api/v1/machine/calibration` |
 | PUT | `/api/v1/machine/calibration/:target` |
 | PUT | `/api/v1/machine/scaleCalibration` |
@@ -142,6 +143,12 @@ calibration, advanced-settings and firmware screens answer 401; use the native
 settings or a client holding a token. Browsers cannot send a bearer on a
 WebSocket upgrade, so with protection ON the raw socket is for native clients
 only.
+
+`POST /api/v1/data/sync` with `mode` `push` or `two_way` sends this device's
+data to the `target` the request names, so while protection is ON it needs the
+same token and is refused with 401/403 before any network request; a `pull`
+keeps the body rules below. The rest of the API stays open to LAN clients in
+both modes; general REST and WebSocket authentication is tracked in #1135.
 
 Two more routes are gated by what the body contains, and only while protection
 is ON:
@@ -201,12 +208,15 @@ added later and plugin-defined routes:
   `Access-Control-Allow-Credentials` and `Vary: Origin`) is only sent to the
   device's own origins, and only they get a preflight answer. Refusals carry no
   `access-control-*` header.
-- **Host names (DNS rebinding).** A request that carries an `Origin` or a
-  `Sec-Fetch-Site` header (that is, one sent by a browser) is refused with `403`
-  and `{"error":"This API only answers browsers on the device address"}` unless
-  its `Host` is `localhost`, a loopback address or a numeric address currently
-  assigned to the device. A name that resolves to the device is not the device's
-  address.
+- **Host names (DNS rebinding).** A request that carries `Origin`, `Referer`
+  or any `Sec-Fetch-*` header is treated as a browser request. It is refused
+  with `403` and
+  `{"error":"This API only answers browsers on the device address"}` unless
+  the raw `Host` header is `localhost`, a loopback address or a numeric address
+  currently assigned to the device, and it is refused the same way if it
+  carries `Forwarded` or any `X-Forwarded-*` header, because those would
+  otherwise replace the host the check sees. A name that resolves to the device
+  is not the device's address.
 - **Cross-site requests without an `Origin`.** Browsers omit `Origin` on
   navigations, link prefetches and `<img>`/`<script>` loads, but send
   `Sec-Fetch-Site`. Such a request is refused with `403` and
@@ -216,8 +226,11 @@ added later and plugin-defined routes:
   `GET /api/v1/devices/scan`) by navigating to it. `same-site` is admitted only
   when the `Referer` belongs to one of the device's own origins, because the
   device's other ports share its site; a page that sends no referrer
-  (`Referrer-Policy: no-referrer`) is refused. `none` (a typed URL or bookmark)
-  and `same-origin` are admitted. A device page that loads API resources across
+  (`Referrer-Policy: no-referrer`) is refused. A browser that sends a `Referer`
+  but no Fetch Metadata is held to the same rule. `none` (a typed URL or
+  bookmark) and `same-origin` are admitted. A form or `no-cors` `POST` from a
+  page with `Referrer-Policy: no-referrer` still carries `Origin: null`, which is
+  refused like any foreign origin. A device page that loads API resources across
   loopback names (`localhost` against `127.0.0.1`) is cross-site to the browser,
   so use the page's own host name for the API.
 - **WebSocket upgrades** are checked a second time where every socket is
@@ -233,18 +246,45 @@ added later and plugin-defined routes:
   `127.0.0.1`; IPv6 literals are not valid CSP sources and are left out), so
   the active skin can embed them and other sites cannot.
 
-Requests without an `Origin` and without `Sec-Fetch-Site` are not affected:
-Home Assistant, `curl`, MCP clients, native app code and `host.localApi` keep
-working in both modes, under any host name.
+Every API response carries `Vary: Origin`, so a cache never serves one
+origin's answer to another.
+
+Requests without `Origin`, `Referer` and `Sec-Fetch-*` are not affected: Home
+Assistant, `curl`, MCP clients, native app code and `host.localApi` keep working
+in both modes, under any host name and behind a forwarding proxy.
+
+**What remains.** The policy is a browser boundary, not authentication:
+
+- A browser without Fetch Metadata (for example Safari before 16.4) sends no
+  `Origin` or `Sec-Fetch-*` on a same-origin `GET`. A DNS-rebound page that also
+  suppresses its `Referer` therefore looks like a non-browser client, and its
+  same-origin `GET` requests are answered. Writes are still refused, because
+  browsers send `Origin` on every non-`GET` request. Current Chromium, Firefox
+  and Safari releases send Fetch Metadata, which closes this.
+- A trusted origin has full API control: script running in an installed skin,
+  a plugin page or the docs viewer can call every route. A cross-site scripting
+  flaw in an installed skin is therefore equivalent to API control; install
+  skins and plugins only from sources you trust. The docs viewer loads its
+  third-party scripts at pinned versions with Subresource Integrity.
+- A non-browser LAN client can still call every route that protected mode does
+  not cover. Authentication for the rest of the REST and WebSocket API is
+  tracked in #1135.
 
 #### Compatibility
 
 - **Open the device by numeric address or `localhost`.** A browser that reaches
-  the API, a plugin page or a skin through a DNS name (an mDNS `.local` name, a
-  router DNS record, a hosts file entry) is refused, because that name is not
-  one of the device's origins. A reverse proxy that serves the device under its
-  own name must enforce its own origin check and must not forward the browser's
-  `Origin`, `Sec-Fetch-*` and `Host` headers unchanged.
+  the API or a plugin page through a DNS name (an mDNS `.local` name, a router
+  DNS record, a hosts file entry) is refused, because that name is not one of
+  the device's origins. The skin entry point (port 3000) and inactive skin alias
+  ports redirect a name that resolves to the device to the device's numeric
+  address, the same way the built-in pages do (see
+  [Opening a built-in page through a name](#opening-a-built-in-page-through-a-name)),
+  so `http://decent.local:3000` lands on a working skin. A reverse proxy in front
+  of the device must enforce its own origin check and must not forward the
+  browser's `Origin`, `Referer` and `Sec-Fetch-*` headers; browser requests that
+  arrive with `Forwarded` or `X-Forwarded-*` headers are refused, and the skin
+  server injects neither the skin API script nor the account-proxy token into a
+  page requested with them.
 - **Skin development servers** on another computer or port are foreign origins.
   Proxy the API through the dev server so the browser only talks to the dev
   server's own origin, and drop the `Origin` header on the proxied requests; see
@@ -255,34 +295,9 @@ working in both modes, under any host name.
   calibration, advanced-settings, settings-reset and firmware screens answer 401
   and the raw machine socket is for native clients holding a token.
 
-Extension management additionally keeps its own, older browser-origin check,
-described next.
-
-A browser page is also checked against its `Origin`, in both modes and
-independently of any credential. The check runs ahead of the general CORS
-middleware, the account-proxy CORS rule and the authentication middleware, and
-refuses with `403` and
-`{"error":"Extension management is not allowed from this browser origin"}`
-before any handler work, naming no internal configuration and applying nothing.
-A valid `extensions:manage` bearer, an approved `manage.extensions` plugin grant
-and compatibility mode all make no difference to it.
-
-Which requests it refuses:
-
-- The 19 routes in the table above, on every method and path pair.
-- `POST /api/v1/data/import`, refused whole before the archive is read: whether
-  an archive carries a gated settings key is only known after parsing it, so
-  the conservative answer applies to every import.
-- `POST /api/v1/settings`, refused when the body contains a gated key
-  (`webUiPath`, a changed `defaultSkinId`, `automaticUpdateCheck` turned on),
-  and none of that body's keys are applied. A safe body that reaches the
-  handler is unaffected; its preflight is refused before the body is known — see
-  [Deliberate limits of the setting](#deliberate-limits-of-the-setting).
-- A pulling `POST /api/v1/data/sync`, refused when the pull includes the
-  `settings` section (the default), before any network request or write. The
-  section list is part of the request body, so a pull or `two_way` sync that
-  excludes `settings`, a `push`, and any other section are not refused by this
-  check: it is an extension-management boundary, not a general data-import one.
+Extension management routes, imports, settings and syncs go through the same
+policy and answer with the same `403` body; there is no separate
+extension-management origin check any more.
 
 What counts as the device's own origin:
 
@@ -310,8 +325,8 @@ refused while the skin server is on another port. The port 3000 entry point only
 redirects to the active origin and an inactive skin's alias port only serves a
 redirect, so a skin page always runs, and posts, from its live origin. `Host`,
 `Referer`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`, `Forwarded` and
-DNS resolution are never consulted, so a name that resolves to the device (DNS
-rebinding) is not enough.
+DNS resolution never make an origin trusted, so a name that resolves to the
+device (DNS rebinding) is not enough.
 
 #### Opening a built-in page through a name
 

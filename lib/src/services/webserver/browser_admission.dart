@@ -32,24 +32,24 @@ Middleware browserAdmissionMiddleware(
 ) {
   return (Handler inner) {
     return (Request request) async {
-      final origin = request.headers['origin'];
-      if (origin == null && !request.headers.containsKey('sec-fetch-site')) {
-        return inner(request);
-      }
+      if (!_isBrowserRequest(request)) return inner(request);
       final action = '${request.method} /${request.url.path}';
-      if (!await origins.isDeviceHost(request.requestedUri.host)) {
+      final policy = origins.snapshot();
+      final host = directRequestHost(request);
+      if (host == null || !await policy.isDeviceHost(host.host)) {
         log.warning('$action refused (403) for a browser on a foreign host');
         return _browserRefusal(untrustedBrowserHostError);
       }
       final connectionInfo = request.context[_shelfConnectionInfoKey];
+      final origin = request.headers['origin'];
       if (origin == null) {
-        if (await _isDeviceInitiated(request, origins, connectionInfo)) {
+        if (await _isDeviceInitiated(request, policy, connectionInfo)) {
           return inner(request);
         }
         log.warning('$action refused (403) for a cross-site browser request');
         return _browserRefusal(crossSiteRequestError);
       }
-      final verdict = await origins.classify(
+      final verdict = await policy.classify(
         origin,
         connectionInfo: connectionInfo,
       );
@@ -64,6 +64,13 @@ Middleware browserAdmissionMiddleware(
   };
 }
 
+bool _isBrowserRequest(Request request) => request.headers.keys.any((name) {
+  final lower = name.toLowerCase();
+  return lower == 'origin' ||
+      lower == 'referer' ||
+      lower.startsWith('sec-fetch-');
+});
+
 Future<bool> _isDeviceInitiated(
   Request request,
   ExtensionManagementBrowserOrigins origins,
@@ -72,7 +79,7 @@ Future<bool> _isDeviceInitiated(
   switch (request.headers['sec-fetch-site']) {
     case 'none' || 'same-origin':
       return true;
-    case 'same-site':
+    case 'same-site' || null:
       final initiator = _refererOrigin(request.headers['referer']);
       return initiator != null &&
           await origins.classify(initiator, connectionInfo: connectionInfo) ==
@@ -102,7 +109,7 @@ Middleware browserCorsMiddleware() {
   return (Handler inner) {
     return (Request request) async {
       final origin = _admittedBrowserOrigin(request);
-      if (origin == null) return inner(request);
+      if (origin == null) return _varyByOrigin(await inner(request));
       final cors = {
         'Access-Control-Allow-Origin': origin,
         'Access-Control-Allow-Credentials': 'true',
@@ -125,6 +132,10 @@ Middleware browserCorsMiddleware() {
     };
   };
 }
+
+Response _varyByOrigin(Response response) => response.change(
+  headers: {'Vary': _appendVary(response.headers['vary'], 'Origin')},
+);
 
 Response _browserRefusal(String error) => Response(
   403,

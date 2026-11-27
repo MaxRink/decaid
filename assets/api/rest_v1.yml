@@ -21,52 +21,42 @@ info:
     operation lists both security alternatives, the empty requirement and the
     `extensionsManage` scheme, so a client reads the credential as optional.
     While the option is ON the same credential is also required for the
-    privileged machine routes: the raw machine WebSocket, firmware upload and
-    apply, calibration and scale calibration writes, advanced machine
-    settings and settings reset. The rest of the API is unchanged.
+    privileged machine routes (the raw machine WebSocket, firmware upload,
+    apply and cancel, calibration and scale calibration writes, advanced
+    machine settings and settings reset) and for a `push` or `two_way`
+    `POST /api/v1/data/sync`. The rest of the API is unchanged; general
+    authentication is tracked in #1135.
 
     Every route, in both modes, applies one browser admission policy before
-    any handler runs. A request that carries `Origin` is admitted only from
-    one of the device's own origins (defined below); any other origin is
-    answered 403 with
-    `{"error":"This API does not accept requests from this browser origin"}`
-    for every method, preflights and WebSocket upgrades included, and
-    without `Access-Control-*` headers. CORS headers are sent only to the
-    device's own origins. A request that carries `Origin` or
-    `Sec-Fetch-Site` (a browser) is also refused with 403 and
-    `{"error":"This API only answers browsers on the device address"}` when
-    its `Host` is not `localhost`, a loopback address or a numeric address
-    currently assigned to the device. A browser request without `Origin`
-    whose `Sec-Fetch-Site` is `cross-site` (a navigation, prefetch or
-    subresource load started by another site), an unknown value, or
-    `same-site` without a `Referer` on a device origin is refused with 403 and
-    `{"error":"This API does not accept browser requests started by another site"}`.
-    Requests without either header (native apps, Home Assistant, scripts) are
-    unaffected.
+    any handler runs. A request that carries `Origin`, `Referer` or any
+    `Sec-Fetch-*` header is a browser request:
 
-    Extension management also refuses a request whose browser `Origin` is not
-    the device's own origin. That check applies in both modes, before any
-    handler work and regardless of any credential, and answers 403 with
-    `{"error":"Extension management is not allowed from this browser origin"}`.
-    It covers every plugin and skin management mutation, every import, a
-    settings body that changes the served skin, the extension update setting
-    or webUiPath, and a pull or two-way sync that includes the settings
-    section. A trusted origin is scheme `http` on localhost, 127.0.0.1, ::1 or
-    a numeric address currently assigned to a local network interface, on the
-    live skin page port, the actual API listener port, or the built-in API docs
-    viewer port while its listener is bound; anything else, including
-    `Origin: null`, `https`, a hostname and a retired port, is
-    refused. A literal loopback host is trusted only from a request whose TCP
-    socket peer is loopback or one of the device's current addresses; a peer
-    that is missing, unreadable or belongs to another machine is refused, so a
-    page on a second computer cannot borrow `localhost`. Untrusted preflights
-    are refused for these paths, including `POST /api/v1/settings`,
-    `/api/v1/data/import` and `/api/v1/data/sync`, before any body is read, so a
-    browser page on an untrusted origin cannot send a safe settings write or a
-    push sync as a JSON request even though the actual request would be
-    admitted. Requests without an `Origin` header are unaffected. Origin is not
-    authentication: a non-browser client can omit or forge it, so this
-    boundary covers browser pages only.
+    - It is refused with 403 and
+      `{"error":"This API only answers browsers on the device address"}`
+      when its raw `Host` header is not `localhost`, a loopback address or a
+      numeric address currently assigned to the device, or when it carries
+      `Forwarded` or an `X-Forwarded-*` header.
+    - With `Origin`, it is admitted only from one of the device's own origins;
+      any other origin, including `Origin: null`, is answered 403 with
+      `{"error":"This API does not accept requests from this browser origin"}`
+      for every method, preflights and WebSocket upgrades included, and
+      without `Access-Control-*` headers. CORS headers are sent only to the
+      device's own origins, and every response carries `Vary: Origin`.
+    - Without `Origin`, `Sec-Fetch-Site` decides: `none` and `same-origin`
+      are admitted, `same-site` (or a `Referer` without Fetch Metadata) only
+      with a `Referer` on a device origin, and `cross-site` or an unknown
+      value is refused with 403 and
+      `{"error":"This API does not accept browser requests started by another site"}`.
+
+    A device origin is scheme `http` on localhost, 127.0.0.1, ::1 or a
+    numeric address currently assigned to a local network interface, on the
+    live skin page port, the actual API listener port, or the built-in API
+    docs viewer port while its listener is bound. A literal loopback host is
+    trusted only from a request whose TCP socket peer is loopback or one of
+    the device's current addresses, so a page on a second computer cannot
+    borrow `localhost`. Requests without any of these headers (native apps,
+    Home Assistant, scripts) are unaffected. This is a browser boundary, not
+    authentication: a non-browser client can omit or forge these headers.
 
     A `GET` of a built-in page that arrives through a hostname is answered with
     302 to the same path on the numeric local endpoint: `/` and `/index.html`
@@ -1516,8 +1506,36 @@ paths:
       description: |
         Idempotent. Returns 202 with the resulting operation state.
         Safe to call when no update is in progress or no machine is connected.
+
+        Privileged machine route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "202":
           description: Cancellation accepted/satisfied
           content:
@@ -1987,12 +2005,10 @@ paths:
         protection is OFF (the default), no token is needed, and in every
         mode a body whose values are already in effect, one that turns
         `automaticUpdateCheck` off, and one that changes only other keys needs
-        none either. Independent of the credential, a browser `Origin` that is
-        not the device's own origin is refused with 403 when the body makes one
-        of those changes, and a preflight for this operation from such an origin
-        is refused before the body exists, so a browser page on an untrusted
-        origin cannot send a safe body as a JSON request either; an actual
-        request from a non-browser client is applied as before. The native
+        none either. Independent of the credential, every request from a
+        browser `Origin` that is not the device's own origin is refused with
+        403 by the API-wide browser admission policy, whatever the body. The
+        native
         `Settings > Security` toggle itself is not writable through this route:
         an unknown key is ignored, and the same is true of an import or a sync.
       tags: [Decent Settings]
@@ -6266,7 +6282,8 @@ paths:
         "403":
           description: >-
             The browser `Origin` is not the device's own origin; the import is
-            refused whole, in both modes, before the archive is read. The
+            refused whole by the browser admission policy, in both modes,
+            before the archive is read. The
             protection-is-ON credential requirement is unaffected: while
             protection is ON, an unauthorized import skips a gated setting key
             with a warning instead of refusing the archive, and an authorized
@@ -6322,6 +6339,12 @@ paths:
         section result; with protection OFF (the default) both apply. A push
         sends no token, so the target applies its own rule to the pushed
         archive.
+
+        While extension-management protection is ON, a `push` or `two_way`
+        sync sends this device's data to the named target only with
+        `Authorization: Bearer <token>` scoped `extensions:manage`; without
+        one it is refused with 401 or 403 before any network request. A
+        `pull` needs no token.
       tags: [Data Management]
       requestBody:
         required: true
@@ -6375,6 +6398,24 @@ paths:
                     or failed. It is false by default and is not inferred from
                     overwrite conflict handling.
       responses:
+        "401":
+          description: >-
+            Protection is ON, the request pushes (`push` or `two_way`) and
+            the bearer token is missing, malformed, unknown or revoked.
+            Nothing is sent. Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            Protection is ON, the request pushes and the token is not scoped
+            for `extensions:manage`; or, in both modes, a browser `Origin`
+            that is not the device's own origin.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "200":
           description: Sync completed successfully
           content:
@@ -6398,16 +6439,6 @@ paths:
                     type: string
                   message:
                     type: string
-        "403":
-          description: >-
-            A pull or two-way sync that includes the `settings` section is
-            refused, in both modes and before any network request or write,
-            when the browser `Origin` is not the device's own origin. A push
-            and a pull that excludes `settings` do not depend on this check,
-            but a preflight for this operation from an untrusted origin is
-            refused before the body is read, so a browser page on such an
-            origin cannot send a push as a JSON request either; an actual
-            request from a non-browser client is unaffected.
         "408":
           description: Sync request body was not received within 30 seconds
         "413":

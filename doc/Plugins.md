@@ -2379,8 +2379,8 @@ client. A malformed or wrong-scope credential is not an error while OFF either.
 
 A browser page is also refused with 403 when its `Origin` is not the device's
 own, before any handler work, in both modes and whatever credential it carries:
-`{"error":"Extension management is not allowed from this browser origin"}`.
-The routes it covers, the ports and addresses it trusts, the preflights it
+`{"error":"This API does not accept requests from this browser origin"}`, the
+same refusal every API route gives a foreign origin. The routes it covers, the ports and addresses it trusts, the preflights it
 refuses and the requests without an `Origin` that are unaffected are described
 in
 [Browser origins](Api.md#browser-origins).

@@ -10,16 +10,7 @@ import 'package:reaprime/src/services/webserver/proxy_auth_middleware.dart';
 
 const extensionManagementGrantContextKey = 'decaid.extensionManagementGrant';
 
-const untrustedBrowserOriginError =
-    'Extension management is not allowed from this browser origin';
-
 const _authorizationContextKey = 'decaid.extensionManagementAuthorization';
-
-const _browserOriginContextKey = 'decaid.browserOriginVerdict';
-
-const _originRefusalContextKey = 'decaid.browserOriginRefusal';
-
-const _shelfConnectionInfoContextKey = 'shelf.io.connection_info';
 
 final _log = Logger('ExtensionManagement');
 
@@ -53,6 +44,15 @@ final class ExtensionManagementBrowserOrigins {
   final Future<Set<String>> Function() deviceAddresses;
 
   static const loopbackHosts = {'localhost', '127.0.0.1', '::1'};
+
+  ExtensionManagementBrowserOrigins snapshot() {
+    Future<Set<String>>? addresses;
+    return ExtensionManagementBrowserOrigins(
+      apiListenerPort: apiListenerPort,
+      pagePorts: pagePorts,
+      deviceAddresses: () => addresses ??= deviceAddresses(),
+    );
+  }
 
   Future<BrowserOriginVerdict> classify(
     String? origin, {
@@ -211,6 +211,7 @@ const privilegedMachineRoutes = <ExtensionManagementRoute>[
   ExtensionManagementRoute('GET', '/ws/v1/machine/raw'),
   ExtensionManagementRoute('POST', '/api/v1/machine/firmware'),
   ExtensionManagementRoute('POST', '/api/v1/machine/firmware/apply'),
+  ExtensionManagementRoute('DELETE', '/api/v1/machine/firmware'),
   ExtensionManagementRoute('POST', '/api/v1/machine/calibration'),
   ExtensionManagementRoute('PUT', '/api/v1/machine/calibration/<target>'),
   ExtensionManagementRoute('PUT', '/api/v1/machine/scaleCalibration'),
@@ -236,12 +237,6 @@ const extensionManagementSettingsKeys = {
   'defaultSkinId',
   'automaticUpdateCheck',
 };
-
-const extensionManagementBodySensitiveRoutes = <ExtensionManagementRoute>[
-  ExtensionManagementRoute('POST', '/api/v1/settings'),
-  ExtensionManagementRoute('POST', '/api/v1/data/import'),
-  ExtensionManagementRoute('POST', '/api/v1/data/sync'),
-];
 
 final class _ExtensionManagementModeSnapshot {
   _ExtensionManagementModeSnapshot(this._readRequirement);
@@ -306,126 +301,6 @@ final class ExtensionManagementAuthorization {
     }
     return null;
   }
-}
-
-Middleware extensionManagementBrowserOriginMiddleware(
-  ExtensionManagementBrowserOrigins origins, {
-  List<ExtensionManagementRoute> routes = extensionManagementRoutes,
-  List<ExtensionManagementRoute> bodyRoutes =
-      extensionManagementBodySensitiveRoutes,
-}) {
-  final byMethod = ExtensionManagementRouteMatcher(routes);
-  final byBody = ExtensionManagementRouteMatcher(bodyRoutes);
-  final guarded = [...routes, ...bodyRoutes];
-  final byRequestedMethod = ExtensionManagementRouteMatcher(guarded);
-  final byPreflight = ExtensionManagementRouteMatcher.paths(guarded);
-  return (Handler inner) {
-    return (Request request) async {
-      final origin = request.headers['origin'];
-      if (origin == null) {
-        return inner(
-          request.change(
-            context: {
-              _browserOriginContextKey: BrowserOriginVerdict.originless,
-            },
-          ),
-        );
-      }
-      final connectionInfo = request.context[_shelfConnectionInfoContextKey];
-      if (request.method == 'OPTIONS') {
-        if (!await _isManagementPreflight(
-          request,
-          byRequestedMethod,
-          byPreflight,
-        )) {
-          return inner(request);
-        }
-        final verdict = await origins.classify(
-          origin,
-          connectionInfo: connectionInfo,
-        );
-        if (verdict != BrowserOriginVerdict.untrusted) {
-          return inner(
-            request.change(context: {_browserOriginContextKey: verdict}),
-          );
-        }
-        _log.warning(
-          'OPTIONS /${request.url.path} refused (403) for an untrusted '
-          'browser origin',
-        );
-        return untrustedBrowserOriginRefusal();
-      }
-      if (await byMethod.matches(request)) {
-        final verdict = await origins.classify(
-          origin,
-          connectionInfo: connectionInfo,
-        );
-        if (verdict == BrowserOriginVerdict.untrusted) {
-          _log.warning(
-            '${request.method} /${request.url.path} refused (403) for an '
-            'untrusted browser origin',
-          );
-          return untrustedBrowserOriginRefusal();
-        }
-        return inner(
-          request.change(context: {_browserOriginContextKey: verdict}),
-        );
-      }
-      if (!await byBody.matches(request)) return inner(request);
-      final verdict = await origins.classify(
-        origin,
-        connectionInfo: connectionInfo,
-      );
-      final response = await inner(
-        request.change(context: {_browserOriginContextKey: verdict}),
-      );
-      if (!_isBrowserOriginRefusal(response)) return response;
-      return _withoutAffirmativeCors(response);
-    };
-  };
-}
-
-bool _isBrowserOriginRefusal(Response response) =>
-    response.context[_originRefusalContextKey] == true;
-
-final _httpMethodToken = RegExp(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$");
-
-Future<bool> _isManagementPreflight(
-  Request request,
-  ExtensionManagementRouteMatcher byMethod,
-  ExtensionManagementRouteMatcher byPath,
-) {
-  final requested = request.headers['access-control-request-method'];
-  if (requested == null || !_httpMethodToken.hasMatch(requested)) {
-    return byPath.matches(request);
-  }
-  return byMethod.matchesMethod(requested, request);
-}
-
-Response _withoutAffirmativeCors(Response response) {
-  final names = [
-    for (final name in response.headers.keys)
-      if (name.toLowerCase().startsWith('access-control-')) name,
-  ];
-  if (names.isEmpty) return response;
-  return response.change(headers: {for (final name in names) name: null});
-}
-
-Response untrustedBrowserOriginRefusal() => _json(
-  403,
-  untrustedBrowserOriginError,
-).change(context: {_originRefusalContextKey: true});
-
-bool isUntrustedBrowserOrigin(Request request) =>
-    request.context[_browserOriginContextKey] == BrowserOriginVerdict.untrusted;
-
-Response? requireTrustedBrowserOrigin(
-  Request request, {
-  required String action,
-}) {
-  if (!isUntrustedBrowserOrigin(request)) return null;
-  _log.warning('$action refused (403) for an untrusted browser origin');
-  return untrustedBrowserOriginRefusal();
 }
 
 Middleware extensionManagementAuthMiddleware(
@@ -552,21 +427,8 @@ final class ExtensionManagementRouteMatcher {
     }
   }
 
-  ExtensionManagementRouteMatcher.paths(
-    Iterable<ExtensionManagementRoute> routes,
-  ) {
-    for (final route in routes) {
-      _router.all(route.path, (Request _) => _matched);
-    }
-  }
-
   Future<bool> matches(Request request) async =>
       identical(await _router.call(request), _matched);
-
-  Future<bool> matchesMethod(String method, Request request) async => identical(
-    await _router.call(Request(method, request.requestedUri, url: request.url)),
-    _matched,
-  );
 }
 
 Response _unauthorized(String error) => Response(

@@ -125,13 +125,17 @@ const bodyExample = "</body>";
       WebUIService.hostResolutionTtl = const Duration(seconds: 30);
     });
 
-    Future<String> getBodyForHost(String host) async {
+    Future<String> getBodyForHost(
+      String host, {
+      Map<String, String> headers = const {},
+    }) async {
       final client = HttpClient();
       addTearDown(client.close);
       final request = await client.getUrl(
         Uri.parse('http://localhost:${service.port}/'),
       );
       request.headers.set(HttpHeaders.hostHeader, '$host:${service.port}');
+      headers.forEach(request.headers.set);
       final response = await request.close();
       return response.transform(utf8.decoder).join();
     }
@@ -377,6 +381,50 @@ const bodyExample = "</body>";
       expect(body, contains(skinApiScriptPath));
     });
 
+    test('forwarding headers cannot borrow a device address', () async {
+      const lanIp = '10.0.0.7';
+      WebUIService.resolveWifiIP = () async => lanIp;
+      WebUIService.resolveHost = (_) async => [];
+      service = WebUIService(listLocalAddresses: () async => [lanIp]);
+      service.skinProxyToken = token;
+      await service.serveFolderAtPath(tempDir.path, port: entryPort);
+
+      for (final headers in [
+        {'x-forwarded-host': '$lanIp:${service.port}'},
+        {'forwarded': 'host=$lanIp:${service.port}'},
+      ]) {
+        for (final host in ['rebind.attacker.example', lanIp]) {
+          final body = await getBodyForHost(host, headers: headers);
+          expect(body, isNot(contains('reaprime-proxy-token')), reason: host);
+          expect(body, isNot(contains(token)), reason: host);
+          expect(body, isNot(contains(skinApiScriptPath)), reason: host);
+        }
+      }
+      expect(await getBodyForHost(lanIp), contains('content="$token"'));
+    });
+
+    test('the entry redirect ignores forwarding headers', () async {
+      const lanIp = '10.0.0.7';
+      WebUIService.resolveWifiIP = () async => lanIp;
+      WebUIService.resolveHost = (_) async => [];
+      service = WebUIService(listLocalAddresses: () async => [lanIp]);
+      await service.serveFolderAtPath(tempDir.path, port: entryPort);
+
+      final client = HttpClient();
+      addTearDown(client.close);
+      final request = await client.getUrl(
+        Uri.parse('http://localhost:$entryPort/'),
+      );
+      request.followRedirects = false;
+      request.headers
+        ..set(HttpHeaders.hostHeader, 'rebind.attacker.example:$entryPort')
+        ..set('x-forwarded-host', '$lanIp:$entryPort');
+      final response = await request.close();
+      await response.drain<void>();
+
+      expect(response.statusCode, HttpStatus.notFound);
+    });
+
     test('re-resolves a hostname after its cached entry expires', () async {
       const lanIp = '10.0.0.7';
       var resolves = false;
@@ -432,7 +480,7 @@ const bodyExample = "</body>";
     });
 
     test(
-      'entry redirect follows a LAN hostname that resolves to this device',
+      'entry redirect sends a LAN hostname to the numeric address',
       () async {
         const lanIp = '10.0.0.7';
         WebUIService.resolveWifiIP = () async => lanIp;
@@ -453,7 +501,8 @@ const bodyExample = "</body>";
         expect(response.statusCode, HttpStatus.temporaryRedirect);
         expect(
           response.headers.value(HttpHeaders.locationHeader),
-          'http://decent:${service.port}/',
+          'http://127.0.0.1:${service.port}/',
+          reason: 'a hostname is canonicalised to the numeric address',
         );
       },
     );

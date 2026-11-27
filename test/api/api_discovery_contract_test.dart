@@ -31,6 +31,23 @@ void main() {
     expect(html, contains("const specUrl = '${asyncApiPath.substring(1)}'"));
   });
 
+  test('the docs viewer pins every remote asset with integrity', () {
+    final tags = RegExp(
+      r'<(script|link)\b[^>]*\b(?:src|href)="(https?://[^"]+)"[^>]*>',
+    ).allMatches(html).toList();
+    expect(tags, isNotEmpty);
+    for (final tag in tags) {
+      final url = tag.group(2)!;
+      expect(url, matches(RegExp(r'@\d+\.\d+\.\d+/')), reason: url);
+      expect(
+        tag.group(0),
+        matches(RegExp(r'integrity="sha384-[A-Za-z0-9+/=]+"')),
+        reason: url,
+      );
+      expect(tag.group(0), contains('crossorigin="anonymous"'), reason: url);
+    }
+  });
+
   test('OpenAPI documents the exact discovery response', () {
     final operation =
         (spec['paths'] as YamlMap)[manifestPath]['get'] as YamlMap;

@@ -77,6 +77,10 @@ void main() {
         reached.add('POST firmware/apply');
         return Response.ok('{}');
       })
+      ..delete('/api/v1/machine/firmware', (Request r) {
+        reached.add('DELETE firmware');
+        return Response.ok('{}');
+      })
       ..post('/api/v1/machine/calibration', (Request r) {
         reached.add('POST calibration');
         return Response.ok('{}');
@@ -351,6 +355,74 @@ void main() {
   });
 
   group('DNS rebinding', () {
+    test('forwarding headers cannot vouch for a rebound host', () async {
+      for (final forwarded in [
+        {'x-forwarded-host': '$_deviceAddress:8080'},
+        {'forwarded': 'host=$_deviceAddress:8080'},
+        {'x-forwarded-proto': 'http'},
+      ]) {
+        for (final host in [
+          'rebind.attacker.example:8080',
+          '$_deviceAddress:8080',
+        ]) {
+          final response = await send(
+            'GET',
+            '/api/v1/machine/state',
+            host: host,
+            peer: '192.168.12.20',
+            headers: {'sec-fetch-site': 'same-origin', ...forwarded},
+          );
+          expect(response.statusCode, 403, reason: '$host $forwarded');
+          expect(await errorOf(response), _hostError);
+        }
+      }
+      expect(reached, isEmpty);
+    });
+
+    test(
+      'a request that only carries a Referer is a browser request',
+      () async {
+        final rebound = await send(
+          'GET',
+          '/api/v1/machine/state',
+          host: 'rebind.attacker.example:8080',
+          peer: '192.168.12.20',
+          headers: {'referer': 'http://rebind.attacker.example:8080/'},
+        );
+        expect(rebound.statusCode, 403);
+        expect(await errorOf(rebound), _hostError);
+        final foreign = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: '$_deviceAddress:8080',
+          peer: '192.168.12.20',
+          headers: {'referer': 'https://evil.example/page'},
+        );
+        expect(foreign.statusCode, 403);
+        expect(await errorOf(foreign), _crossSiteError);
+        expect(reached, isEmpty);
+        final own = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: '$_deviceAddress:8080',
+          peer: '192.168.12.20',
+          headers: {'referer': 'http://$_deviceAddress:$_skinPort/'},
+        );
+        expect(own.statusCode, 200);
+      },
+    );
+
+    test('a non-browser client may send forwarding headers', () async {
+      final response = await send(
+        'GET',
+        '/api/v1/machine/state',
+        host: 'decaid.lan:8080',
+        peer: '192.168.12.30',
+        headers: {'x-forwarded-for': '10.1.1.1', 'x-forwarded-host': 'x'},
+      );
+      expect(response.statusCode, 200);
+    });
+
     test('a browser request under a foreign host name is refused', () async {
       final response = await send(
         'GET',
@@ -649,6 +721,7 @@ void main() {
       ('GET', '/ws/v1/machine/raw', websocket),
       ('POST', '/api/v1/machine/firmware', {}),
       ('POST', '/api/v1/machine/firmware/apply', {}),
+      ('DELETE', '/api/v1/machine/firmware', {}),
       ('POST', '/api/v1/machine/calibration', {}),
       ('PUT', '/api/v1/machine/calibration/flow', {}),
       ('PUT', '/api/v1/machine/scaleCalibration', {}),
@@ -828,6 +901,42 @@ void main() {
       );
       expect(typed.statusCode, 200);
       expect(served, ['PUT state']);
+    });
+
+    test('X-Forwarded-Host and Forwarded cannot pass the host check', () async {
+      for (final forwarded in [
+        {'x-forwarded-host': '127.0.0.1:${server.port}'},
+        {'forwarded': 'host=127.0.0.1:${server.port}'},
+      ]) {
+        final plain = await request(
+          'PUT',
+          '/api/v1/machine/state/espresso',
+          headers: {
+            'host': 'rebind.attacker.example:${server.port}',
+            'sec-fetch-site': 'same-origin',
+          },
+        );
+        expect(plain.statusCode, 403);
+        final forged = await request(
+          'PUT',
+          '/api/v1/machine/state/espresso',
+          headers: {
+            'host': 'rebind.attacker.example:${server.port}',
+            'sec-fetch-site': 'same-origin',
+            ...forwarded,
+          },
+        );
+        expect(forged.statusCode, 403, reason: '$forwarded');
+        await expectLater(
+          openRaw({
+            'host': 'rebind.attacker.example:${server.port}',
+            'origin': 'http://rebind.attacker.example:${server.port}',
+            ...forwarded,
+          }),
+          throwsA(isA<WebSocketException>()),
+        );
+      }
+      expect(served, isEmpty);
     });
 
     test('a rebound host name is refused for a browser', () async {

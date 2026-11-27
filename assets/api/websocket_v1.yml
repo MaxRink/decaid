@@ -37,8 +37,8 @@ servers:
       A browser upgrade whose `Origin` is not the device's own origin (the
       live skin page port, the API port or the API docs port on a loopback or
       current local numeric address) is refused with 403 on every channel, as
-      is a browser upgrade whose `Host` is not loopback or a current device
-      address. Upgrades without an `Origin` header (native clients) are not
+      is a browser upgrade whose raw `Host` is not loopback or a current
+      device address or that carries `Forwarded` or `X-Forwarded-*` headers. Upgrades without an `Origin` header (native clients) are not
       affected.
     variables:
       tablet-ip:

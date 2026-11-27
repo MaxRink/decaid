@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reaprime/src/services/account/proxy_token_service.dart';
 import 'package:reaprime/src/services/webserver/extension_management_auth.dart';
+import 'package:reaprime/src/services/webserver_service.dart';
 import 'package:shelf/shelf.dart';
 
 class _Grant implements ExtensionManagementGrant {
@@ -1223,14 +1224,12 @@ void main() {
     const trustedOrigin = 'http://localhost:25707';
     const untrustedOrigin = 'https://evil.example';
     const refusedError =
-        'Extension management is not allowed from this browser origin';
+        'This API does not accept requests from this browser origin';
 
     Handler guarded({bool protect = true, bool withGuard = true}) {
       var pipeline = const Pipeline();
       if (withGuard) {
-        pipeline = pipeline.addMiddleware(
-          extensionManagementBrowserOriginMiddleware(origins),
-        );
+        pipeline = pipeline.addMiddleware(browserAdmissionMiddleware(origins));
       }
       return pipeline
           .addMiddleware(
@@ -1490,7 +1489,7 @@ void main() {
     );
 
     test('an untrusted preflight for a read-only method on a shared path is '
-        'not a management mutation', () async {
+        'refused too', () async {
       for (final path in const [
         '/api/v1/plugins',
         '/api/v1/plugins/example.reaplugin/settings',
@@ -1509,14 +1508,13 @@ void main() {
             headers: {'access-control-request-method': method},
             through: guarded(protect: false),
           );
-          expect(response.statusCode, 200, reason: '$method $path');
-          expect(reached, hasLength(1), reason: '$method $path');
+          expect(response.statusCode, 403, reason: '$method $path');
+          expect(reached, isEmpty, reason: '$method $path');
         }
       }
     });
 
-    test('an untrusted preflight for an unlisted method keeps the general '
-        'path', () async {
+    test('an untrusted preflight for an unlisted method is refused', () async {
       for (final (method, path) in const [
         ('PATCH', '/api/v1/plugins/example.reaplugin/enable'),
         ('GET', '/api/v1/plugins/example.reaplugin/enable'),
@@ -1529,8 +1527,8 @@ void main() {
           origin: untrustedOrigin,
           headers: {'access-control-request-method': method},
         );
-        expect(response.statusCode, 200, reason: '$method $path');
-        expect(reached, hasLength(1), reason: '$method $path');
+        expect(response.statusCode, 403, reason: '$method $path');
+        expect(reached, isEmpty, reason: '$method $path');
       }
     });
 
@@ -1610,8 +1608,8 @@ void main() {
             path,
             origin: untrustedOrigin,
           );
-          expect(response.statusCode, 200, reason: path);
-          expect(reached, hasLength(1), reason: path);
+          expect(response.statusCode, 403, reason: path);
+          expect(reached, isEmpty, reason: path);
         }
       },
     );
@@ -1629,7 +1627,7 @@ void main() {
       expect(reached, isEmpty);
     });
 
-    test('an untrusted origin keeps unrelated routes reachable', () async {
+    test('an untrusted origin is refused on every route', () async {
       for (final (method, path) in [
         ('GET', '/api/v1/plugins'),
         ('POST', '/api/v1/settings'),
@@ -1644,60 +1642,10 @@ void main() {
           origin: untrustedOrigin,
           through: guarded(protect: false),
         );
-        expect(response.statusCode, 200, reason: '$method $path');
-        expect(reached, hasLength(1), reason: '$method $path');
+        expect(response.statusCode, 403, reason: '$method $path');
+        expect(reached, isEmpty, reason: '$method $path');
       }
     });
-
-    test(
-      'the handler check refuses only a recorded untrusted origin',
-      () async {
-        late Request seen;
-        final handler = const Pipeline()
-            .addMiddleware(extensionManagementBrowserOriginMiddleware(origins))
-            .addHandler((request) async {
-              seen = request;
-              return requireTrustedBrowserOrigin(request, action: 'test') ??
-                  Response.ok('inner');
-            });
-
-        await handler(
-          Request(
-            'POST',
-            Uri.parse('http://localhost/api/v1/settings'),
-            headers: const {'origin': untrustedOrigin},
-          ),
-        );
-        final refused = requireTrustedBrowserOrigin(seen, action: 'test');
-        expect(refused?.statusCode, 403);
-        expect(isUntrustedBrowserOrigin(seen), isTrue);
-
-        await handler(
-          Request(
-            'POST',
-            Uri.parse('http://localhost/api/v1/settings'),
-            headers: const {'origin': trustedOrigin},
-            context: {_connectionInfoKey: _loopbackPeer},
-          ),
-        );
-        expect(requireTrustedBrowserOrigin(seen, action: 'test'), isNull);
-        expect(isUntrustedBrowserOrigin(seen), isFalse);
-
-        await handler(
-          Request('POST', Uri.parse('http://localhost/api/v1/settings')),
-        );
-        expect(requireTrustedBrowserOrigin(seen, action: 'test'), isNull);
-        expect(isUntrustedBrowserOrigin(seen), isFalse);
-
-        final unguarded = Request(
-          'POST',
-          Uri.parse('http://localhost/api/v1/settings'),
-          headers: const {'origin': untrustedOrigin},
-        );
-        expect(requireTrustedBrowserOrigin(unguarded, action: 'test'), isNull);
-        expect(isUntrustedBrowserOrigin(unguarded), isFalse);
-      },
-    );
   });
 
   group('browser origin address reads', () {
@@ -1724,7 +1672,7 @@ void main() {
         );
 
     Handler guarded({bool protect = false}) => const Pipeline()
-        .addMiddleware(extensionManagementBrowserOriginMiddleware(origins()))
+        .addMiddleware(browserAdmissionMiddleware(origins()))
         .addMiddleware(
           extensionManagementAuthMiddleware(
             tokens,
@@ -1779,8 +1727,7 @@ void main() {
       expect(reads, 0);
     });
 
-    test('unrelated, read-only and plugin traffic never reads device '
-        'addresses', () async {
+    test('each browser request reads device addresses at most once', () async {
       const origin = 'http://192.168.12.64:25707';
       for (final (method, path) in const [
         ('GET', '/api/v1/plugins'),
@@ -1792,15 +1739,23 @@ void main() {
         ('GET', '/api/v1/account/proxy/support/api/sn'),
       ]) {
         reached.clear();
-        final response = await send(method, path, origin: origin);
+        final response = await send(
+          method,
+          path,
+          origin: origin,
+          headers: const {
+            'referer': 'http://192.168.12.64:25707/',
+            'sec-fetch-site': 'same-site',
+          },
+        );
         expect(response.statusCode, 200, reason: '$method $path');
         expect(reached, hasLength(1), reason: '$method $path');
       }
-      expect(reads, 0);
+      expect(reads, 7);
     });
 
     test(
-      'unrelated traffic completes while the address read is blocked',
+      'originless traffic completes while the address read is blocked',
       () async {
         barrier = Completer<void>();
         final mutation = send(
@@ -1810,11 +1765,7 @@ void main() {
         );
         await readStarted.future;
 
-        final unrelated = await send(
-          'GET',
-          '/api/v1/machine/state/espresso',
-          origin: 'http://192.168.12.64:25707',
-        );
+        final unrelated = await send('GET', '/api/v1/machine/state/espresso');
         expect(unrelated.statusCode, 200);
         expect(reached, hasLength(1));
         expect(reads, 1);
@@ -1945,7 +1896,7 @@ void main() {
       expect(reads, 1);
     });
 
-    test('an unrelated preflight never reads device addresses', () async {
+    test('a preflight reads device addresses once', () async {
       final response = await send(
         'OPTIONS',
         '/api/v1/machine/state/espresso',
@@ -1953,7 +1904,7 @@ void main() {
       );
 
       expect(response.statusCode, 200);
-      expect(reads, 0);
+      expect(reads, 1);
     });
 
     test('an untrusted port is refused without reading addresses', () async {
