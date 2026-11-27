@@ -395,16 +395,21 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
       });
 
       test('a forged generation is refused before dispatch', () async {
-        // A forged generation is dropped without a reply, so check how it had
-        // settled once a later marker from a granted plugin got through.
-        final state = await harness.settledState(
-          steward,
+        final outcome = await harness.probe(
+          attacker,
           'globalThis.__reaprimePluginBridge.localApi(pluginId, pluginGeneration + 1, pluginBridgeToken, "/api/v1/plugins/$target/disable", "POST", null, null)',
-          actorId: attacker,
         );
 
-        expect(state, isNot(startsWith('resolved')), reason: state);
-        expect(harness.bridged, ['GET $fixtureMarker']);
+        expect(outcome.resolved, isFalse, reason: '$outcome');
+        expect(outcome.errorMessage, 'Plugin generation changed');
+        expect(harness.bridged, isEmpty);
+        expect(
+          harness.manager
+              .jsRealmOf(attacker)
+              .evaluate('__debugPendingCounts().decentProxy')
+              .stringResult,
+          '0',
+        );
         await expectNoSideEffect();
       });
 
@@ -639,15 +644,21 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
             expect(echo.jsonBody['hasGrant'], isTrue);
             expect(echo.jsonBody['mayManage'], isTrue);
 
-            // A forged generation is dropped without a reply, so check how it
-            // had settled once a later marker got through.
             harness.bridged.clear();
-            final forged = await harness.settledState(
+            final forged = await harness.probe(
               steward,
               'globalThis.__reaprimePluginBridge.localApi(pluginId, pluginGeneration + 1, pluginBridgeToken, "/api/v1/plugins/$dormant/disable", "POST", null, null)',
             );
-            expect(forged, isNot(startsWith('resolved')), reason: forged);
-            expect(harness.bridged, ['GET $fixtureMarker']);
+            expect(forged.resolved, isFalse, reason: '$forged');
+            expect(forged.errorMessage, 'Plugin generation changed');
+            expect(harness.bridged, isEmpty);
+            expect(
+              harness.manager
+                  .jsRealmOf(steward)
+                  .evaluate('__debugPendingCounts().decentProxy')
+                  .stringResult,
+              '0',
+            );
             expect(harness.loader.isPluginLoaded(dormant), isTrue);
           });
 

@@ -480,6 +480,7 @@ class PluginManager {
       _log.warning(
         'Rejected $channel message with invalid plugin bridge token',
       );
+      _rejectInRealm(realm, channel, msg, 'Invalid plugin bridge caller');
       return null;
     }
     final claimedPluginId = msg['pluginId'];
@@ -487,6 +488,7 @@ class PluginManager {
       _log.warning(
         'Rejected $channel message claiming plugin $claimedPluginId as ${realm.pluginId}',
       );
+      _rejectInRealm(realm, channel, msg, 'Invalid plugin bridge caller');
       return null;
     }
     final generation = msg['generation'];
@@ -495,9 +497,53 @@ class PluginManager {
       _log.warning(
         'Rejected $channel message for generation $generation of ${realm.pluginId}',
       );
+      _rejectInRealm(realm, channel, msg, 'Plugin generation changed');
       return null;
     }
     return realm.pluginId;
+  }
+
+  void _rejectInRealm(
+    _PluginRealm realm,
+    String channel,
+    Map<String, dynamic> msg,
+    String error,
+  ) {
+    final requestId = msg['requestId'];
+    final payload = msg['payload'];
+    final String? reply = switch ((channel, msg['type'])) {
+      ('fetch', _) when msg['id'] is num =>
+        'globalThis.__handleFetchResponse('
+            '${jsonEncode({'id': msg['id'], 'error': error})});',
+      ('transport', 'onEvent')
+          when payload is Map && payload['handle'] is String =>
+        'globalThis.__transportRemoveListener(${jsonEncode(payload['handle'])});',
+      ('transport', _) when requestId is String =>
+        'globalThis.__handleTransportReply('
+            '${jsonEncode({'requestId': requestId, 'bridgeToken': msg['bridgeToken'], 'error': error})});',
+      ('devices', _) when requestId is String =>
+        'globalThis.__handleDeviceReply('
+            '${jsonEncode({'requestId': requestId, 'bridgeToken': msg['bridgeToken'], 'error': error})});',
+      ('host', 'decentProxy' || 'localApi') when requestId is String =>
+        'globalThis.__reaprimePluginBridge.completeDecentProxyRequest('
+            '${jsonEncode(msg['pluginId'] ?? realm.pluginId)}, '
+            '${jsonEncode(requestId)}, ${jsonEncode({'error': error})});',
+      ('host', 'timerSet') when msg['timerId'] is num =>
+        'globalThis.__timerClear('
+            '${jsonEncode(msg['bridgeToken'])}, ${jsonEncode(msg['timerId'])});',
+      _ => null,
+    };
+    if (reply == null) return;
+    unawaited(
+      Future<void>.delayed(Duration.zero, () {
+        if (!identical(_realms[realm.pluginId], realm)) return;
+        try {
+          realm.evaluate(reply);
+        } catch (e, st) {
+          _log.warning('Failed to reject $channel message in its realm', e, st);
+        }
+      }),
+    );
   }
 
   _PluginRealm _createRealm(String pluginId, int generation) {
@@ -883,6 +929,18 @@ class PluginManager {
         const __timers = new Map();
         let __timerSeq = 0;
         __pinGlobal("__debugTimerCount", () => __timers.size);
+        __pinGlobal("__debugPendingCounts", () => {
+          let decentProxy = 0;
+          __mapForEach(__pendingDecentProxyRequests, (pending) => {
+            decentProxy += pending.size;
+          });
+          return {
+            decentProxy: decentProxy,
+            transport: __transportPending.size,
+            devices: __devicePending.size,
+            timers: __timers.size
+          };
+        });
         globalThis.__timerSet = function (bridgeToken, generation, callback, delay) {
           const id = ++__timerSeq;
           __mapSet(__timers, id, { bridgeToken: bridgeToken, generation: generation, callback: callback });
@@ -1317,6 +1375,8 @@ class PluginManager {
             pending.reject(new NativeError(error));
           }]);
         });
+
+        __pinGlobal("__debugPendingFetchCount", () => _pendingFetches.size);
 
         __pinGlobal("__cancelAllFetches", function (error) {
           nativeReflectApply(nativeMapForEach, _pendingFetches, [(pending) => {

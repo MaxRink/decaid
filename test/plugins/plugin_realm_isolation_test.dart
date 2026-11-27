@@ -252,6 +252,77 @@ void main() {
         expect(harness.manager.activePendingOpCount, 0);
       });
 
+      test('a forged generation or identity is rejected in the calling realm '
+          'and leaves nothing pending', () async {
+        await harness.load(
+          _attackerId,
+          r"""
+            globalThis.results = {};
+            globalThis.runForged = () => {
+              const bridge = globalThis.__reaprimePluginBridge;
+              const hostBridge = globalThis.__reaprimePluginHostBridge;
+              const gen = pluginGeneration + 1;
+              const settle = (name, promise) => promise.then(
+                () => { results[name] = "resolved"; },
+                (e) => { results[name] = "rejected:" + e.message; });
+              const pending = (register, send) => new Promise((resolve, reject) => {
+                register({ bridgeToken: pluginBridgeToken, resolve, reject });
+                send();
+              });
+              settle("localApi", bridge.localApi(pluginId, gen, pluginBridgeToken,
+                "/api/v1/plugins", "GET", null, null));
+              settle("decentProxy", bridge.decentProxy(pluginId, gen, pluginBridgeToken,
+                "/x", "GET", {}, null, null, false));
+              settle("identity", bridge.localApi("other.plugin", pluginGeneration,
+                pluginBridgeToken, "/api/v1/plugins", "GET", null, null));
+              settle("fetch", hostBridge.fetch(pluginBridgeToken, gen, "http://127.0.0.1:9/", {}));
+              settle("transport", pending(
+                (entry) => __transportRegister("forged-transport", entry),
+                () => hostBridge.transportRequest(pluginBridgeToken, gen,
+                  "forged-transport", "open", { kind: "tcp", host: "127.0.0.1", port: 9 })));
+              settle("devices", pending(
+                (entry) => __deviceRegisterPending("forged-device", entry),
+                () => hostBridge.deviceRequest(pluginBridgeToken, gen,
+                  "forged-device", "register", { registrationHandle: "h" })));
+              hostBridge.timerSet(pluginBridgeToken, gen, () => { results.timer = "fired"; }, 0);
+            };
+            return { id: "attacker.plugin" };
+          """,
+          permissions: const {
+            PluginPermissions.api,
+            PluginPermissions.networkTcp,
+            PluginPermissions.manageExtensions,
+            PluginPermissions.proxyDecentApi,
+          },
+        );
+
+        harness.manager.jsRealmOf(_attackerId).evaluate('runForged()');
+        for (var i = 0; i < 100; i++) {
+          await harness.settle(10);
+          final settled =
+              jsonDecode(harness.eval(_attackerId, 'results')) as Map;
+          if (settled.length >= 6) break;
+        }
+
+        const stale = 'rejected:Plugin generation changed';
+        expect(jsonDecode(harness.eval(_attackerId, 'results')), {
+          'localApi': stale,
+          'decentProxy': stale,
+          'identity': 'rejected:Invalid plugin bridge caller',
+          'fetch': stale,
+          'transport': stale,
+          'devices': stale,
+        });
+        expect(
+          jsonDecode(harness.eval(_attackerId, '__debugPendingCounts()')),
+          {'decentProxy': 0, 'transport': 0, 'devices': 0, 'timers': 0},
+        );
+        expect(harness.eval(_attackerId, '__debugPendingFetchCount()'), '0');
+        expect(harness.manager.activePendingOpCount, 0);
+        expect(harness.manager.activeTimerCount, 0);
+        expect(harness.manager.liveTransportCount, 0);
+      });
+
       test('the plugin registry is per realm and not reachable', () async {
         await harness.load(_victimId, _victimBody);
         await harness.load(_attackerId, '''
