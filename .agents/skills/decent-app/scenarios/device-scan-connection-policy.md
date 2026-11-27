@@ -27,7 +27,7 @@ BEFORE=$(curl -sf "$BASE/api/v1/devices" \
 ## REST default scan
 
 ```bash
-curl -sf "$BASE/api/v1/devices/scan"
+curl -sf -X POST "$BASE/api/v1/devices/scan"
 AFTER=$(curl -sf "$BASE/api/v1/devices" \
   | jq -c '[.[] | select(.state == "connected") | .id] | sort')
 test "$AFTER" = "$BEFORE"
@@ -39,7 +39,7 @@ connected and no replacement connection is attempted.
 ## REST discovery-only scan
 
 ```bash
-curl -sf "$BASE/api/v1/devices/scan?connect=false"
+curl -sf -X POST "$BASE/api/v1/devices/scan?connect=false"
 AFTER=$(curl -sf "$BASE/api/v1/devices" \
   | jq -c '[.[] | select(.state == "connected") | .id] | sort')
 test "$AFTER" = "$BEFORE"

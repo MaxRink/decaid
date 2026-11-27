@@ -235,6 +235,20 @@ const privilegedMachineRoutes = <ExtensionManagementRoute>[
   ExtensionManagementRoute('DELETE', '/api/v1/machine/settings/reset'),
 ];
 
+/// GET routes that change state. Their GET form is deprecated: a page on
+/// another site can fire it blind, with no browser headers at all (an
+/// `<img src>` with `referrerpolicy="no-referrer"`). In protected mode a
+/// request to one of them that the browser rule did not admit as coming from
+/// one of the device's own pages needs an `extensions:manage` credential.
+/// Each has a POST form, as open as the device's other control routes.
+const sideEffectGetRoutes = <ExtensionManagementRoute>[
+  ExtensionManagementRoute('GET', '/api/v1/devices/scan'),
+];
+
+/// Set by the browser rule on a request it admitted as coming from one of the
+/// device's own pages.
+const admittedBrowserRequestContextKey = 'decaid.admittedBrowserRequest';
+
 const extensionManagementReadRoutes = <ExtensionManagementRoute>[
   ExtensionManagementRoute('GET', '/api/v1/plugins'),
   ExtensionManagementRoute('GET', '/api/v1/plugins/<id>/settings'),
@@ -328,6 +342,7 @@ Middleware extensionManagementAuthMiddleware(
     ...routes,
     ...privilegedMachineRoutes,
   ]);
+  final sideEffectGets = ExtensionManagementRouteMatcher(sideEffectGetRoutes);
   return (Handler inner) {
     return (Request request) async {
       final grant = request.context[extensionManagementGrantContextKey];
@@ -342,7 +357,9 @@ Middleware extensionManagementAuthMiddleware(
         ),
       );
 
-      if (await policy.matches(request)) {
+      if (await policy.matches(request) ||
+          (request.context[admittedBrowserRequestContextKey] != true &&
+              await sideEffectGets.matches(request))) {
         final refusal = await _authorize(
           authorization,
           '${request.method} /${request.url.path}',

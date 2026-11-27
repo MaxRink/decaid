@@ -136,7 +136,7 @@
     const probe = async connect => {
       const started = now(); addEvent('probe started', {details:{connect}});
       try {
-        const result = await request(`/api/v1/devices/scan?connect=${connect}`);
+        const result = await request(`/api/v1/devices/scan?connect=${connect}`, {method: 'POST'});
         report.probes.push({timestamp:started,connect,completedAt:now(),status:'ok',result});
         addEvent('probe completed', {details:{connect,status:'ok'}});
       } catch (e) {

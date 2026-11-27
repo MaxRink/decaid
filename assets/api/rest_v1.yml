@@ -209,7 +209,7 @@ paths:
             Remembered-devices feature unavailable (the registry controller is
             not wired). Not returned in normal operation.
   /api/v1/devices/scan:
-    get:
+    post:
       summary: Scan for Devices
       description: >
         Triggers a device scan. When connect=true (default), scans first and
@@ -226,7 +226,7 @@ paths:
         cleared, or when Decaid shuts down; the waiting request then completes
         without a scan.
       tags: [Devices]
-      parameters:
+      parameters: &deviceScanParameters
         - name: connect
           description: Whether to scan first and automatically connect missing preferred/discovered devices. Defaults to true.
           in: query
@@ -261,7 +261,7 @@ paths:
             type: boolean
             default: false
       responses:
-        "200":
+        "200": &deviceScanInventory
           description: >
             Device inventory after the scan, or immediately when a pending scan
             is dropped or quick=true is set, before any deferred scan runs.
@@ -271,6 +271,53 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/DeviceInventory"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: Scan for Devices (deprecated GET form)
+      deprecated: true
+      description: >
+        Deprecated: use POST /api/v1/devices/scan, which takes the same query
+        parameters and behaves the same. A page on another site can send this
+        GET blind, with no browser headers (an `<img>` with
+        `referrerpolicy="no-referrer"`), so the GET form is a side-effecting
+        GET route. When protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme) unless the browser rule admitted the
+        request as coming from one of the device's own pages (an own `Origin`,
+        a `Referer` from an own origin, or `Sec-Fetch-Site` `none` or
+        `same-origin`). When protection is OFF (the default), it needs no
+        credential and can still be triggered blind.
+      tags: [Devices]
+      security:
+        - {}
+        - extensionsManage: []
+      parameters: *deviceScanParameters
+      responses:
+        "200": *deviceScanInventory
+        "401":
+          description: >-
+            When protection is ON, a request without an own-page browser
+            header has a missing, malformed, unknown or revoked bearer token;
+            no scan starts. Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; no scan starts. A browser `Origin` or
+            cross-site request that is not the device's own is refused with
+            this status in both modes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           description: Internal Server Error
           content:

@@ -374,7 +374,12 @@ section, or for development and automation from `--extensions-token` or the
   value (a `Referer` without Fetch Metadata) pass only with a `Referer` whose
   origin `classify` trusts (the device's other ports share its site), and
   `cross-site` or an unknown value is refused. This closes navigation,
-  prefetch and `<img>`-triggered GETs, which carry no `Origin`.
+  prefetch and `<img>`-triggered GETs, which carry no `Origin`. A request the
+  rule admits is marked with `admittedBrowserRequestContextKey`; in protected
+  mode `extensionManagementAuthMiddleware` asks a request to a
+  `sideEffectGetRoutes` entry (`GET /api/v1/devices/scan`) for an
+  `extensions:manage` credential unless it carries that mark, which closes the
+  header-less `<img>` GET over plain HTTP. Each such route has a `POST` form.
 - An admitted origin is recorded in the request context.
   `browserCorsMiddleware`, which replaced the reflecting `shelf_cors_headers`
   middleware at the same pipeline position, emits CORS headers only for that

@@ -48,6 +48,10 @@ void main() {
         reached.add('GET scan');
         return Response.ok('{}');
       })
+      ..post('/api/v1/devices/scan', (Request r) {
+        reached.add('POST scan');
+        return Response.ok('{}');
+      })
       ..get('/api/v1/machine/state', (Request r) {
         reached.add('GET state');
         return Response.ok('{}');
@@ -847,6 +851,101 @@ void main() {
         expect(response.statusCode, 200);
       },
     );
+  });
+
+  group('side-effecting GET routes', () {
+    // What an <img src> with referrerpolicy="no-referrer" on another site
+    // sends to the numeric address over plain HTTP: no Origin, no Referer, no
+    // Sec-Fetch-* (browsers send those only to trustworthy origins).
+    Future<Response> blindGet() => send(
+      'GET',
+      '/api/v1/devices/scan?connect=true',
+      host: '$_deviceAddress:8080',
+      peer: '192.168.12.20',
+    );
+
+    test(
+      'a header-less GET scan needs a credential in protected mode',
+      () async {
+        protectedMode = true;
+        final refused = await blindGet();
+        expect(refused.statusCode, 401);
+        expect(reached, isEmpty);
+
+        final authorized = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: '$_deviceAddress:8080',
+          peer: '192.168.12.20',
+          headers: {'authorization': 'Bearer $_managerToken'},
+        );
+        expect(authorized.statusCode, 200);
+        final wrongScope = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: '$_deviceAddress:8080',
+          peer: '192.168.12.20',
+          headers: {'authorization': 'Bearer skin-token'},
+        );
+        expect(wrongScope.statusCode, isNot(200));
+        expect(reached, ['GET scan']);
+      },
+    );
+
+    test('the POST form needs no credential in either mode', () async {
+      for (final mode in [true, false]) {
+        protectedMode = mode;
+        final response = await send(
+          'POST',
+          '/api/v1/devices/scan?connect=false',
+          host: '$_deviceAddress:8080',
+          peer: '192.168.12.20',
+        );
+        expect(response.statusCode, 200, reason: 'protected: $mode');
+      }
+      expect(reached, ['POST scan', 'POST scan']);
+    });
+
+    test(
+      'the device\'s own pages keep the GET form in protected mode',
+      () async {
+        protectedMode = true;
+        final fromSkin = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: '$_deviceAddress:8080',
+          peer: '192.168.12.20',
+          origin: 'http://$_deviceAddress:$_skinPort',
+        );
+        expect(fromSkin.statusCode, 200);
+        final typed = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          headers: {'sec-fetch-site': 'none'},
+        );
+        expect(typed.statusCode, 200);
+        expect(reached, ['GET scan', 'GET scan']);
+      },
+    );
+
+    test('a cross-site GET with browser headers stays refused', () async {
+      protectedMode = true;
+      final response = await send(
+        'GET',
+        '/api/v1/devices/scan',
+        host: '$_deviceAddress:8080',
+        peer: '192.168.12.20',
+        headers: {'referer': 'https://evil.example/'},
+      );
+      expect(response.statusCode, 403);
+      expect(reached, isEmpty);
+    });
+
+    test('compatibility mode keeps the deprecated GET form', () async {
+      final response = await blindGet();
+      expect(response.statusCode, 200);
+      expect(reached, ['GET scan']);
+    });
   });
 
   group('the WebSocket upgrade path', () {

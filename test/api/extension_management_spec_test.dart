@@ -102,6 +102,7 @@ void main() {
     for (final route in [
       ...extensionManagementRoutes,
       ...privilegedMachineRoutes,
+      ...sideEffectGetRoutes,
     ])
       if (!route.path.startsWith('/ws/'))
         _key(route.method, _specPath(route.path)),

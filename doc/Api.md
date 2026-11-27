@@ -287,11 +287,19 @@ and is held to the browser rules as well.
 - Over plain HTTP no browser sends Fetch Metadata, so a page elsewhere can
   still make a header-less `GET` to the device's *numeric* address, for example
   `<img referrerpolicy="no-referrer" src="http://192.168.1.5:8080/api/v1/devices/scan">`.
-  Such a request is indistinguishable from `curl`: it can trigger a
-  side-effecting `GET` blind, but the browser does not let the page read the
-  response. Reading needs a same-origin page, and a rebound page's origin is its
-  DNS name, which the host name rule refuses. Browsers that enforce Private /
-  Local Network Access restrictions block or prompt for this request.
+  Such a request is indistinguishable from `curl`, and the browser does not
+  let the page read the response. Reading needs a same-origin page, and a
+  rebound page's origin is its DNS name, which the host name rule refuses.
+  What such a request can still do is limited to
+  [side-effecting `GET` routes](#side-effecting-get-routes):
+  in protected mode they need an `extensions:manage` credential unless the
+  browser rule admitted the request as one of the device's own pages, so a
+  blind `GET` gets `401` and changes nothing. In compatibility mode the
+  deprecated `GET` forms still run; use their `POST` forms. Plugin-defined
+  routes (`/api/v1/plugins/<id>/<endpoint>`) receive the method and decide for
+  themselves; a plugin that changes state on `GET` can be triggered blind in
+  both modes. Browsers that enforce Private / Local Network Access
+  restrictions block or prompt for this request.
 - An allow-listed name, the device's own host name and `.local` names are
   trusted not to be under an attacker's control. Only allow-list names served by
   DNS you control.
@@ -303,6 +311,29 @@ and is held to the browser rules as well.
 - A non-browser LAN client can still call every route that protected mode does
   not cover. Authentication for the rest of the REST and WebSocket API is
   tracked in #1135.
+
+#### Side-effecting GET routes
+
+These `GET` routes change state, so their `GET` form is deprecated in favour of
+a `POST` form that takes the same query parameters:
+
+| Deprecated | Use instead | Effect |
+|---|---|---|
+| `GET /api/v1/devices/scan` | `POST /api/v1/devices/scan` | Scans, and by default connects the devices it finds |
+
+- **Protected mode:** the `GET` form needs an `extensions:manage` bearer token
+  (`401`/`403` as on the extension management routes) unless the browser rule
+  admitted the request as coming from one of the device's own pages (an own
+  `Origin`, a `Referer` from an own origin, or `Sec-Fetch-Site` `none` or
+  `same-origin`). A request with none of those headers, which is what an
+  `<img>` on another site sends, needs the token. The `POST` form is as open as
+  the device's other control routes (`PUT /api/v1/devices/connect`): a browser
+  always sends `Origin` on a `POST`, so the browser rule already covers it.
+- **Compatibility mode:** the `GET` form still runs for every client, and so
+  can still be fired blind by a page elsewhere. Clients should move to `POST`.
+- No other host route changes state on `GET`. Reads that do work on the device
+  (`GET /api/v1/data/export`, `GET /api/v1/machine/calibration`, which reads the
+  machine live) change nothing. The account proxy needs a bearer token.
 
 #### Compatibility
 
@@ -706,7 +737,8 @@ Pre-stream responses are `400` for malformed input, `404` for an unknown artifac
 | Method | Path | Description | Handler |
 |--------|------|-------------|---------|
 | GET | `/api/v1/devices` | List devices (present + remembered) | `devices_handler.dart` |
-| GET | `/api/v1/devices/scan` | Scan and fill missing device slots; set `?connect=false` for discovery only | |
+| POST | `/api/v1/devices/scan` | Scan and fill missing device slots; set `?connect=false` for discovery only | |
+| GET | `/api/v1/devices/scan` | Deprecated `GET` form of the scan; needs `extensions:manage` in protected mode unless sent by one of the device's own pages ([details](#side-effecting-get-routes)) | |
 | PUT | `/api/v1/devices/connect` | Connect to device by ID (`connectionRole: primary|auxiliary` for scales) | |
 | PUT | `/api/v1/devices/disconnect` | Disconnect device | |
 | PUT | `/api/v1/devices/forget` | Forget a remembered device | |

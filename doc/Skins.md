@@ -517,8 +517,8 @@ Diagnostic builds (`--dart-define=diagnostics=true`) bundle the temporary
 `ble-reconnect-diagnostics` skin. It samples `/api/v1/diagnostics/ble`, listens
 to `/ws/v1/devices` and `/ws/v1/machine/snapshot`, guides the sleep and
 scale-power sequence, and exports a timestamped JSON report. The diagnostics
-endpoint is read-only; discovery probes are explicit calls to
-`/api/v1/devices/scan?connect=false` or `connect=true`.
+endpoint is read-only; discovery probes are explicit
+`POST /api/v1/devices/scan?connect=false` or `connect=true` calls.
 
 ## Core API Endpoints
 
@@ -551,8 +551,14 @@ Returns all discovered devices with their connection states.
 
 #### Scan for Devices
 ```http
-GET /api/v1/devices/scan
+POST /api/v1/devices/scan
 ```
+
+The `GET` form still works but is deprecated: a page on another site can
+trigger it blind, so in protected mode it needs an `extensions:manage` token
+unless the request comes from one of the device's own pages (see
+[Side-effecting GET routes](Api.md#side-effecting-get-routes)). Skins should
+send `POST`; it takes the same query parameters.
 
 Triggers a scan-first connection cycle. With the default `connect=true`, Decaid preserves connected devices and automatically fills only missing machine and scale slots. Preferred devices connect without prompting when found; missing preferred devices or multiple candidates produce machine-first, then scale ambiguity on `ws/v1/devices`. Set `connect=false` for discovery only. Use `quick=true` to return immediately without waiting for scan results.
 
@@ -3355,7 +3361,7 @@ Here's a complete minimal skin implementation:
 
 ### Scale Not Responding
 - Check scale is connected: `GET /api/v1/devices`
-- Scan and reconnect a missing scale: `GET /api/v1/devices/scan`
+- Scan and reconnect a missing scale: `POST /api/v1/devices/scan`
 - If alternatives produce ambiguity, connect the selected scale: `PUT /api/v1/devices/connect` with `{"deviceId":"..."}`
 - Check scale battery level via scale snapshot stream
 

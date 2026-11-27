@@ -1671,6 +1671,14 @@ The `request` object:
 | `body` | any | Parsed JSON request body, `null` when the body is empty |
 | `query` | object | Query parameters, percent-decoded |
 
+Change state only on `POST` (or `PUT`/`DELETE`), never on `GET`. Over plain
+HTTP a page on another site can send a `GET` to the device with no browser
+headers at all (an `<img>` with `referrerpolicy="no-referrer"`), which Decaid
+cannot tell from a non-browser client, so a `GET` that uploads, saves or
+connects something can be triggered blind. A browser always sends `Origin` on a
+`POST`, and Decaid refuses foreign origins. Check `request.method` and answer
+`405` to a `GET` on an endpoint that writes.
+
 Plugin-defined endpoints need no token, and Decaid does not authenticate them.
 When a request carries an `Authorization: Bearer` token that Decaid itself
 recognises (an account-proxy or `extensions:manage` token), Decaid removes that

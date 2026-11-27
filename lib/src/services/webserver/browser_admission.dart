@@ -44,7 +44,9 @@ Middleware browserAdmissionMiddleware(
       final origin = request.headers['origin'];
       if (origin == null) {
         if (await _isDeviceInitiated(request, policy, connectionInfo)) {
-          return inner(request);
+          return inner(
+            request.change(context: {admittedBrowserRequestContextKey: true}),
+          );
         }
         log.warning('$action refused (403) for a cross-site browser request');
         return _browserRefusal(crossSiteRequestError);
@@ -58,7 +60,12 @@ Middleware browserAdmissionMiddleware(
         return _browserRefusal(crossOriginRequestError);
       }
       return inner(
-        request.change(context: {_admittedBrowserOriginKey: origin}),
+        request.change(
+          context: {
+            _admittedBrowserOriginKey: origin,
+            admittedBrowserRequestContextKey: true,
+          },
+        ),
       );
     };
   };
