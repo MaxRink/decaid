@@ -45,6 +45,8 @@ void main() {
     expect(controller.mockDe1GhcPresent, isFalse);
 
     final toggle = find.ancestor(of: label, matching: find.byType(ShadSwitch));
+    await tester.ensureVisible(toggle);
+    await tester.pumpAndSettle();
     await tester.tapAt(
       tester.getTopLeft(toggle) + Offset(12, tester.getSize(toggle).height / 2),
     );
