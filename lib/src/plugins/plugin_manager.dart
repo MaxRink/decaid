@@ -2872,7 +2872,9 @@ class PluginManager {
       _log.info("loaded: $id");
     } catch (e, st) {
       try {
-        await _unloadPlugin(id);
+        if (identical(_plugins[id], runtime) && identical(_realms[id], realm)) {
+          await _unloadPlugin(id);
+        }
       } catch (cleanupError, cleanupStackTrace) {
         _log.warning(
           'Failed to clean up plugin after load failure: $id',

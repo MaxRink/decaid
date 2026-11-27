@@ -9,17 +9,8 @@ import 'package:reaprime/src/plugins/plugin_manifest.dart';
 
 import 'plugin_test_helpers.dart';
 
-final _quickJsLibrary = Platform.environment['LIBQUICKJSC_PATH'];
-final _defaultIsQuickJs =
-    Platform.isAndroid || Platform.isLinux || Platform.isWindows;
-
-final _engines = <String, JavascriptRuntime Function()>{
-  _defaultIsQuickJs ? 'QuickJS (default engine)' : 'default engine': () =>
-      getJavascriptRuntime(xhr: false),
-  if (!_defaultIsQuickJs && _quickJsLibrary != null)
-    'QuickJS ($_quickJsLibrary)': () =>
-        QuickJsRuntime2()..enableHandlePromises(),
-};
+final _defaultIsQuickJs = defaultEngineIsQuickJs;
+final _engines = pluginTestEngines();
 
 const _victimId = 'victim.plugin';
 const _attackerId = 'attacker.plugin';

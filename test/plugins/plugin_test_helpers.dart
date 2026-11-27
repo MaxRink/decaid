@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:flutter_js/flutter_js.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
 import 'package:reaprime/src/services/storage/kv_store_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -110,4 +112,25 @@ PluginManifest testManifest(
     settings: settings,
     api: api ?? PluginApi(endpoints: []),
   );
+}
+
+final _defaultEngineIsQuickJs =
+    Platform.isAndroid || Platform.isLinux || Platform.isWindows;
+
+bool get defaultEngineIsQuickJs => _defaultEngineIsQuickJs;
+
+/// The engines plugin realm tests run on: the platform default, plus QuickJS
+/// through the bridge library at `LIBQUICKJSC_PATH` when the default is not
+/// already QuickJS.
+Map<String, JavascriptRuntime Function()> pluginTestEngines() {
+  final quickJsLibrary = Platform.environment['LIBQUICKJSC_PATH'];
+  return {
+    _defaultEngineIsQuickJs
+        ? 'QuickJS (default engine)'
+        : 'default engine': () =>
+        getJavascriptRuntime(xhr: false),
+    if (!_defaultEngineIsQuickJs && quickJsLibrary != null)
+      'QuickJS ($quickJsLibrary)': () =>
+          QuickJsRuntime2()..enableHandlePromises(),
+  };
 }
