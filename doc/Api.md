@@ -200,7 +200,10 @@ header is one of:
   an IP keep working), except the unspecified `0.0.0.0` and `::`;
 - `localhost` or a name under `.localhost`;
 - an mDNS name under `.local`;
-- this device's own host name;
+- this device's own host name as the operating system reports it
+  (`Platform.localHostname`; on Android this is `localhost`, so the name a
+  router registers for the tablet, such as `android-xxxx.fritz.box`, is not
+  admitted and needs `allowedHostNames`);
 - a name in the `allowedHostNames` setting (see [Settings](#settings)).
 
 Any other `Host` is refused with `403` and
