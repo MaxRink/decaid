@@ -2007,6 +2007,9 @@ void main() {
           authorization: bearer(),
           headers: {
             'origin': 'http://$_trustedDeviceAddress:$_trustedPagePort',
+            // The browser names the device address it navigated to; the real
+            // LAN address of this test host is not one of the mocked ones.
+            'host': '$_trustedDeviceAddress:${lanServer.port}',
           },
           to: lanServer,
           host: peer.address,
