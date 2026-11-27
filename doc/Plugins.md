@@ -244,6 +244,12 @@ As a safety net the host rewrites each line before writing it:
   are masked;
 - line breaks are written as `\n`, so one call is one log line.
 
+`console.log`, `console.warn` and `console.error` go through the same path at
+FINE level as `[JS:<plugin id>] console.<level>: <arguments>`, redacted and
+rate limited like `host.log`, and only for plugins holding `log`; without it
+console output is dropped. The plugin id is the one the host knows for the
+plugin's realm, whatever the line itself says.
+
 This catches only those shapes; it is not a reason to log credentials.
 
 Each plugin may write 60 lines per minute. Further lines in that minute are
@@ -1876,9 +1882,11 @@ Android, Linux and Windows, JavaScriptCore on macOS and iOS). Nothing is shared
 between two plugins' realms: not the global object, not the built-ins
 (`Object`, `JSON`, `btoa`, typed arrays, ...), not the host bridge, and not the
 bookkeeping for timers, `fetch`, `host.transport`, `host.devices`,
-`host.decentProxy` or `host.localApi`. Messages from a realm are attributed by
-the host to the plugin that owns the realm, so a plugin can only act with its
-own manifest permissions, whatever identifiers or tokens it puts in a message.
+`host.decentProxy`, `host.localApi` or `host.discovery`, and not `console`.
+Messages from a realm are attributed by the host to the plugin that owns the
+realm, so a plugin can only act with its own manifest permissions and its own
+[machine control grant](#machine-control-grant), whatever identifiers or tokens
+it puts in a message. Its log and console lines carry that plugin's id.
 
 Inside its realm a plugin sees the same API as before, and its built-ins
 behave as in any JavaScript engine: a plugin may override, subclass or

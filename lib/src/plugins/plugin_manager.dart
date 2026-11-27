@@ -525,7 +525,8 @@ class PluginManager {
       ('devices', _) when requestId is String =>
         'globalThis.__handleDeviceReply('
             '${jsonEncode({'requestId': requestId, 'bridgeToken': msg['bridgeToken'], 'error': error})});',
-      ('host', 'decentProxy' || 'localApi') when requestId is String =>
+      ('host', 'decentProxy' || 'localApi' || 'discoveryBrowse')
+          when requestId is String =>
         'globalThis.__reaprimePluginBridge.completeDecentProxyRequest('
             '${jsonEncode(msg['pluginId'] ?? realm.pluginId)}, '
             '${jsonEncode(requestId)}, ${jsonEncode({'error': error})});',
@@ -1290,15 +1291,6 @@ class PluginManager {
           });
         };
 
-        const __pinGlobal = (name, value, enumerable = false) => {
-          Object.defineProperty(globalThis, name, {
-            get: () => value,
-            set: undefined,
-            enumerable: enumerable,
-            configurable: false
-          });
-        };
-
         const nativeSendMessage = sendMessage;
         const nativeJsonStringify = JSON.stringify.bind(JSON);
         const nativeJsonParse = JSON.parse.bind(JSON);
@@ -1512,6 +1504,22 @@ class PluginManager {
         _log.warning("Invalid plugin device message", e, st);
       }
     });
+
+    // flutter_js prints console output without saying who wrote it. Each realm
+    // holds one plugin, so its console lines are that plugin's, whatever they
+    // claim; route them through the plugin log with that attribution.
+    js.channelFunctions.remove('ConsoleLog');
+    js.onMessageVoid('ConsoleLog', (args) => _writeConsoleLog(realm, args));
+  }
+
+  void _writeConsoleLog(_PluginRealm realm, Object? args) {
+    if (!identical(_realms[realm.pluginId], realm) || args is! List) return;
+    if (!_holdsPermission(realm.pluginId, PluginPermissions.log)) return;
+    _writePluginLog(
+      realm.pluginId,
+      'console.${args.firstOrNull}: ${args.skip(1).join(' ')}',
+      level: Level.FINE,
+    );
   }
 
   void _requireBootstrap(JsEvalResult result) {
@@ -2898,12 +2906,17 @@ class PluginManager {
     }
   }
 
-  void _writePluginLog(String pluginId, String message) {
+  void _writePluginLog(
+    String pluginId,
+    String message, {
+    Level level = Level.INFO,
+  }) {
     final admission = (_pluginLogLimiters[pluginId] ??= PluginLogLimiter())
         .admit();
     _logSuppressedPluginLines(pluginId, admission.suppressed);
     if (!admission.write) return;
-    _log.info(
+    _log.log(
+      level,
       '[JS:$pluginId] '
       '${redactPluginLog(message, _pluginLogSecrets[pluginId] ?? const [])}',
     );

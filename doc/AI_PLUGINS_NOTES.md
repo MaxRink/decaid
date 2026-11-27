@@ -66,7 +66,17 @@ preserve when changing this:
   call (`__handleFetchResponse`, `__handleTransportReply`, `__handleDeviceReply`,
   `__fireTimer`, `__dispatchToPlugin`, ...) goes through `_realmOf(pluginId, generation)`.
   Do not add a manager-wide runtime or a global registry again: that is what let one plugin
-  hook another plugin's built-ins and read its bridge token.
+  hook another plugin's built-ins and read its bridge token. Fork-only bridges follow the
+  same rule: `host.discovery` rides the `host` channel and completes through the realm,
+  the machine-control grant is looked up for the realm's plugin id (`_PendingOp.pluginId`),
+  and storage, notifications and surface HTTP requests dispatch with `_realmOf`.
+- **Console is per realm and attributed host-side (#34).** `flutter_js` gives every runtime
+  its own `console` that posts to a `ConsoleLog` channel and `print`s it unattributed.
+  `_bootstrapRealm` replaces that channel handler with one bound to the realm, so console
+  lines are written through `_writePluginLog` (redaction, rate limit, `log` permission) as
+  `[JS:<realm's plugin id>] console.<level>: ...` at FINE. Nothing in the line or the
+  message can change the id. Tests that wrap a runtime (`_CountingRuntime`) keep the
+  default `print` handler, because `channelFunctions` is the wrapper's own map.
 - **Ids are per realm, so key host maps by generation and check identity.** Timer ids and
   fetch ids restart at 1 in every realm, and a retired generation's work can still finish
   after a reload (a fetch still in `openUrl` cannot be aborted). Host-side maps are keyed by

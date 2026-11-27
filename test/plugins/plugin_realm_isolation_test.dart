@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:flutter_js/flutter_js.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:logging/logging.dart';
 import 'package:reaprime/src/plugins/plugin_manager.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
 
@@ -436,6 +437,78 @@ void main() {
 
         expect(harness.emitted(_attackerId, 'result'), ['from attacker']);
         expect(harness.emitted(_victimId, 'result'), isEmpty);
+      });
+
+      // #34: console used to be one shared, unpinned object.
+      test('a plugin cannot observe another plugin\'s console or log calls, '
+          'and the host attributes each line to its realm', () async {
+        final previousLevel = Logger.root.level;
+        Logger.root.level = Level.ALL;
+        addTearDown(() => Logger.root.level = previousLevel);
+        final lines = <String>[];
+        final records = Logger.root.onRecord.listen((record) {
+          // Plugin log lines only; debug records echo plugin source.
+          if (record.loggerName == 'PluginManager' &&
+              record.message.startsWith('[JS:')) {
+            lines.add(record.message);
+          }
+        });
+        addTearDown(records.cancel);
+        const logOnly = {PluginPermissions.log};
+
+        await harness.load(_attackerId, r'''
+          const seen = [];
+          globalThis.__seen = () => JSON.stringify(seen);
+          const nativeLog = console.log;
+          nativeLog("[JS:victim.plugin] forged by attacker");
+          const spy = (name) => function () {
+            seen.push(name + ":" + Array.prototype.join.call(arguments, ","));
+          };
+          for (const name of ["log", "warn", "error"]) {
+            try { console[name] = spy("console." + name); } catch (e) {}
+          }
+          try { globalThis.console = { log: spy("console"), warn: spy("console"),
+            error: spy("console") }; } catch (e) {}
+          try { sendMessage = spy("sendMessage"); } catch (e) {}
+          return { id: "attacker.plugin" };
+        ''', permissions: logOnly);
+        await harness.load(
+          _victimId,
+          '''
+          return {
+            id: "$_victimId",
+            onEvent(event) {
+              if (event.name !== "probe") return;
+              console.log("victim console", "secret-1");
+              console.warn("victim warn secret-2");
+              console.error("victim error secret-3");
+              host.log("victim host.log secret-4");
+              host.emit("done", true);
+            }
+          };
+        ''',
+          permissions: const {PluginPermissions.log, PluginPermissions.emit},
+        );
+        await harness.load('quiet.plugin', '''
+          console.log("quiet secret-5");
+          return { id: "quiet.plugin" };
+        ''', permissions: const {});
+
+        harness.manager.dispatchEvent(_victimId, 'probe', null);
+        await harness.settle();
+
+        expect(harness.emitted(_victimId, 'done'), [true]);
+        expect(harness.eval(_attackerId, '__seen()'), '"[]"');
+        for (final secret in ['secret-1', 'secret-2', 'secret-3', 'secret-4']) {
+          final matching = lines.where((line) => line.contains(secret));
+          expect(matching, hasLength(1), reason: '$secret in $lines');
+          expect(matching.single, startsWith('[JS:$_victimId] '));
+        }
+        expect(lines.where((line) => line.contains('forged by attacker')), [
+          '[JS:$_attackerId] console.log: '
+              '[JS:$_victimId] forged by attacker',
+        ]);
+        expect(lines.where((line) => line.contains('secret-5')), isEmpty);
       });
 
       group('defence in depth inside a realm', () {
