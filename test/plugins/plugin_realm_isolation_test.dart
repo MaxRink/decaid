@@ -128,11 +128,22 @@ const _attackerBody = r'''
   const stolen = [];
   globalThis.__stolen = stolen;
   globalThis.attackerMarker = true;
+  const slice = Array.prototype.slice;
+  const define = Object.defineProperty;
+  const getPrototypeOf = Object.getPrototypeOf;
+  const NativeString = String;
+  const nativeStringify = JSON.stringify.bind(JSON);
+  globalThis.__report = () => nativeStringify(stolen);
   const record = (name) => function () {
-    stolen.push(name + ":" + Array.prototype.slice.call(arguments).join(","));
+    stolen.push(name + ":" + slice.call(arguments).join(","));
     return "__HOOKED__";
   };
-  const define = Object.defineProperty;
+  const unfrozen = [
+    [getPrototypeOf([][Symbol.iterator]()), "next"],
+    [Error.prototype, "toString"],
+    [Map.prototype, "set"],
+    [String.prototype, "toLowerCase"]
+  ];
   const names = ["btoa", "atob", "JSON", "Object", "encodeURIComponent",
     "parseInt", "console", "host", "fetch", "sendMessage", "globalThis",
     "__reaprimePluginHostBridge", "__reaprimePluginBridge", "__registerPlugin",
@@ -148,19 +159,13 @@ const _attackerBody = r'''
     try { define(globalThis, name, { value: hook, writable: true, configurable: true }); } catch (e) {}
     try { define(globalThis, name, { get: () => hook }); } catch (e) {}
   }
-  const unfrozen = [
-    [Object.getPrototypeOf([][Symbol.iterator]()), "next"],
-    [Error.prototype, "toString"],
-    [Map.prototype, "set"],
-    [String.prototype, "toLowerCase"]
-  ];
   for (const [target, name] of unfrozen) {
     const original = target[name];
     const hook = function () {
       const result = original.apply(this, arguments);
-      stolen.push(name + ":" + String(this && this.message) + ":" +
-        String(result && result.value) + ":" +
-        Array.prototype.slice.call(arguments).join(","));
+      stolen.push(name + ":" + NativeString(this && this.message) + ":" +
+        NativeString(result && result.value) + ":" +
+        slice.call(arguments).join(","));
       return result;
     };
     try { target[name] = hook; } catch (e) {}
@@ -190,7 +195,13 @@ void main() {
           expect(victimRealm, isA<QuickJsRuntime2>());
         }
         expect(harness.eval(_victimId, 'typeof attackerMarker'), '"undefined"');
-        expect(harness.eval(_attackerId, 'typeof attackerMarker'), '"boolean"');
+        expect(
+          harness.manager
+              .jsRealmOf(_attackerId)
+              .evaluate('typeof attackerMarker')
+              .stringResult,
+          'boolean',
+        );
         expect(harness.eval(_victimId, 'typeof __plugins__'), '"undefined"');
       });
 
@@ -210,7 +221,10 @@ void main() {
 
           expect(harness.emitted(_victimId, 'result'), [_expectedVictimResult]);
           final stolen = jsonDecode(
-            harness.eval(_attackerId, 'globalThis.__stolen'),
+            harness.manager
+                .jsRealmOf(_attackerId)
+                .evaluate('globalThis.__report()')
+                .stringResult,
           ) as List;
           expect(stolen.where((entry) => '$entry'.contains('user')), isEmpty);
         });
@@ -435,10 +449,6 @@ void main() {
 
       group('defence in depth inside a realm', () {
         const pinned = [
-          'btoa',
-          'atob',
-          'JSON',
-          'Object',
           'globalThis',
           'host',
           'fetch',
@@ -484,20 +494,6 @@ void main() {
           });
         }
 
-        test('built-ins and their prototypes are frozen', () async {
-          await harness.load(_attackerId, 'return { id: "$_attackerId" };');
-          expect(
-            harness.eval(
-              _attackerId,
-              '[Object, Object.prototype, Array.prototype, Map.prototype, '
-              'JSON, Promise.prototype, Uint8Array.prototype, '
-              'Object.getPrototypeOf(Uint8Array).prototype]'
-              '.every(Object.isFrozen)',
-            ),
-            'true',
-          );
-        });
-
         test('the engine timer ids keep counting after the lock', () async {
           await harness.load(_attackerId, '''
             const ids = [
@@ -514,6 +510,64 @@ void main() {
           final ids = jsonDecode(harness.eval(_attackerId, 'ids')) as List;
           expect(ids.toSet(), hasLength(3));
         });
+      });
+
+      test('plugins may override, subclass and patch built-ins', () async {
+        await harness.load(_victimId, r'''
+          "use strict";
+          const o = {};
+          o.toString = () => "own";
+          function F() {}
+          F.prototype.toString = function () { return "F"; };
+          const a = [];
+          a.push = () => 7;
+          class List extends Array {}
+          class Registry extends Map {
+            get(key) { return "registry:" + super.get(key); }
+          }
+          class Deferred extends Promise {}
+          const list = List.from([1, 2]);
+          const registry = new Registry([["k", "v"]]);
+          const strict = (function () {
+            "use strict";
+            const value = {};
+            value.toString = () => "strict";
+            return String(value);
+          })();
+          Array.prototype.last = function () { return this[this.length - 1]; };
+          globalThis.btoa = (value) => "polyfilled:" + value;
+          return {
+            id: "victim.plugin",
+            onLoad() {
+              Deferred.resolve(3).then((value) => host.emit("ok", {
+                own: String(o),
+                proto: String(new F()),
+                push: a.push(1),
+                list: list instanceof List && list.length,
+                registry: registry.get("k"),
+                deferred: value,
+                last: [1, 2, 3].last(),
+                btoa: btoa("x"),
+                strict
+              }));
+            }
+          };
+        ''');
+        await harness.settle();
+
+        expect(harness.emitted(_victimId, 'ok'), [
+          {
+            'own': 'own',
+            'proto': 'F',
+            'push': 7,
+            'list': 2,
+            'registry': 'registry:v',
+            'deferred': 3,
+            'last': 3,
+            'btoa': 'polyfilled:x',
+            'strict': 'strict',
+          },
+        ]);
       });
 
       test('ordinary plugin code keeps working in its realm', () async {
@@ -555,6 +609,49 @@ void main() {
       });
 
       group('lifecycle', () {
+        test('a realm that cannot be created fails only that load', () async {
+          var fail = true;
+          final manager = PluginManager(
+            kvStore: FakeKeyValueStoreService(),
+            createJsRuntime: () {
+              if (fail) throw StateError('engine allocation failed');
+              return createRuntime();
+            },
+          );
+          addTearDown(manager.dispose);
+          Future<void> load() => manager.loadPlugin(
+            id: _victimId,
+            manifest: testManifest(_victimId),
+            settings: const {},
+            jsCode:
+                'function createPlugin(host) { return { id: "$_victimId" }; }',
+          );
+
+          await expectLater(load(), throwsStateError);
+          expect(manager.liveRealmCount, 0);
+          expect(manager.loadedPlugins, isEmpty);
+
+          fail = false;
+          await load();
+          expect(manager.isPluginRuntimeActive(_victimId), isTrue);
+          expect(manager.liveRealmCount, 1);
+        });
+
+        test('overlapping loads of one plugin keep a single realm', () async {
+          final before = _Harness.createdRuntimes.length;
+          await Future.wait([
+            harness.load(_victimId, 'return { id: "$_victimId" };'),
+            harness.load(_victimId, 'return { id: "$_victimId" };'),
+          ]);
+
+          final created = _Harness.createdRuntimes.sublist(before);
+          expect(harness.manager.liveRealmCount, 1);
+          expect(harness.manager.loadedPlugins, hasLength(1));
+          expect(created.where((runtime) => runtime.isRuntimeActive), [
+            harness.manager.jsRealmOf(_victimId),
+          ]);
+        });
+
         test('unload disposes the realm and its engine timers', () async {
           await harness.load(_victimId, '''
             return {

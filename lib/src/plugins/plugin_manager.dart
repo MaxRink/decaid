@@ -59,13 +59,14 @@ class _PendingOp {
   HttpClientRequest? request;
   Completer<Map<String, dynamic>>? completer;
 
-  String get key => _PendingOp.keyFor(kind, pluginId, requestId);
+  String get key => _PendingOp.keyFor(kind, pluginId, generation, requestId);
 
   static String keyFor(
     _PendingOpKind kind,
     String pluginId,
+    int generation,
     String requestId,
-  ) => '${kind.name}:$pluginId:$requestId';
+  ) => '${kind.name}:$pluginId:$generation:$requestId';
 }
 
 final class _PluginRealm {
@@ -547,13 +548,28 @@ class PluginManager {
   }
 
   _PluginRealm _createRealm(String pluginId, int generation) {
+    final JavascriptRuntime js;
+    try {
+      js = _createJsRuntime();
+    } catch (error, stackTrace) {
+      _log.warning(
+        'Could not create a JavaScript realm for $pluginId',
+        error,
+        stackTrace,
+      );
+      throw StateError('Plugin realm could not be created: $error');
+    }
     final realm = _PluginRealm(
       pluginId: pluginId,
       generation: generation,
       bridgeToken: _newBridgeToken(),
-      js: _createJsRuntime(),
+      js: js,
     );
     try {
+      final probe = js.evaluate('1 + 1');
+      if (probe.isError || probe.stringResult != '2') {
+        throw StateError('Plugin realm is not usable: ${probe.stringResult}');
+      }
       _bootstrapRealm(realm);
       debugPrepareRealm?.call(pluginId, realm.js);
       final lock = realm.js.evaluate('globalThis.__lockPluginHostBridge();');
@@ -608,6 +624,11 @@ class PluginManager {
         const __nativeMapDelete = Map.prototype.delete;
         const __nativeMapClear = Map.prototype.clear;
         const __nativeMapForEach = Map.prototype.forEach;
+        const __nativeMapSize = Object.getOwnPropertyDescriptor(Map.prototype, "size").get;
+        const __NativeString = String;
+        const __NativeNumber = Number;
+        const __nativeMathMax = Math.max;
+        const __nativeMathTrunc = Math.trunc;
 
         const __pendingDecentProxyRequests = new Map();
         let __decentProxySeq = 0;
@@ -770,7 +791,7 @@ class PluginManager {
           const pending = __mapGet(pendingByPlugin, requestId);
           if (!pending) return;
           __mapDelete(pendingByPlugin, requestId);
-          if (pendingByPlugin.size === 0) {
+          if (__nativeReflectApply(__nativeMapSize, pendingByPlugin, []) === 0) {
             __mapDelete(__pendingDecentProxyRequests, pluginId);
           }
           if (response && response.error) {
@@ -786,14 +807,18 @@ class PluginManager {
           const pendingByPlugin = __mapGet(__pendingDecentProxyRequests, pluginId);
           if (!pendingByPlugin) return;
           __mapDelete(__pendingDecentProxyRequests, pluginId);
-          for (const pending of pendingByPlugin.values()) {
+          __mapForEach(pendingByPlugin, (pending) => {
             pending.reject(new __NativeError(error));
-          }
+          });
         }
 
         function __cancelAllDecentProxyRequests(error) {
-          for (const pluginId of Array.from(__pendingDecentProxyRequests.keys())) {
-            __cancelDecentProxyRequestsForPlugin(pluginId, error);
+          const pluginIds = [];
+          __mapForEach(__pendingDecentProxyRequests, (_, pluginId) => {
+            pluginIds[pluginIds.length] = pluginId;
+          });
+          for (let i = 0; i < pluginIds.length; i++) {
+            __cancelDecentProxyRequestsForPlugin(pluginIds[i], error);
           }
         }
 
@@ -820,7 +845,7 @@ class PluginManager {
           __sendApiResponse(bridgeToken, generation, requestId, {
             status: 500,
             headers: { "Content-Type": "application/json" },
-            body: __nativeJsonStringify({ error: String(error) })
+            body: __nativeJsonStringify({ error: __NativeString(error) })
           });
         }
 
@@ -949,7 +974,7 @@ class PluginManager {
             generation: generation,
             type: "timerSet",
             timerId: id,
-            delay: Math.max(0, Math.trunc(Number(delay) || 0))
+            delay: __nativeMathMax(0, __nativeMathTrunc(__NativeNumber(delay) || 0))
           });
           return id;
         };
@@ -1168,7 +1193,7 @@ class PluginManager {
                 bridgeToken: entry.bridgeToken,
                 generation: generation,
                 type: "invocationResult",
-                payload: { invocationId: invocationId, error: String(error) }
+                payload: { invocationId: invocationId, error: __NativeString(error) }
               })
             ]);
           } catch (error) {
@@ -1176,7 +1201,7 @@ class PluginManager {
               bridgeToken: entry.bridgeToken,
               generation: generation,
               type: "invocationResult",
-              payload: { invocationId: invocationId, error: String(error) }
+              payload: { invocationId: invocationId, error: __NativeString(error) }
             });
           }
         });
@@ -1211,7 +1236,7 @@ class PluginManager {
               bridgeToken: bridgeToken,
               generation: generation,
               type: "log",
-              payload: { message: String(message) }
+              payload: { message: __NativeString(message) }
             });
           },
           emit(bridgeToken, generation, eventName, payload) {
@@ -1404,33 +1429,7 @@ class PluginManager {
             transportRequest: globalThis.__transportRequest,
             deviceRequest: globalThis.__deviceRequest
           }));
-          const intrinsicNames = [
-            "Object", "Function", "Array", "JSON", "Promise", "Map", "Set",
-            "WeakMap", "WeakSet", "String", "Number", "Boolean", "Symbol",
-            "Reflect", "Math", "Date", "RegExp", "Error", "TypeError",
-            "BigInt", "Proxy", "ArrayBuffer", "SharedArrayBuffer", "DataView",
-            "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array",
-            "Uint16Array", "Int32Array", "Uint32Array", "Float32Array",
-            "Float64Array", "BigInt64Array", "BigUint64Array", "TextEncoder",
-            "TextDecoder", "btoa", "atob"
-          ];
-          const freezeWithPrototype = (intrinsic, freezePrototype) => {
-            if (intrinsic === undefined || intrinsic === null) return;
-            Object.freeze(intrinsic);
-            if (freezePrototype && intrinsic.prototype) {
-              Object.freeze(intrinsic.prototype);
-            }
-          };
-          for (const name of intrinsicNames) {
-            freezeWithPrototype(
-              globalThis[name],
-              name !== "Error" && name !== "TypeError"
-            );
-          }
-          if (typeof Uint8Array === "function") {
-            freezeWithPrototype(Object.getPrototypeOf(Uint8Array), true);
-          }
-          for (const name of [...hostGlobalNames, ...intrinsicNames, "globalThis"]) {
+          for (const name of [...hostGlobalNames, "globalThis"]) {
             const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
             if (!descriptor || !descriptor.configurable) continue;
             if ("value" in descriptor) {
@@ -1646,7 +1645,8 @@ class PluginManager {
     if (type == 'invocationResult') {
       if (invocationId is String) {
         _timedOutDeviceConnects.removeWhere(
-          (_, ids) => ids.remove(invocationId) && ids.isEmpty,
+          (key, ids) =>
+              key.$1 == pluginId && ids.remove(invocationId) && ids.isEmpty,
         );
         final attempt = _deviceConnectAttempts[invocationId];
         if (attempt != null &&
@@ -2520,6 +2520,10 @@ class PluginManager {
     _ensureActive();
     await _unloadPlugin(id);
     _ensureActive();
+    while (_plugins.containsKey(id) || _realms.containsKey(id)) {
+      await _unloadPlugin(id);
+      _ensureActive();
+    }
     final generation = (_pluginGenerations[id] ?? 0) + 1;
     _pluginGenerations[id] = generation;
     final realm = _createRealm(id, generation);
@@ -3202,7 +3206,11 @@ class PluginManager {
         break;
 
       case 'timerClear':
-        _clearTimer(pluginId, (msg['timerId'] as num?)?.toInt() ?? 0);
+        _clearTimer(
+          pluginId,
+          msg['generation'] is num ? (msg['generation'] as num).toInt() : 0,
+          (msg['timerId'] as num?)?.toInt() ?? 0,
+        );
         break;
 
       case 'decentProxy':
@@ -3211,7 +3219,7 @@ class PluginManager {
     }
   }
 
-  final Map<(String, int), ({String pluginId, Timer timer})> _timers = {};
+  final Map<(String, int, int), ({String pluginId, Timer timer})> _timers = {};
 
   int get activeTimerCount => _timers.length;
 
@@ -3226,23 +3234,23 @@ class PluginManager {
   void _setTimer(String pluginId, int generation, int id, int delayMs) {
     if (!_plugins.containsKey(pluginId)) return;
     if (generation != (_pluginGenerations[pluginId] ?? 0)) return;
-    final key = (pluginId, id);
+    final key = (pluginId, generation, id);
     _timers[key]?.timer.cancel();
-    _timers[key] = (
-      pluginId: pluginId,
-      timer: Timer(Duration(milliseconds: delayMs < 0 ? 0 : delayMs), () {
-        _fireTimer(pluginId, generation, id);
-      }),
-    );
+    late final Timer timer;
+    timer = Timer(Duration(milliseconds: delayMs < 0 ? 0 : delayMs), () {
+      _fireTimer(pluginId, generation, id, timer);
+    });
+    _timers[key] = (pluginId: pluginId, timer: timer);
   }
 
-  void _clearTimer(String pluginId, int id) {
-    _timers.remove((pluginId, id))?.timer.cancel();
+  void _clearTimer(String pluginId, int generation, int id) {
+    _timers.remove((pluginId, generation, id))?.timer.cancel();
   }
 
-  void _fireTimer(String pluginId, int generation, int id) {
-    final record = _timers.remove((pluginId, id));
-    if (record == null) return;
+  void _fireTimer(String pluginId, int generation, int id, Timer timer) {
+    final key = (pluginId, generation, id);
+    if (!identical(_timers[key]?.timer, timer)) return;
+    _timers.remove(key);
     if (_lifecycle != PluginManagerLifecycle.active) return;
     _realmOf(pluginId, generation)?.evaluate('globalThis.__fireTimer($id);');
   }
@@ -3505,7 +3513,8 @@ class PluginManager {
     String? peerSha256,
   }) {
     op.timeout?.cancel();
-    if (_pendingOps.remove(op.key) == null) return;
+    if (!identical(_pendingOps[op.key], op)) return;
+    _pendingOps.remove(op.key);
     final payload = error != null
         ? {'error': error, 'code': ?errorCode}
         : result;
@@ -3861,12 +3870,15 @@ class PluginManager {
       return;
     }
 
-    final op =
-        _pendingOps[_PendingOp.keyFor(
-          _PendingOpKind.pluginHttp,
-          pluginId,
-          requestId,
-        )];
+    final messageGeneration = _messageGeneration(pluginId, msg);
+    final op = messageGeneration == null
+        ? null
+        : _pendingOps[_PendingOp.keyFor(
+            _PendingOpKind.pluginHttp,
+            pluginId,
+            messageGeneration,
+            requestId,
+          )];
     if (op == null) {
       _log.fine(
         'Late or unknown HTTP response for request $requestId from $pluginId',

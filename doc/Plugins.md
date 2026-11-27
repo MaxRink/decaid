@@ -1880,16 +1880,15 @@ bookkeeping for timers, `fetch`, `host.transport`, `host.devices`,
 the host to the plugin that owns the realm, so a plugin can only act with its
 own manifest permissions, whatever identifiers or tokens it puts in a message.
 
-Inside its realm a plugin sees the same API as before. Before the plugin body
-runs, the host freezes the built-ins and their prototypes (`Object`,
-`Function`, `Array`, `JSON`, `Promise`, `Map`, `Set`, `WeakMap`, `WeakSet`,
-`String`, `Number`, `Boolean`, `Symbol`, `Reflect`, `Math`, `Date`, `RegExp`,
-`BigInt`, `Proxy`, `ArrayBuffer`, `DataView`, every typed array, `TextEncoder`,
-`TextDecoder`, `btoa`, `atob` and the `Error`/`TypeError` constructors) and pins
-their global bindings, `globalThis` and the host's own globals as
-non-configurable getters. Plugins must not patch or polyfill built-ins:
-assigning to a frozen built-in throws in strict code and is ignored otherwise.
-`Error.prototype` stays writable so subclasses can set `this.name`.
+Inside its realm a plugin sees the same API as before, and its built-ins
+behave as in any JavaScript engine: a plugin may override, subclass or
+polyfill them, which affects only its own realm. The host's own globals
+(`host`, `fetch`, `sendMessage`, every `__`-prefixed host function) and
+`globalThis` are pinned as non-configurable getters before the plugin body
+runs, and the host shims use built-ins captured before plugin code runs, so a
+plugin that breaks its own built-ins breaks only its own requests. The host
+never relies on anything inside a realm to decide which plugin a request comes
+from.
 
 Each realm costs one engine instance per loaded plugin; see
 `doc/AI_PLUGINS_NOTES.md` for measured figures.

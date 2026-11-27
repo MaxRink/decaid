@@ -67,8 +67,12 @@ preserve when changing this:
   `__fireTimer`, `__dispatchToPlugin`, ...) goes through `_realmOf(pluginId, generation)`.
   Do not add a manager-wide runtime or a global registry again: that is what let one plugin
   hook another plugin's built-ins and read its bridge token.
-- **Ids are per realm.** Timer ids and fetch ids restart at 1 in every realm, so host-side
-  maps are keyed by plugin id as well (`_timers` by `(pluginId, id)`, `_PendingOp.keyFor`).
+- **Ids are per realm, so key host maps by generation and check identity.** Timer ids and
+  fetch ids restart at 1 in every realm, and a retired generation's work can still finish
+  after a reload (a fetch still in `openUrl` cannot be aborted). Host-side maps are keyed by
+  plugin id and generation (`_timers` by `(pluginId, generation, id)`, `_PendingOp.keyFor`),
+  and completion removes an entry only if it is still the same object (`_completeOp`,
+  `_fireTimer`). Transport handles and device invocation ids are host-generated and unique.
 - **Keep the realm until cleanup is done.** `_unloadPlugin` runs `onUnload`, rejects pending
   work and runs device disconnect cleanup inside the old realm, and only disposes it in its
   `finally`. A new generation's realm is created after the old one is disposed.
@@ -83,12 +87,19 @@ preserve when changing this:
   properties as variable references and `JS_DefineProperty` updates them without the
   non-writable check, so `Object.defineProperty(globalThis, name, { value })` replaces a
   `writable: false, configurable: false` global (unfixed on bellard/quickjs master as of
-  2026-11-23). `__pinGlobal` therefore pins host globals and configurable built-ins as
-  non-configurable getters, which both engines honour. Non-configurable data globals cannot
-  be pinned that way and are left alone (`console`, and `__NATIVE_FLUTTER_JS__*`, which
-  `flutter_js` must keep writable or every engine-level timer id repeats). Anything not on
-  the pin list (`encodeURIComponent`, `%ArrayIteratorPrototype%.next`, ...) stays mutable;
-  that only matters inside the plugin's own realm.
+  2026-11-23). `__pinGlobal` therefore pins the host's globals and `globalThis` as
+  non-configurable getters, which both engines honour, and the host shims call built-ins
+  captured at bootstrap. Built-ins and their prototypes are deliberately not frozen: inside a
+  single-plugin realm that would only stop a plugin changing its own realm, and it breaks
+  ordinary code through the override mistake (`o.toString = ...` or `arr.push = ...` ignored
+  in sloppy code and throwing in strict code, subclasses of `Array`/`Map`/`Promise`).
+  `__NATIVE_FLUTTER_JS__*` stays unpinned because `flutter_js` must keep it writable or every
+  engine-level timer id repeats.
+- **Realm creation can fail.** `_createRealm` turns a throwing `createJsRuntime` or a realm
+  that cannot evaluate into a failed load of that plugin only. A `NULL` from QuickJS's
+  `JS_NewRuntime`/`JS_NewContext` is not checked inside dart_js's native bridge
+  (`jsNewRuntime`), so that case needs a dart_js fix. A per-realm `memoryLimit` (supported
+  by `QuickJsRuntime2`) is now cheap to add and would bound each plugin separately.
 - **Cost.** One engine instance per loaded plugin. Measured on macOS arm64 with 40 trivial
   plugins: QuickJS about 0.4 MiB RSS and 3 ms per load (the QuickJS heap of a bootstrapped,
   locked realm is about 0.33 MiB, `qjs -d`), JavaScriptCore about 2 MiB and 3.6 ms, against
