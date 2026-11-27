@@ -51,3 +51,27 @@ via `combineModelAndBurrs`. Invariants to preserve when changing this:
 - **Keep the `storageRead` layering.** The reply for `uploadedGrinderModels` layers under
   whatever the session has already recorded, because that read can land after an upload has
   remembered its string.
+
+## Plugin runtime: global pinning differs by engine
+
+Not a bundled plugin's logic, but it decides what every bundled plugin can trust. `flutter_js`
+runs QuickJS (vendored `2026-06-04`, the same source on Android, Linux and Windows; Linux CI
+loads the prebuilt `linux/shared/libquickjs_c_bridge_plugin.so` built from it) and
+JavaScriptCore on macOS and iOS. A local `flutter test` on a Mac therefore never exercises the
+engine Android ships.
+
+- **Pin globals as getters, never as read-only data.** QuickJS stores global-object properties
+  as variable references, and `JS_DefineProperty` updates the reference without the
+  non-writable check, so `Object.defineProperty(globalThis, name, { value })` replaces a
+  `writable: false, configurable: false` global (unfixed on bellard/quickjs master as of
+  2026-11-23; quickjs-ng is not affected). A non-configurable accessor refuses every data or
+  accessor redefinition on both engines. `__pinGlobal` in `plugin_manager.dart` creates host
+  globals that way, and `__lockPluginHostBridge` converts the configurable built-ins, host
+  globals and `globalThis` before the first plugin body runs.
+- **Leave non-configurable data globals alone.** They cannot become accessors, and on QuickJS
+  `writable: false` would not protect them anyway. Making one non-writable only breaks its
+  owner: `flutter_js` declares `var __NATIVE_FLUTTER_JS__timerCount`, and pinning it froze every
+  engine-level `setTimeout`/`setInterval` id. `console` (#34) is in this class and stays open.
+- **Pin `globalThis` itself.** The plugin wrapper reads `globalThis.__reaprimePluginHostBridge`
+  and `globalThis.__registerPlugin`; a rebound `globalThis` hands a later plugin's bridge token
+  to whoever rebound it, on both engines.

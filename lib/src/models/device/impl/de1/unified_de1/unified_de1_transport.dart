@@ -36,7 +36,10 @@ class UnifiedDe1Transport {
   final TransportType transportType;
   final Logger _log;
   final void Function(Endpoint, Uint8List)? onNotification;
+  final void Function(int token)? onSessionRecoveryStarted;
+  final void Function(int token)? onSessionRecovered;
   int _notificationGeneration = 0;
+  int _recoveryToken = 0;
 
   StreamSubscription<String>? _transportSubscription;
   StreamSubscription<device.ConnectionState>? _connectionStateSubscription;
@@ -44,6 +47,7 @@ class UnifiedDe1Transport {
   bool _cacheCleared = false;
 
   bool _recovering = false;
+  bool _firmwareMapReadUnavailable = false;
 
   Stream<device.ConnectionState> get connectionState => _transport
       .connectionState
@@ -93,10 +97,14 @@ class UnifiedDe1Transport {
   // it from live frames and from every local write.
   Uint8List _localShotSettings = Uint8List.fromList(_defaultShotSettingsFrame);
 
-  UnifiedDe1Transport({required DataTransport transport, this.onNotification})
-    : _transport = transport,
-      transportType = transport.transportType,
-      _log = Logger("UnifiedDe1Transport-${transport.id}");
+  UnifiedDe1Transport({
+    required DataTransport transport,
+    this.onNotification,
+    this.onSessionRecoveryStarted,
+    this.onSessionRecovered,
+  }) : _transport = transport,
+       transportType = transport.transportType,
+       _log = Logger("UnifiedDe1Transport-${transport.id}");
   Future<void> connect() async {
     final wasConnected =
         transportType == TransportType.ble &&
@@ -162,6 +170,7 @@ class UnifiedDe1Transport {
       throw "wrong transport type";
     }
     _notificationGeneration++;
+    _firmwareMapReadUnavailable = false;
     final services = await _transport.discoverServices();
     final de1Service = BleServiceIdentifier.parse(de1ServiceUUID);
     if (!de1Service.matchesAny(services)) {
@@ -766,10 +775,21 @@ class UnifiedDe1Transport {
       return next;
     }
     if (transportType == TransportType.ble) {
-      return _bleRead(
-        Endpoint.fwMapRequest,
-        timeout: _firmwareMapPollReadTimeout,
-      );
+      if (_firmwareMapReadUnavailable) {
+        throw const GattAttributeUnavailableException(
+          operation: 'read',
+          path: 'fwMapRequest',
+        );
+      }
+      try {
+        return await _bleRead(
+          Endpoint.fwMapRequest,
+          timeout: _firmwareMapPollReadTimeout,
+        );
+      } on GattAttributeUnavailableException {
+        _firmwareMapReadUnavailable = true;
+        rethrow;
+      }
     }
     return read(Endpoint.fwMapRequest);
   }
@@ -901,6 +921,8 @@ class UnifiedDe1Transport {
   Future<bool> _handleBleTimeout(Object error, StackTrace st) async {
     _log.warning('BLE write timed out, attempting reconnect');
     _recovering = true;
+    final token = ++_recoveryToken;
+    onSessionRecoveryStarted?.call(token);
     final restoreBengleShotSample = _bengleShotSampleEnabled;
     try {
       _notificationGeneration++;
@@ -921,6 +943,7 @@ class UnifiedDe1Transport {
         await subscribeBengleShotSample();
       }
       _log.info('BLE reconnect successful after timeout');
+      onSessionRecovered?.call(token);
       return true;
     } catch (reconnectError) {
       _log.severe('BLE reconnect failed, disconnecting', reconnectError);

@@ -2066,10 +2066,16 @@ it in Decaid UI.
   `Math`, `Date`, `RegExp`, `BigInt`, `Proxy`, `ArrayBuffer`, `DataView`, every
   typed array and the shared typed-array prototype, `TextEncoder`,
   `TextDecoder`, `btoa` and `atob`, with their prototypes, plus the `Error` and
-  `TypeError` constructors) and makes the host's own globals (`host`, `fetch`,
-  `sendMessage` and every `__`-prefixed host function) read-only, so one
+  `TypeError` constructors) and pins the global bindings of those built-ins,
+  of `globalThis` and of the host's own globals (`host`, `fetch`,
+  `sendMessage` and every `__`-prefixed host function), so one
   plugin cannot hook another plugin's `JSON.stringify`, `btoa`, byte buffers,
-  promise callbacks or fetch responses. Loaded plugin objects are kept in a
+  promise callbacks, fetch responses or bridge calls. A pinned global is a
+  non-configurable getter with no setter rather than a read-only data
+  property, because the QuickJS engine used on Android, Linux and Windows lets
+  `Object.defineProperty` replace the value of a read-only, non-configurable
+  global; JavaScriptCore (macOS and iOS) does not. `console` and the other
+  globals not listed here are not pinned. Loaded plugin objects are kept in a
   registry that is not reachable from plugin code and is keyed by each
   plugin's private bridge token, so a plugin cannot read, replace or remove
   another plugin's `onEvent` or HTTP handler. `atob` is provided when the

@@ -39,6 +39,7 @@ abstract class SettingsService {
   Future<String?> preferredGrinderDeviceId();
   Future<void> setPreferredGrinderDeviceId(String? deviceId);
   Future<String> defaultSkinId();
+  Future<String?> persistedDefaultSkinId();
   Future<void> setDefaultSkinId(String skinId);
   Future<bool> requireExtensionManagementAuthorization();
   Future<void> setRequireExtensionManagementAuthorization(bool value);
@@ -80,6 +81,8 @@ abstract class SettingsService {
   Future<void> setKeepServiceRunning(bool value);
   Future<bool> onboardingCompleted();
   Future<void> setOnboardingCompleted(bool value);
+  Future<bool> onboardingReplayRequested();
+  Future<void> setOnboardingReplayRequested(bool value);
   Future<bool> accountStepSeen();
   Future<void> setAccountStepSeen(bool value);
   Future<bool> shotUploadStepSeen();
@@ -90,15 +93,32 @@ abstract class SettingsService {
   Future<bool?> shotUploadPendingDecision();
   Future<void> setShotUploadDecision(bool value);
   Future<void> clearShotUploadPendingDecision();
+  Future<bool?> shotUploadRecordedAnswer();
   Future<bool> androidWarningDismissed();
   Future<void> setAndroidWarningDismissed(bool value);
   Future<bool> showSkinExitInstructions();
   Future<void> setShowSkinExitInstructions(bool value);
   Future<bool> enableSimulatedWebViews();
   Future<void> setEnableSimulatedWebViews(bool value);
+  Future<bool> mockDe1GhcPresent();
+  Future<void> setMockDe1GhcPresent(bool value);
 
   Future<bool?> featureFlag(FeatureFlag flag);
   Future<void> setFeatureFlag(FeatureFlag flag, bool value);
+}
+
+abstract class LegacySelectedSkinLookup {
+  Future<String?> selectedSkinId();
+}
+
+class SharedPrefsLegacySelectedSkinLookup implements LegacySelectedSkinLookup {
+  static const String key = 'selected_webui_skin_id';
+
+  @override
+  Future<String?> selectedSkinId() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(key);
+  }
 }
 
 class SharedPreferencesSettingsService extends SettingsService {
@@ -292,6 +312,11 @@ class SharedPreferencesSettingsService extends SettingsService {
       return 'streamline.js';
     }
     return stored ?? 'streamline.js';
+  }
+
+  @override
+  Future<String?> persistedDefaultSkinId() async {
+    return await prefs.getString(SettingsKeys.defaultSkinId.name);
   }
 
   @override
@@ -526,6 +551,17 @@ class SharedPreferencesSettingsService extends SettingsService {
   }
 
   @override
+  Future<bool> onboardingReplayRequested() async {
+    return await prefs.getBool(SettingsKeys.onboardingReplayRequested.name) ??
+        false;
+  }
+
+  @override
+  Future<void> setOnboardingReplayRequested(bool value) async {
+    await prefs.setBool(SettingsKeys.onboardingReplayRequested.name, value);
+  }
+
+  @override
   Future<bool> shotUploadStepSeen() async {
     final decision = await _readShotUploadDecision();
     if (decision case final record? when record['seen'] is bool) {
@@ -590,6 +626,12 @@ class SharedPreferencesSettingsService extends SettingsService {
     );
   }
 
+  @override
+  Future<bool?> shotUploadRecordedAnswer() async {
+    final answer = (await _readShotUploadDecision())?['answer'];
+    return answer is bool ? answer : null;
+  }
+
   Future<Map<String, dynamic>?> _readShotUploadDecision() async {
     final raw = await prefs.getString(SettingsKeys.shotUploadDecision.name);
     if (raw == null) return null;
@@ -645,6 +687,17 @@ class SharedPreferencesSettingsService extends SettingsService {
     await prefs.setBool(SettingsKeys.enableSimulatedWebViews.name, value);
   }
 
+  @override
+  Future<bool> mockDe1GhcPresent() async {
+    return await prefs.getBool(SettingsKeys.mockDe1GhcPresent.name) ??
+        const bool.fromEnvironment('MOCK_DE1_GHC');
+  }
+
+  @override
+  Future<void> setMockDe1GhcPresent(bool value) async {
+    await prefs.setBool(SettingsKeys.mockDe1GhcPresent.name, value);
+  }
+
   static const _featureFlagPrefix = 'featureFlag';
 
   @override
@@ -693,6 +746,7 @@ enum SettingsKeys {
   keepAwake,
   keepServiceRunning,
   onboardingCompleted,
+  onboardingReplayRequested,
   accountStepSeen,
   shotUploadStepSeen,
   shotUploadOptIn,
@@ -700,6 +754,7 @@ enum SettingsKeys {
   androidWarningDismissed,
   showSkinExitInstructions,
   enableSimulatedWebViews,
+  mockDe1GhcPresent,
   requireExtensionManagementAuthorization,
 }
 

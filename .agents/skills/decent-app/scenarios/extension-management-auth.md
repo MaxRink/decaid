@@ -207,7 +207,7 @@ curl -sf -X POST "$BASE/api/v1/plugins/update" | jq -r .message
 The production listener binds `0.0.0.0`, i.e. IPv4 on every interface, so the
 same-host LAN address is reachable while `[::1]` is not served by the app at all
 (IPv6 `::1` is covered by the test suite's second listener; see
-`test/webserver/extension_management_pipeline_test.dart`).
+`test/webserver/extension_management_pipeline_origins_test.dart`).
 
 ```bash
 echo "$LAN_IP"                                                           # e.g. 192.168.12.100
@@ -251,7 +251,7 @@ socket peer is the device itself â€” loopback, or one of its current addresses â
 so these steps run against `$BASE` on this machine and would be refused from
 another computer even with a valid token. These steps are the reproducible form
 of that contract
-(`test/webserver/extension_management_pipeline_test.dart`,
+(`test/webserver/extension_management_pipeline_origins_test.dart`,
 `extension_management_settings_import_test.dart`); a `curl` `Origin` is a
 statement by the client, so this shows the server-side refusal, not a browser
 sandbox.
