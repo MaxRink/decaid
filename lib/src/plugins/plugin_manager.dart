@@ -435,31 +435,30 @@ class PluginManager {
         "use strict";
         if (globalThis.__registerPlugin) return;
 
+        const __pinGlobal = (name, value, enumerable = false) => {
+          Object.defineProperty(globalThis, name, {
+            get: () => value,
+            set: undefined,
+            enumerable: enumerable,
+            configurable: false
+          });
+        };
+
         const __pluginRegistry = new Map();
-        Object.defineProperty(globalThis, "__registerPlugin", {
-          value: function (bridgeToken, plugin) {
-            if (typeof bridgeToken !== "string" ||
-                __mapHas(__pluginRegistry, bridgeToken)) {
-              throw new Error("Plugin registration refused");
-            }
-            __mapSet(__pluginRegistry, bridgeToken, plugin);
-          },
-          writable: false,
-          configurable: false,
-          enumerable: false
+        __pinGlobal("__registerPlugin", function (bridgeToken, plugin) {
+          if (typeof bridgeToken !== "string" ||
+              __mapHas(__pluginRegistry, bridgeToken)) {
+            throw new Error("Plugin registration refused");
+          }
+          __mapSet(__pluginRegistry, bridgeToken, plugin);
         });
-        Object.defineProperty(globalThis, "__unregisterPlugin", {
-          value: function (bridgeToken) {
-            const plugin = __mapGet(__pluginRegistry, bridgeToken);
-            try {
-              plugin?.onUnload?.();
-            } finally {
-              __mapDelete(__pluginRegistry, bridgeToken);
-            }
-          },
-          writable: false,
-          configurable: false,
-          enumerable: false
+        __pinGlobal("__unregisterPlugin", function (bridgeToken) {
+          const plugin = __mapGet(__pluginRegistry, bridgeToken);
+          try {
+            plugin?.onUnload?.();
+          } finally {
+            __mapDelete(__pluginRegistry, bridgeToken);
+          }
         });
         
         // Add HTTP response handling
@@ -658,19 +657,14 @@ class PluginManager {
           }
         }
 
-        Object.defineProperty(globalThis, "__reaprimePluginBridge", {
-          value: __nativeFreeze({
-            decentProxy: __decentProxy,
-            localApi: __localApi,
-            discoveryBrowse: __discoveryBrowse,
-            completeDecentProxyRequest: __completeDecentProxyRequest,
-            cancelForPlugin: __cancelDecentProxyRequestsForPlugin,
-            cancelAll: __cancelAllDecentProxyRequests
-          }),
-          writable: false,
-          configurable: false,
-          enumerable: false
-        });
+        __pinGlobal("__reaprimePluginBridge", __nativeFreeze({
+          decentProxy: __decentProxy,
+          localApi: __localApi,
+          discoveryBrowse: __discoveryBrowse,
+          completeDecentProxyRequest: __completeDecentProxyRequest,
+          cancelForPlugin: __cancelDecentProxyRequestsForPlugin,
+          cancelAll: __cancelAllDecentProxyRequests
+        }));
         
         function __sendApiResponse(bridgeToken, generation, requestId, response) {
           __sendHostMessage({
@@ -690,32 +684,27 @@ class PluginManager {
           });
         }
 
-        Object.defineProperty(globalThis, "__dispatchPluginHttp", {
-          value: function (pluginId, bridgeToken, generation, requestId, event) {
-            const plugin = __mapGet(__pluginRegistry, bridgeToken);
-            if (!plugin || typeof plugin.__httpRequestHandler !== "function") return;
-            try {
-              const response = plugin.__httpRequestHandler(event);
-              if (response && typeof response.then === "function") {
-                const promise = __nativeReflectApply(
-                  __nativePromiseResolve,
-                  __NativePromise,
-                  [response]
-                );
-                __nativeReflectApply(__nativePromiseThen, promise, [
-                  (result) => __sendApiResponse(bridgeToken, generation, requestId, result),
-                  (error) => __sendApiError(bridgeToken, generation, requestId, error)
-                ]);
-              } else if (response) {
-                __sendApiResponse(bridgeToken, generation, requestId, response);
-              }
-            } catch (error) {
-              __sendApiError(bridgeToken, generation, requestId, error);
+        __pinGlobal("__dispatchPluginHttp", function (pluginId, bridgeToken, generation, requestId, event) {
+          const plugin = __mapGet(__pluginRegistry, bridgeToken);
+          if (!plugin || typeof plugin.__httpRequestHandler !== "function") return;
+          try {
+            const response = plugin.__httpRequestHandler(event);
+            if (response && typeof response.then === "function") {
+              const promise = __nativeReflectApply(
+                __nativePromiseResolve,
+                __NativePromise,
+                [response]
+              );
+              __nativeReflectApply(__nativePromiseThen, promise, [
+                (result) => __sendApiResponse(bridgeToken, generation, requestId, result),
+                (error) => __sendApiError(bridgeToken, generation, requestId, error)
+              ]);
+            } else if (response) {
+              __sendApiResponse(bridgeToken, generation, requestId, response);
             }
-          },
-          writable: false,
-          configurable: false,
-          enumerable: false
+          } catch (error) {
+            __sendApiError(bridgeToken, generation, requestId, error);
+          }
         });
 
         // Provide btoa function if not available
@@ -799,12 +788,7 @@ class PluginManager {
         // Timer bridge: JS holds callbacks, Dart owns real Timers.
         const __timers = new Map();
         let __timerSeq = 0;
-        Object.defineProperty(globalThis, "__debugTimerCount", {
-          value: () => __timers.size,
-          writable: false,
-          configurable: false,
-          enumerable: false
-        });
+        __pinGlobal("__debugTimerCount", () => __timers.size);
         globalThis.__timerSet = function (bridgeToken, generation, callback, delay) {
           const id = ++__timerSeq;
           __timers.set(id, { bridgeToken: bridgeToken, generation: generation, callback: callback });
@@ -837,15 +821,10 @@ class PluginManager {
             __timers.delete(id);
           }
         };
-        Object.defineProperty(globalThis, "__cancelTimersForBridgeToken", {
-          value: function (bridgeToken) {
-            for (const [id, record] of __timers) {
-              if (record.bridgeToken === bridgeToken) __timers.delete(id);
-            }
-          },
-          writable: false,
-          configurable: false,
-          enumerable: false
+        __pinGlobal("__cancelTimersForBridgeToken", function (bridgeToken) {
+          for (const [id, record] of __timers) {
+            if (record.bridgeToken === bridgeToken) __timers.delete(id);
+          }
         });
         globalThis.__cancelAllTimers = function () {
           __timers.clear();
@@ -856,16 +835,7 @@ class PluginManager {
         function __sendTransportMessage(message) {
           __nativeSendMessage("transport", __nativeJsonStringify(message));
         }
-
-        const __frozenTransportGlobal = (name, value) => {
-          Object.defineProperty(globalThis, name, {
-            value: value,
-            writable: false,
-            configurable: false,
-            enumerable: false
-          });
-        };
-        __frozenTransportGlobal("__transportRequest", function (
+        __pinGlobal("__transportRequest", function (
           bridgeToken,
           generation,
           requestId,
@@ -888,16 +858,16 @@ class PluginManager {
           }
           __sendTransportMessage(message);
         });
-        __frozenTransportGlobal("__transportRegister", function (requestId, entry) {
+        __pinGlobal("__transportRegister", function (requestId, entry) {
           __mapSet(__transportPending, requestId, entry);
         });
-        __frozenTransportGlobal("__transportSetListener", function (handle, pluginId, listener) {
+        __pinGlobal("__transportSetListener", function (handle, pluginId, listener) {
           __mapSet(__transportListeners, handle, { pluginId: pluginId, listener: listener });
         });
-        __frozenTransportGlobal("__transportRemoveListener", function (handle) {
+        __pinGlobal("__transportRemoveListener", function (handle) {
           __mapDelete(__transportListeners, handle);
         });
-        __frozenTransportGlobal("__handleTransportReply", function (msg) {
+        __pinGlobal("__handleTransportReply", function (msg) {
           const pending = __mapGet(__transportPending, msg.requestId);
           if (!pending || pending.bridgeToken !== msg.bridgeToken) return;
           __mapDelete(__transportPending, msg.requestId);
@@ -910,7 +880,7 @@ class PluginManager {
           }
           pending.resolve(msg.result || {});
         });
-        __frozenTransportGlobal("__dispatchTransportEvent", function (pluginId, handle, event) {
+        __pinGlobal("__dispatchTransportEvent", function (pluginId, handle, event) {
           const record = __mapGet(__transportListeners, handle);
           if (!record || record.pluginId !== pluginId || !record.listener) return;
           try {
@@ -919,25 +889,25 @@ class PluginManager {
             console.error("Transport listener error", pluginId, e);
           }
         });
-        __frozenTransportGlobal("__rejectTransportPendingForToken", function (bridgeToken, error) {
+        __pinGlobal("__rejectTransportPendingForToken", function (bridgeToken, error) {
           __mapForEach(__transportPending, (pending, requestId) => {
             if (pending.bridgeToken !== bridgeToken) return;
             __mapDelete(__transportPending, requestId);
             pending.reject(new __NativeError(error));
           });
         });
-        __frozenTransportGlobal("__rejectAllTransportPending", function (error) {
+        __pinGlobal("__rejectAllTransportPending", function (error) {
           __mapForEach(__transportPending, (pending) => {
             pending.reject(new __NativeError(error));
           });
           __mapClear(__transportPending);
         });
-        __frozenTransportGlobal("__clearTransportListenersForPlugin", function (pluginId) {
+        __pinGlobal("__clearTransportListenersForPlugin", function (pluginId) {
           __mapForEach(__transportListeners, (record, handle) => {
             if (record.pluginId === pluginId) __mapDelete(__transportListeners, handle);
           });
         });
-        __frozenTransportGlobal("__clearAllTransportListeners", function () {
+        __pinGlobal("__clearAllTransportListeners", function () {
           __mapClear(__transportListeners);
         });
 
@@ -968,7 +938,7 @@ class PluginManager {
         function __sendDeviceMessage(message, replacer) {
           __nativeSendMessage("devices", __nativeJsonStringify(message, replacer));
         }
-        __frozenTransportGlobal("__deviceRequest", function (bridgeToken, generation, requestId, type, payload) {
+        __pinGlobal("__deviceRequest", function (bridgeToken, generation, requestId, type, payload) {
           try {
             __sendDeviceMessage({
               bridgeToken: bridgeToken,
@@ -982,22 +952,22 @@ class PluginManager {
             throw error;
           }
         });
-        __frozenTransportGlobal("__deviceRegisterPending", function (requestId, entry) {
+        __pinGlobal("__deviceRegisterPending", function (requestId, entry) {
           __mapSet(__devicePending, requestId, entry);
         });
-        __frozenTransportGlobal("__deviceSetHandlers", function (handle, entry) {
+        __pinGlobal("__deviceSetHandlers", function (handle, entry) {
           __mapSet(__deviceHandlers, handle, entry);
         });
-        __frozenTransportGlobal("__deviceRemoveHandlers", function (handle) {
+        __pinGlobal("__deviceRemoveHandlers", function (handle) {
           __mapGet(__deviceHandlers, handle)?.dispose?.();
           __mapDelete(__deviceHandlers, handle);
         });
-        __frozenTransportGlobal("__deviceHasHandler", function (handle, pluginId, generation, operation) {
+        __pinGlobal("__deviceHasHandler", function (handle, pluginId, generation, operation) {
           const entry = __mapGet(__deviceHandlers, handle);
           return !!entry && entry.pluginId === pluginId && entry.generation === generation &&
             typeof entry.handlers[operation] === "function";
         });
-        __frozenTransportGlobal("__handleDeviceReply", function (msg) {
+        __pinGlobal("__handleDeviceReply", function (msg) {
           const pending = __mapGet(__devicePending, msg.requestId);
           if (!pending || pending.bridgeToken !== msg.bridgeToken) return;
           __mapDelete(__devicePending, msg.requestId);
@@ -1009,7 +979,7 @@ class PluginManager {
           }
           pending.resolve(msg.result || {});
         });
-        __frozenTransportGlobal("__dispatchDeviceInvocation", function (pluginId, generation, handle, invocationId, operation, payload) {
+        __pinGlobal("__dispatchDeviceInvocation", function (pluginId, generation, handle, invocationId, operation, payload) {
           const entry = __mapGet(__deviceHandlers, handle);
           if (!entry || entry.pluginId !== pluginId || entry.generation !== generation) return;
           const handler = entry.handlers[operation];
@@ -1058,18 +1028,18 @@ class PluginManager {
             });
           }
         });
-        __frozenTransportGlobal("__rejectDevicePendingForToken", function (bridgeToken, error) {
+        __pinGlobal("__rejectDevicePendingForToken", function (bridgeToken, error) {
           __mapForEach(__devicePending, (pending, requestId) => {
             if (pending.bridgeToken !== bridgeToken) return;
             __mapDelete(__devicePending, requestId);
             pending.reject(new __NativeError(error));
           });
         });
-        __frozenTransportGlobal("__rejectAllDevicePending", function (error) {
+        __pinGlobal("__rejectAllDevicePending", function (error) {
           __mapForEach(__devicePending, (pending) => pending.reject(new __NativeError(error)));
           __mapClear(__devicePending);
         });
-        __frozenTransportGlobal("__clearDeviceHandlersForPlugin", function (pluginId) {
+        __pinGlobal("__clearDeviceHandlersForPlugin", function (pluginId) {
           __mapForEach(__deviceHandlers, (entry, handle) => {
             if (entry.pluginId === pluginId) {
               entry.dispose?.();
@@ -1077,60 +1047,55 @@ class PluginManager {
             }
           });
         });
-        __frozenTransportGlobal("__clearAllDeviceHandlers", function () {
+        __pinGlobal("__clearAllDeviceHandlers", function () {
           __mapForEach(__deviceHandlers, entry => entry.dispose?.());
           __mapClear(__deviceHandlers);
         });
 
         let __notificationSeq = 0;
-        Object.defineProperty(globalThis, "host", {
-          value: __nativeFreeze({
-            log(bridgeToken, generation, message) {
-              __sendHostMessage({
-                bridgeToken: bridgeToken,
-                generation: generation,
-                type: "log",
-                payload: { message: String(message) }
-              });
-            },
-            emit(bridgeToken, generation, eventName, payload) {
-              __sendHostMessage({
-                bridgeToken: bridgeToken,
-                generation: generation,
-                type: "emit",
-                event: eventName,
-                payload: payload
-              });
-            },
-            notify(bridgeToken, generation, payload) {
-              const requestId = "notice_" + (++__notificationSeq);
-              __sendHostMessage({bridgeToken, generation, requestId, type: "notification", payload});
-              return requestId;
-            },
-            dismissNotification(bridgeToken, generation, id) {
-              __sendHostMessage({bridgeToken, generation, type: "notificationDismiss", payload: id ?? null});
-            },
-            storage(bridgeToken, generation, command) {
-              __sendHostMessage({
-                bridgeToken: bridgeToken,
-                generation: generation,
-                type: "pluginStorage",
-                payload: command
-              });
-            },
-            permissionDenied(bridgeToken, generation, permission) {
-              __sendHostMessage({
-                bridgeToken: bridgeToken,
-                generation: generation,
-                type: "permissionDenied",
-                payload: permission
-              });
-            }
-          }),
-          writable: false,
-          configurable: false,
-          enumerable: true
-        });
+        __pinGlobal("host", __nativeFreeze({
+          log(bridgeToken, generation, message) {
+            __sendHostMessage({
+              bridgeToken: bridgeToken,
+              generation: generation,
+              type: "log",
+              payload: { message: String(message) }
+            });
+          },
+          emit(bridgeToken, generation, eventName, payload) {
+            __sendHostMessage({
+              bridgeToken: bridgeToken,
+              generation: generation,
+              type: "emit",
+              event: eventName,
+              payload: payload
+            });
+          },
+          notify(bridgeToken, generation, payload) {
+            const requestId = "notice_" + (++__notificationSeq);
+            __sendHostMessage({bridgeToken, generation, requestId, type: "notification", payload});
+            return requestId;
+          },
+          dismissNotification(bridgeToken, generation, id) {
+            __sendHostMessage({bridgeToken, generation, type: "notificationDismiss", payload: id ?? null});
+          },
+          storage(bridgeToken, generation, command) {
+            __sendHostMessage({
+              bridgeToken: bridgeToken,
+              generation: generation,
+              type: "pluginStorage",
+              payload: command
+            });
+          },
+          permissionDenied(bridgeToken, generation, permission) {
+            __sendHostMessage({
+              bridgeToken: bridgeToken,
+              generation: generation,
+              type: "permissionDenied",
+              payload: permission
+            });
+          }
+        }), true);
       })();
   ''');
 
@@ -1138,6 +1103,15 @@ class PluginManager {
       (function () {
         "use strict";
         if (globalThis.fetch) return;
+
+        const __pinGlobal = (name, value, enumerable = false) => {
+          Object.defineProperty(globalThis, name, {
+            get: () => value,
+            set: undefined,
+            enumerable: enumerable,
+            configurable: false
+          });
+        };
 
         const nativeSendMessage = sendMessage;
         const nativeJsonStringify = JSON.stringify.bind(JSON);
@@ -1234,79 +1208,59 @@ class PluginManager {
         };
 
         const hostGlobalNames = Object.getOwnPropertyNames(globalThis).filter(
-          (name) => name.startsWith("__") || name === "host" ||
-            name === "fetch" || name === "sendMessage"
+          (name) => (name.startsWith("__") && !name.startsWith("__NATIVE_FLUTTER_JS__")) ||
+            name === "host" || name === "fetch" || name === "sendMessage"
         );
-        Object.defineProperty(globalThis, "__lockPluginHostBridge", {
-          value: function () {
-            if (globalThis.__reaprimePluginHostBridge) return;
-            Object.defineProperty(globalThis, "__reaprimePluginHostBridge", {
-              value: Object.freeze({
-                log: globalThis.host.log,
-                emit: globalThis.host.emit,
-                notify: globalThis.host.notify,
-                dismissNotification: globalThis.host.dismissNotification,
-                storage: globalThis.host.storage,
-                permissionDenied: globalThis.host.permissionDenied,
-                fetch: globalThis.__fetchFor,
-                timerSet: globalThis.__timerSet,
-                timerClear: globalThis.__timerClear,
-                transportRequest: globalThis.__transportRequest,
-                deviceRequest: globalThis.__deviceRequest
-              }),
-              writable: false,
-              configurable: false,
-              enumerable: false
-            });
-            const intrinsicNames = [
-              "Object", "Function", "Array", "JSON", "Promise", "Map", "Set",
-              "WeakMap", "WeakSet", "String", "Number", "Boolean", "Symbol",
-              "Reflect", "Math", "Date", "RegExp", "Error", "TypeError",
-              "BigInt", "Proxy", "ArrayBuffer", "SharedArrayBuffer", "DataView",
-              "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array",
-              "Uint16Array", "Int32Array", "Uint32Array", "Float32Array",
-              "Float64Array", "BigInt64Array", "BigUint64Array", "TextEncoder",
-              "TextDecoder", "btoa", "atob"
-            ];
-            const freezeWithPrototype = (intrinsic, freezePrototype) => {
-              if (intrinsic === undefined || intrinsic === null) return;
-              Object.freeze(intrinsic);
-              if (freezePrototype && intrinsic.prototype) {
-                Object.freeze(intrinsic.prototype);
-              }
-            };
-            for (const name of intrinsicNames) {
-              freezeWithPrototype(
-                globalThis[name],
-                name !== "Error" && name !== "TypeError"
-              );
+        __pinGlobal("__lockPluginHostBridge", function () {
+          if (globalThis.__reaprimePluginHostBridge) return;
+          __pinGlobal("__reaprimePluginHostBridge", Object.freeze({
+            log: globalThis.host.log,
+            emit: globalThis.host.emit,
+            notify: globalThis.host.notify,
+            dismissNotification: globalThis.host.dismissNotification,
+            storage: globalThis.host.storage,
+            permissionDenied: globalThis.host.permissionDenied,
+            fetch: globalThis.__fetchFor,
+            timerSet: globalThis.__timerSet,
+            timerClear: globalThis.__timerClear,
+            transportRequest: globalThis.__transportRequest,
+            deviceRequest: globalThis.__deviceRequest
+          }));
+          const intrinsicNames = [
+            "Object", "Function", "Array", "JSON", "Promise", "Map", "Set",
+            "WeakMap", "WeakSet", "String", "Number", "Boolean", "Symbol",
+            "Reflect", "Math", "Date", "RegExp", "Error", "TypeError",
+            "BigInt", "Proxy", "ArrayBuffer", "SharedArrayBuffer", "DataView",
+            "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array",
+            "Uint16Array", "Int32Array", "Uint32Array", "Float32Array",
+            "Float64Array", "BigInt64Array", "BigUint64Array", "TextEncoder",
+            "TextDecoder", "btoa", "atob"
+          ];
+          const freezeWithPrototype = (intrinsic, freezePrototype) => {
+            if (intrinsic === undefined || intrinsic === null) return;
+            Object.freeze(intrinsic);
+            if (freezePrototype && intrinsic.prototype) {
+              Object.freeze(intrinsic.prototype);
             }
-            if (typeof Uint8Array === "function") {
-              freezeWithPrototype(Object.getPrototypeOf(Uint8Array), true);
+          };
+          for (const name of intrinsicNames) {
+            freezeWithPrototype(
+              globalThis[name],
+              name !== "Error" && name !== "TypeError"
+            );
+          }
+          if (typeof Uint8Array === "function") {
+            freezeWithPrototype(Object.getPrototypeOf(Uint8Array), true);
+          }
+          for (const name of [...hostGlobalNames, ...intrinsicNames, "globalThis"]) {
+            const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+            if (!descriptor || !descriptor.configurable) continue;
+            if ("value" in descriptor) {
+              __pinGlobal(name, descriptor.value, descriptor.enumerable);
+            } else {
+              Object.defineProperty(globalThis, name, { configurable: false });
             }
-            for (const name of [...hostGlobalNames, ...intrinsicNames]) {
-              const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
-              if (!descriptor) continue;
-              if (descriptor.configurable) {
-                Object.defineProperty(globalThis, name, "value" in descriptor
-                  ? { writable: false, configurable: false }
-                  : { configurable: false });
-                continue;
-              }
-              // A non-configurable data property cannot be redefined, but a
-              // writable one can still be made non-writable, and that is the
-              // whole point of this pass. Engines that ship btoa/atob as
-              // non-configurable globals used to fall through the branch above
-              // and stay writable, so a plugin could replace the helper another
-              // plugin calls and read its arguments.
-              if ("value" in descriptor && descriptor.writable) {
-                Object.defineProperty(globalThis, name, { writable: false });
-              }
-            }
-          },
-          writable: false,
-          configurable: false,
-          enumerable: false
+          }
         });
       })();
     ''');
