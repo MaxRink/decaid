@@ -36,8 +36,13 @@ info:
     `Sec-Fetch-Site` (a browser) is also refused with 403 and
     `{"error":"This API only answers browsers on the device address"}` when
     its `Host` is not `localhost`, a loopback address or a numeric address
-    currently assigned to the device. Requests without either header
-    (native apps, Home Assistant, scripts) are unaffected.
+    currently assigned to the device. A browser request without `Origin`
+    whose `Sec-Fetch-Site` is `cross-site` (a navigation, prefetch or
+    subresource load started by another site), an unknown value, or
+    `same-site` without a `Referer` on a device origin is refused with 403 and
+    `{"error":"This API does not accept browser requests started by another site"}`.
+    Requests without either header (native apps, Home Assistant, scripts) are
+    unaffected.
 
     Extension management also refuses a request whose browser `Origin` is not
     the device's own origin. That check applies in both modes, before any

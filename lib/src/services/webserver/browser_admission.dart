@@ -6,6 +6,9 @@ const crossOriginRequestError =
 const untrustedBrowserHostError =
     'This API only answers browsers on the device address';
 
+const crossSiteRequestError =
+    'This API does not accept browser requests started by another site';
+
 const _admittedBrowserOriginKey = 'decaid.admittedBrowserOrigin';
 
 const _corsAllowedMethods = 'DELETE, GET, OPTIONS, PATCH, POST, PUT';
@@ -38,10 +41,17 @@ Middleware browserAdmissionMiddleware(
         log.warning('$action refused (403) for a browser on a foreign host');
         return _browserRefusal(untrustedBrowserHostError);
       }
-      if (origin == null) return inner(request);
+      final connectionInfo = request.context[_shelfConnectionInfoKey];
+      if (origin == null) {
+        if (await _isDeviceInitiated(request, origins, connectionInfo)) {
+          return inner(request);
+        }
+        log.warning('$action refused (403) for a cross-site browser request');
+        return _browserRefusal(crossSiteRequestError);
+      }
       final verdict = await origins.classify(
         origin,
-        connectionInfo: request.context[_shelfConnectionInfoKey],
+        connectionInfo: connectionInfo,
       );
       if (verdict != BrowserOriginVerdict.trusted) {
         log.warning('$action refused (403) for an untrusted browser origin');
@@ -52,6 +62,30 @@ Middleware browserAdmissionMiddleware(
       );
     };
   };
+}
+
+Future<bool> _isDeviceInitiated(
+  Request request,
+  ExtensionManagementBrowserOrigins origins,
+  Object? connectionInfo,
+) async {
+  switch (request.headers['sec-fetch-site']) {
+    case 'none' || 'same-origin':
+      return true;
+    case 'same-site':
+      final initiator = _refererOrigin(request.headers['referer']);
+      return initiator != null &&
+          await origins.classify(initiator, connectionInfo: connectionInfo) ==
+              BrowserOriginVerdict.trusted;
+    default:
+      return false;
+  }
+}
+
+String? _refererOrigin(String? referer) {
+  final uri = referer == null ? null : Uri.tryParse(referer);
+  if (uri == null || !uri.hasScheme || !uri.hasAuthority) return null;
+  return Uri(scheme: uri.scheme, host: uri.host, port: uri.port).toString();
 }
 
 bool isAdmittedBrowserRequest(Request request) {

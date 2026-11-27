@@ -370,7 +370,12 @@ section, or for development and automation from `--extensions-token` or the
   (loopback names or a numeric address from the same live interface listing),
   which is the DNS-rebinding guard: a rebound name is never a device host even
   though it resolves to one. It then classifies `Origin` with the same
-  `classify` and refuses every method from an untrusted origin, `GET` included:
+  `classify` and refuses every method from an untrusted origin, `GET` included.
+  A browser request without `Origin` is judged by `Sec-Fetch-Site`: `none`
+  and `same-origin` pass, `same-site` passes only with a `Referer` whose origin
+  `classify` trusts (the device's other ports share its site), and
+  `cross-site` or an unknown value is refused. This closes navigation,
+  prefetch and `<img>`-triggered GETs, which carry no `Origin`:
   `GET /api/v1/devices/scan` scans and connects, so "safe" methods are not
   assumed to be side-effect free. An admitted origin is recorded in the request
   context; `browserCorsMiddleware`, which replaced the reflecting

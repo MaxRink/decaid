@@ -29,6 +29,8 @@ const _managerToken = 'manager-token';
 const _crossOriginError =
     'This API does not accept requests from this browser origin';
 const _hostError = 'This API only answers browsers on the device address';
+const _crossSiteError =
+    'This API does not accept browser requests started by another site';
 
 void main() {
   late List<String> reached;
@@ -39,6 +41,10 @@ void main() {
     reached = [];
     protectedMode = false;
     final routes = Router()
+      ..get('/api/v1/devices/scan', (Request r) {
+        reached.add('GET scan');
+        return Response.ok('{}');
+      })
       ..get('/api/v1/machine/state', (Request r) {
         reached.add('GET state');
         return Response.ok('{}');
@@ -522,6 +528,122 @@ void main() {
     });
   });
 
+  group('browser requests without an Origin', () {
+    const host = '$_deviceAddress:8080';
+    const lanPeer = '192.168.12.20';
+    const navigation = {
+      'sec-fetch-site': 'cross-site',
+      'sec-fetch-mode': 'navigate',
+      'sec-fetch-dest': 'document',
+    };
+
+    test('a cross-site navigation cannot trigger a GET side effect', () async {
+      for (final method in ['GET', 'HEAD']) {
+        final response = await send(
+          method,
+          '/api/v1/devices/scan',
+          host: host,
+          peer: lanPeer,
+          headers: navigation,
+        );
+        expect(response.statusCode, 403, reason: method);
+        expect(response.headers['access-control-allow-origin'], isNull);
+      }
+      final refused = await send(
+        'GET',
+        '/api/v1/devices/scan',
+        host: host,
+        peer: lanPeer,
+        headers: navigation,
+      );
+      expect(await errorOf(refused), _crossSiteError);
+      expect(reached, isEmpty);
+    });
+
+    test('cross-site subresources and prefetches are refused', () async {
+      for (final headers in [
+        {
+          'sec-fetch-site': 'cross-site',
+          'sec-fetch-mode': 'no-cors',
+          'sec-fetch-dest': 'image',
+        },
+        {
+          'sec-fetch-site': 'cross-site',
+          'sec-fetch-mode': 'no-cors',
+          'sec-fetch-dest': 'script',
+        },
+        {
+          'sec-fetch-site': 'cross-site',
+          'sec-fetch-mode': 'navigate',
+          'sec-fetch-dest': 'empty',
+          'sec-purpose': 'prefetch',
+        },
+        {'sec-fetch-site': 'unexpected'},
+      ]) {
+        final response = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: host,
+          peer: lanPeer,
+          headers: headers,
+        );
+        expect(response.statusCode, 403, reason: '$headers');
+      }
+      expect(reached, isEmpty);
+    });
+
+    test('a same-site request needs a referrer on a device origin', () async {
+      Future<Response> sameSite(String? referer) => send(
+        'GET',
+        '/api/v1/devices/scan',
+        host: host,
+        peer: lanPeer,
+        headers: {
+          'sec-fetch-site': 'same-site',
+          'sec-fetch-mode': 'navigate',
+          'referer': ?referer,
+        },
+      );
+      expect((await sameSite(null)).statusCode, 403);
+      expect(
+        (await sameSite('http://$_deviceAddress:9999/page')).statusCode,
+        403,
+      );
+      expect(reached, isEmpty);
+      expect(
+        (await sameSite('http://$_deviceAddress:$_skinPort/index.html'))
+            .statusCode,
+        200,
+      );
+      expect(reached, ['GET scan']);
+    });
+
+    test('a typed URL and a same-origin page are admitted', () async {
+      for (final site in ['none', 'same-origin']) {
+        final response = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: host,
+          peer: lanPeer,
+          headers: {'sec-fetch-site': site, 'sec-fetch-mode': 'navigate'},
+        );
+        expect(response.statusCode, 200, reason: site);
+      }
+      expect(reached, ['GET scan', 'GET scan']);
+    });
+
+    test('a client without browser headers is admitted', () async {
+      final response = await send(
+        'GET',
+        '/api/v1/devices/scan',
+        host: 'decaid.lan:8080',
+        peer: lanPeer,
+      );
+      expect(response.statusCode, 200);
+      expect(reached, ['GET scan']);
+    });
+  });
+
   group('privileged machine routes in protected mode', () {
     final routes = <(String, String, Map<String, String>)>[
       ('GET', '/ws/v1/machine/raw', websocket),
@@ -686,6 +808,26 @@ void main() {
         throwsA(isA<WebSocketException>()),
       );
       expect(served, isEmpty);
+    });
+
+    test('a cross-site navigation is refused', () async {
+      final response = await request(
+        'PUT',
+        '/api/v1/machine/state/espresso',
+        headers: const {
+          'sec-fetch-site': 'cross-site',
+          'sec-fetch-mode': 'navigate',
+        },
+      );
+      expect(response.statusCode, 403);
+      expect(served, isEmpty);
+      final typed = await request(
+        'PUT',
+        '/api/v1/machine/state/espresso',
+        headers: const {'sec-fetch-site': 'none'},
+      );
+      expect(typed.statusCode, 200);
+      expect(served, ['PUT state']);
     });
 
     test('a rebound host name is refused for a browser', () async {

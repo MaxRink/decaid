@@ -4303,6 +4303,9 @@ During development with skin on `localhost:3000` and gateway on `192.168.1.100:8
   or install the build on the device and test it there
 - Open skins by the device's numeric address or `localhost`; a browser that
   reaches the device through a DNS or mDNS name is refused
+- Build API URLs from the page's own `location.hostname`: a page on `localhost`
+  that loads images or links from `127.0.0.1:8080` (or the reverse) is
+  cross-site to the browser and is refused
 - Check browser console for connection errors
 
 ### Skin Not Appearing in Decaid

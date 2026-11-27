@@ -207,6 +207,19 @@ added later and plugin-defined routes:
   its `Host` is `localhost`, a loopback address or a numeric address currently
   assigned to the device. A name that resolves to the device is not the device's
   address.
+- **Cross-site requests without an `Origin`.** Browsers omit `Origin` on
+  navigations, link prefetches and `<img>`/`<script>` loads, but send
+  `Sec-Fetch-Site`. Such a request is refused with `403` and
+  `{"error":"This API does not accept browser requests started by another site"}`
+  for every method when `Sec-Fetch-Site` is `cross-site` or any unknown value, so
+  a page elsewhere cannot trigger a side-effecting `GET` (for example
+  `GET /api/v1/devices/scan`) by navigating to it. `same-site` is admitted only
+  when the `Referer` belongs to one of the device's own origins, because the
+  device's other ports share its site; a page that sends no referrer
+  (`Referrer-Policy: no-referrer`) is refused. `none` (a typed URL or bookmark)
+  and `same-origin` are admitted. A device page that loads API resources across
+  loopback names (`localhost` against `127.0.0.1`) is cross-site to the browser,
+  so use the page's own host name for the API.
 - **WebSocket upgrades** are checked a second time where every socket is
   accepted (`admittedWebSocketHandler`): an upgrade that carries an `Origin` the
   policy did not admit is refused with `403` even if it reaches a socket handler
