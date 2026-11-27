@@ -333,46 +333,51 @@ void main() {
       expect(listed['source']['commit'], 'second');
     });
 
-    test('a permission-escalating update is listed as pending', () async {
-      await http.runWithClient(
-        () => post('/api/v1/plugins/install/github-release', {
-          'repo': 'acme/plugin',
-        }),
-        () => gitHubClient(archive: pluginArchive(permissions: ['log'])),
-      );
+    test(
+      'a permission-escalating update waits for a credentialed approval',
+      () async {
+        await http.runWithClient(
+          () => post('/api/v1/plugins/install/github-release', {
+            'repo': 'acme/plugin',
+          }),
+          () => gitHubClient(archive: pluginArchive(permissions: ['log'])),
+        );
 
-      await http.runWithClient(
-        () => post('/api/v1/plugins/update'),
-        () => gitHubClient(
-          tag: 'v1.1.0',
-          archive: pluginArchive(
-            version: '1.1.0',
-            permissions: ['log', 'proxy.decent_api'],
+        await http.runWithClient(
+          () => post('/api/v1/plugins/update'),
+          () => gitHubClient(
+            tag: 'v1.1.0',
+            archive: pluginArchive(
+              version: '1.1.0',
+              permissions: ['log', 'proxy.decent_api'],
+            ),
           ),
-        ),
-      );
+        );
 
-      final listed = await listedPlugin();
-      expect(listed['version'], '1.0.0');
-      expect(listed['pendingUpdate']['version'], '1.1.0');
-      expect(listed['pendingUpdate']['addedPermissions'], ['proxy.decent_api']);
+        final listed = await listedPlugin();
+        expect(listed['version'], '1.0.0');
+        expect(listed['pendingUpdate']['version'], '1.1.0');
+        expect(listed['pendingUpdate']['addedPermissions'], [
+          'proxy.decent_api',
+        ]);
 
-      final approved = await http.runWithClient(
-        () => post('/api/v1/plugins/$id/update/approve'),
-        () => gitHubClient(
-          tag: 'v1.1.0',
-          archive: pluginArchive(
-            version: '1.1.0',
-            permissions: ['log', 'proxy.decent_api'],
+        final approved = await http.runWithClient(
+          () => post('/api/v1/plugins/$id/update/approve'),
+          () => gitHubClient(
+            tag: 'v1.1.0',
+            archive: pluginArchive(
+              version: '1.1.0',
+              permissions: ['log', 'proxy.decent_api'],
+            ),
           ),
-        ),
-      );
+        );
 
-      expect(approved.statusCode, 200);
-      final after = await listedPlugin();
-      expect(after['version'], '1.1.0');
-      expect(after['pendingUpdate'], isNull);
-    });
+        expect(approved.statusCode, 403);
+        final after = await listedPlugin();
+        expect(after['version'], '1.0.0');
+        expect(after['pendingUpdate']['version'], '1.1.0');
+      },
+    );
 
     test('approving without a pending update is a conflict', () async {
       await http.runWithClient(
