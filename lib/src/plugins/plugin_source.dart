@@ -1,8 +1,11 @@
+const pluginSourceMetadataFileName = '.rea_source.json';
+
 enum PluginSourceKind {
   githubRelease('github_release'),
   githubBranch('github_branch'),
   localZip('local_zip'),
-  localFolder('local_folder');
+  localFolder('local_folder'),
+  localSource('local_source');
 
   final String wireName;
 
@@ -25,6 +28,7 @@ class PluginPendingUpdate {
   final String? releaseTag;
   final String? commit;
   final List<String> addedPermissions;
+  final bool handsOverSecureSettings;
   final DateTime detectedAt;
 
   const PluginPendingUpdate({
@@ -32,6 +36,7 @@ class PluginPendingUpdate {
     this.releaseTag,
     this.commit,
     required this.addedPermissions,
+    this.handsOverSecureSettings = false,
     required this.detectedAt,
   });
 
@@ -42,6 +47,8 @@ class PluginPendingUpdate {
       commit: json['commit'] as String?,
       addedPermissions: ((json['addedPermissions'] as List?) ?? [])
           .cast<String>(),
+      handsOverSecureSettings:
+          json['handsOverSecureSettings'] as bool? ?? false,
       detectedAt: DateTime.parse(json['detectedAt'] as String),
     );
   }
@@ -51,6 +58,7 @@ class PluginPendingUpdate {
     'releaseTag': releaseTag,
     'commit': commit,
     'addedPermissions': addedPermissions,
+    'handsOverSecureSettings': handsOverSecureSettings,
     'detectedAt': detectedAt.toIso8601String(),
   };
 }

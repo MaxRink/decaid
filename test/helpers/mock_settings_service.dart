@@ -152,6 +152,12 @@ class MockSettingsService extends SettingsService {
     _persistedDefaultSkinId = skinId;
   }
 
+  List<String> _allowedHostNames = const [];
+  @override
+  Future<List<String>> allowedHostNames() async => _allowedHostNames;
+  @override
+  Future<void> setAllowedHostNames(List<String> names) async =>
+      _allowedHostNames = names;
   @override
   Future<bool> automaticUpdateCheck() async => _automaticUpdateCheck;
   @override

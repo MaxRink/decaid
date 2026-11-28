@@ -20,32 +20,50 @@ info:
     `extensions:manage` (or an approved plugin grant in process). Each such
     operation lists both security alternatives, the empty requirement and the
     `extensionsManage` scheme, so a client reads the credential as optional.
-    This setting covers extension management only; the rest of the API is
-    unchanged.
+    While the option is ON the same credential is also required for the
+    privileged machine routes (the raw machine WebSocket, firmware upload,
+    apply and cancel, calibration and scale calibration writes, advanced
+    machine settings and settings reset) and for a `push` or `two_way`
+    `POST /api/v1/data/sync`. The rest of the API is unchanged; general
+    authentication is tracked in #1135.
 
-    Extension management also refuses a request whose browser `Origin` is not
-    the device's own origin. That check applies in both modes, before any
-    handler work and regardless of any credential, and answers 403 with
-    `{"error":"Extension management is not allowed from this browser origin"}`.
-    It covers every plugin and skin management mutation, every import, a
-    settings body that changes the served skin, the extension update setting
-    or webUiPath, and a pull or two-way sync that includes the settings
-    section. A trusted origin is scheme `http` on localhost, 127.0.0.1, ::1 or
-    a numeric address currently assigned to a local network interface, on the
-    live skin page port, the actual API listener port, or the built-in API docs
-    viewer port while its listener is bound; anything else, including
-    `Origin: null`, `https`, a hostname and a retired port, is
-    refused. A literal loopback host is trusted only from a request whose TCP
-    socket peer is loopback or one of the device's current addresses; a peer
-    that is missing, unreadable or belongs to another machine is refused, so a
-    page on a second computer cannot borrow `localhost`. Untrusted preflights
-    are refused for these paths, including `POST /api/v1/settings`,
-    `/api/v1/data/import` and `/api/v1/data/sync`, before any body is read, so a
-    browser page on an untrusted origin cannot send a safe settings write or a
-    push sync as a JSON request even though the actual request would be
-    admitted. Requests without an `Origin` header are unaffected. Origin is not
-    authentication: a non-browser client can omit or forge it, so this
-    boundary covers browser pages only.
+    Every request, browser or not, is refused with 403 and
+    `{"error":"This device only answers its IP address, localhost, .local names and the host names in the allowedHostNames setting"}`
+    unless its raw `Host` header is a numeric address (other than `0.0.0.0`
+    or `::`), `localhost` or a `*.localhost` name, a `*.local` name, the
+    device's own host name or a name in the `allowedHostNames` setting.
+    Forwarding headers do not change the host this check sees.
+
+    Every route, in both modes, also applies one browser admission policy
+    before any handler runs. A request that carries `Origin`, `Referer` or
+    any `Sec-Fetch-*` header is a browser request:
+
+    - It is refused with 403 and
+      `{"error":"This API only answers browsers on the device address"}`
+      when its numeric `Host` is not loopback or an address currently
+      assigned to the device, or when it carries `Forwarded` or an
+      `X-Forwarded-*` header.
+    - With `Origin`, it is admitted only from one of the device's own origins;
+      any other origin, including `Origin: null`, is answered 403 with
+      `{"error":"This API does not accept requests from this browser origin"}`
+      for every method, preflights and WebSocket upgrades included, and
+      without `Access-Control-*` headers. CORS headers are sent only to the
+      device's own origins, and every response carries `Vary: Origin`.
+    - Without `Origin`, `Sec-Fetch-Site` decides: `none` and `same-origin`
+      are admitted, `same-site` (or a `Referer` without Fetch Metadata) only
+      with a `Referer` on a device origin, and `cross-site` or an unknown
+      value is refused with 403 and
+      `{"error":"This API does not accept browser requests started by another site"}`.
+
+    A device origin is scheme `http` on localhost, 127.0.0.1, ::1 or a
+    numeric address currently assigned to a local network interface, on the
+    live skin page port, the actual API listener port, or the built-in API
+    docs viewer port while its listener is bound. A literal loopback host is
+    trusted only from a request whose TCP socket peer is loopback or one of
+    the device's current addresses, so a page on a second computer cannot
+    borrow `localhost`. Requests without any of these headers (native apps,
+    Home Assistant, scripts) are unaffected. This is a browser boundary, not
+    authentication: a non-browser client can omit or forge these headers.
 
     A `GET` of a built-in page that arrives through a hostname is answered with
     302 to the same path on the numeric local endpoint: `/` and `/index.html`
@@ -191,7 +209,7 @@ paths:
             Remembered-devices feature unavailable (the registry controller is
             not wired). Not returned in normal operation.
   /api/v1/devices/scan:
-    get:
+    post:
       summary: Scan for Devices
       description: >
         Triggers a device scan. When connect=true (default), scans first and
@@ -208,7 +226,7 @@ paths:
         cleared, or when Decaid shuts down; the waiting request then completes
         without a scan.
       tags: [Devices]
-      parameters:
+      parameters: &deviceScanParameters
         - name: connect
           description: Whether to scan first and automatically connect missing preferred/discovered devices. Defaults to true.
           in: query
@@ -243,7 +261,7 @@ paths:
             type: boolean
             default: false
       responses:
-        "200":
+        "200": &deviceScanInventory
           description: >
             Device inventory after the scan, or immediately when a pending scan
             is dropped or quick=true is set, before any deferred scan runs.
@@ -253,6 +271,53 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/DeviceInventory"
+        "500":
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      summary: Scan for Devices (deprecated GET form)
+      deprecated: true
+      description: >
+        Deprecated: use POST /api/v1/devices/scan, which takes the same query
+        parameters and behaves the same. A page on another site can send this
+        GET blind, with no browser headers (an `<img>` with
+        `referrerpolicy="no-referrer"`), so the GET form is a side-effecting
+        GET route. When protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme) unless the browser rule admitted the
+        request as coming from one of the device's own pages (an own `Origin`,
+        a `Referer` from an own origin, or `Sec-Fetch-Site` `none` or
+        `same-origin`). When protection is OFF (the default), it needs no
+        credential and can still be triggered blind.
+      tags: [Devices]
+      security:
+        - {}
+        - extensionsManage: []
+      parameters: *deviceScanParameters
+      responses:
+        "200": *deviceScanInventory
+        "401":
+          description: >-
+            When protection is ON, a request without an own-page browser
+            header has a missing, malformed, unknown or revoked bearer token;
+            no scan starts. Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; no scan starts. A browser `Origin` or
+            cross-site request that is not the device's own is refused with
+            this status in both modes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           description: Internal Server Error
           content:
@@ -950,7 +1015,7 @@ paths:
         the integrated-scale tare path. Returns 404 when the connected
         machine is not a Bengle.
 
-        Machine control route: when protection is ON, this operation needs
+        Privileged machine route: when protection is ON, this operation needs
         `Authorization: Bearer <token>` scoped `extensions:manage` (see the
         extensionsManage security scheme). When protection is OFF (the
         default), it needs no credential. In both modes a browser request
@@ -1074,7 +1139,7 @@ paths:
         created. The connect-time
         detection read and firmware handoff remain separate from this override.
 
-        Machine control route: when protection is ON, this operation needs
+        Privileged machine route: when protection is ON, this operation needs
         `Authorization: Bearer <token>` scoped `extensions:manage` (see the
         extensionsManage security scheme). When protection is OFF (the
         default), it needs no credential. In both modes a browser request
@@ -1133,7 +1198,7 @@ paths:
         Profile and workflow are not touched. A reset acknowledgement is not evidence
         of factory restoration.
 
-        Machine control route: when protection is ON, this operation needs
+        Privileged machine route: when protection is ON, this operation needs
         `Authorization: Bearer <token>` scoped `extensions:manage` (see the
         extensionsManage security scheme). When protection is OFF (the
         default), it needs no credential. In both modes a browser request
@@ -1199,7 +1264,7 @@ paths:
         after power loss. For DE1 sensor calibration (flow/pressure/temperature) see
         PUT /api/v1/machine/calibration/{target}.
 
-        Machine control route: when protection is ON, this operation needs
+        Privileged machine route: when protection is ON, this operation needs
         `Authorization: Bearer <token>` scoped `extensions:manage` (see the
         extensionsManage security scheme). When protection is OFF (the
         default), it needs no credential. In both modes a browser request
@@ -1298,7 +1363,7 @@ paths:
         read the current calibration C, then write
         `de1ReportedValue: C, measuredValue: X`.
 
-        Machine control route: when protection is ON, this operation needs
+        Privileged machine route: when protection is ON, this operation needs
         `Authorization: Bearer <token>` scoped `extensions:manage` (see the
         extensionsManage security scheme). When protection is OFF (the
         default), it needs no credential. In both modes a browser request
@@ -1437,7 +1502,7 @@ paths:
         operation starts and remains silent during verification until either
         `done` or `error`.
 
-        Machine control route: when protection is ON, this operation needs
+        Privileged machine route: when protection is ON, this operation needs
         `Authorization: Bearer <token>` scoped `extensions:manage` (see the
         extensionsManage security scheme). When protection is OFF (the
         default), it needs no credential. In both modes a browser request
@@ -1495,8 +1560,36 @@ paths:
       description: |
         Idempotent. Returns 202 with the resulting operation state.
         Safe to call when no update is in progress or no machine is connected.
+
+        Privileged machine route: when protection is ON, this operation needs
+        `Authorization: Bearer <token>` scoped `extensions:manage` (see the
+        extensionsManage security scheme). When protection is OFF (the
+        default), it needs no credential. In both modes a browser request
+        from an origin that is not the device's own is refused with 403.
+      security:
+        - {}
+        - extensionsManage: []
       tags: [Machine]
       responses:
+        "401":
+          description: >-
+            When protection is ON, the bearer token is missing, malformed,
+            unknown or revoked; the request is refused before any change.
+            Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            When protection is ON, the token is not scoped for
+            `extensions:manage`; the request is refused before any change.
+            A browser `Origin` that is not the device's own origin is refused
+            with this status in both modes, before any change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "202":
           description: Cancellation accepted/satisfied
           content:
@@ -1517,7 +1610,7 @@ paths:
         bypass version-newer policy (never bypasses integrity or compatibility
         checks).
 
-        Machine control route: when protection is ON, this operation needs
+        Privileged machine route: when protection is ON, this operation needs
         `Authorization: Bearer <token>` scoped `extensions:manage` (see the
         extensionsManage security scheme). When protection is OFF (the
         default), it needs no credential. In both modes a browser request
@@ -1959,19 +2052,18 @@ paths:
         extension management protection is ON. That is a body containing
         `webUiPath`, setting `defaultSkinId` to a skin other than the
         current default, or setting `automaticUpdateCheck` to true while it
-        is off (automatic checks install plugin and skin updates). Such a
-        body then needs `Authorization: Bearer <token>` scoped
+        is off (automatic checks install plugin and skin updates), or
+        changing `allowedHostNames` (which widens the host names the
+        device answers). Such a body then needs `Authorization: Bearer <token>` scoped
         `extensions:manage` (see the extensionsManage security scheme) and
         is refused with 401 or 403 before any key is applied. When
         protection is OFF (the default), no token is needed, and in every
         mode a body whose values are already in effect, one that turns
         `automaticUpdateCheck` off, and one that changes only other keys needs
-        none either. Independent of the credential, a browser `Origin` that is
-        not the device's own origin is refused with 403 when the body makes one
-        of those changes, and a preflight for this operation from such an origin
-        is refused before the body exists, so a browser page on an untrusted
-        origin cannot send a safe body as a JSON request either; an actual
-        request from a non-browser client is applied as before. The native
+        none either. Independent of the credential, every request from a
+        browser `Origin` that is not the device's own origin is refused with
+        403 by the API-wide browser admission policy, whatever the body. The
+        native
         `Settings > Security` toggle itself is not writable through this route:
         an unknown key is ignored, and the same is true of an import or a sync.
       tags: [Decent Settings]
@@ -3792,10 +3884,13 @@ paths:
         `{"error": ..., "code": "machine_control_not_granted"}`, and the host
         posts a notice asking the user to allow it. With it, those writes reach
         the API. Firmware routes and the raw machine socket stay refused for
-        every plugin (`machine_control_forbidden`). The grant is stored per
-        plugin id, cleared when the plugin is removed or a source write changes
-        its plugin.js, and kept across installed updates. The current value is
-        the `machineControl` field of GET /api/v1/plugins.
+        every plugin (`machine_control_forbidden`). The grant is checked for
+        the plugin whose realm sent the request. It is stored per plugin id
+        and cleared when the plugin is removed or its plugin.js changes (source
+        write, install or update). Plugins cannot call this route: a plugin
+        `fetch` to it on the host answers 403 `machine_control_forbidden`
+        and `host.localApi` refuses it. The current value is the
+        `machineControl` field of GET /api/v1/plugins.
         When protection is ON, this operation needs `Authorization: Bearer
         <token>` scoped `extensions:manage` (see the extensionsManage
         security scheme). When protection is OFF (the default), it needs no
@@ -3982,15 +4077,17 @@ paths:
         and reloaded; if the new source fails to load, the previous manifest,
         source, and running plugin are restored and the request fails. An
         unloaded plugin stays unloaded and its source is not validated.
-        Settings and the auto-load preference are preserved, with two
-        exceptions for a request that carries no `extensions:manage`
-        credential (a bearer with that scope, or an approved
-        `manage.extensions` plugin via localApi): a write whose plugin.js
-        differs from the installed one clears the plugin's stored secure
-        settings, so new code never inherits secrets it was not configured
-        with, and a write whose manifest adds permissions to an installed
-        plugin is refused with 409. Overwriting a
-        bundled plugin is temporary: on the next app start the bundled copy wins
+        Ordinary settings and the auto-load preference are preserved.
+        Installing over an installed plugin goes through the replacement
+        review described in doc/Plugins.md: a manifest that adds permissions
+        is refused with 409 unless the request carries an `extensions:manage`
+        credential and lists every added permission in approvePermissions, and
+        new code (a different plugin.js, or a package from another repository)
+        receives the plugin's stored secure settings only when the request
+        carries that credential and sets keepSecureSettings; otherwise they are
+        cleared before it loads and secureSettingsCleared is true. Without the
+        credential, approvePermissions or keepSecureSettings is refused with 403.
+        Overwriting a bundled plugin is temporary: on the next app start the bundled copy wins
         whenever its version is higher. This path shadows a plugin-declared
         endpoint named "source", the same way /settings does.
         When protection is ON, this operation needs `Authorization: Bearer
@@ -4022,22 +4119,26 @@ paths:
                 plugin:
                   type: string
                   description: JavaScript source written to plugin.js
+                approvePermissions:
+                  type: array
+                  items:
+                    type: string
+                  description: >
+                    Added permissions the caller approves when replacing an
+                    installed plugin. Needs an `extensions:manage` credential.
+                keepSecureSettings:
+                  type: boolean
+                  default: false
+                  description: >
+                    Let replacement code keep the plugin's stored secure
+                    settings. Needs an `extensions:manage` credential.
       responses:
         "200":
           description: Plugin source updated
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                  id:
-                    type: string
-                  version:
-                    type: string
-                  loaded:
-                    type: boolean
+                $ref: '#/components/schemas/PluginInstallResult'
         "400":
           description: >
             Invalid JSON body, missing manifest or plugin source, invalid
@@ -4063,24 +4164,22 @@ paths:
             When protection is ON, the token is not scoped for
             `extensions:manage`; the request is refused before any change.
             A browser `Origin` that is not the device's own origin is refused
-            with this status in both modes, before any change.
+            with this status in both modes, before any change. Also returned
+            when approvePermissions or keepSecureSettings is sent without an
+            `extensions:manage` credential.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
           description: >
-            The submitted version is lower than the installed version; remove
-            the plugin before installing an older version. Also returned when
-            the manifest adds permissions to an installed plugin and the
-            request carries no `extensions:manage` credential
+            The submitted version is lower than the installed version (remove
+            the plugin before installing an older version), or the manifest
+            adds permissions that the request did not approve
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  error:
-                    type: string
+                $ref: "#/components/schemas/PluginReplacementConflict"
         "500":
           description: >
             The plugin could not be written, or the new source failed to load
@@ -4259,11 +4358,15 @@ paths:
         Malformed downloaded data and package manifests return HTTP 400 with
         plain-language validation errors, without parser diagnostics or source snippets.
         This includes missing or incorrectly typed release fields and asset entries.
-        Installing over an already installed plugin id without an
-        `extensions:manage` credential follows the source-write rules: a
-        package that adds permissions is refused with 409, and a package whose
-        plugin.js differs clears the plugin's stored secure settings and its
-        machine-control grant.
+        Installing over an installed plugin goes through the replacement
+        review described in doc/Plugins.md: a manifest that adds permissions
+        is refused with 409 unless the request carries an `extensions:manage`
+        credential and lists every added permission in approvePermissions, and
+        new code (a different plugin.js, or a package from another repository)
+        receives the plugin's stored secure settings only when the request
+        carries that credential and sets keepSecureSettings; otherwise they are
+        cleared before it loads and secureSettingsCleared is true. Without the
+        credential, approvePermissions or keepSecureSettings is refused with 403.
         When protection is ON, this operation needs `Authorization: Bearer
         <token>` scoped `extensions:manage` (see the extensionsManage
         security scheme). When protection is OFF (the default), it needs no
@@ -4289,6 +4392,19 @@ paths:
                 includePrerelease:
                   type: boolean
                   default: false
+                approvePermissions:
+                  type: array
+                  items:
+                    type: string
+                  description: >
+                    Added permissions the caller approves when replacing an
+                    installed plugin. Needs an `extensions:manage` credential.
+                keepSecureSettings:
+                  type: boolean
+                  default: false
+                  description: >
+                    Let replacement code keep the plugin's stored secure
+                    settings. Needs an `extensions:manage` credential.
       responses:
         "200":
           description: Plugin installed
@@ -4316,7 +4432,9 @@ paths:
             When protection is ON, the token is not scoped for
             `extensions:manage`; the request is refused before any change.
             A browser `Origin` that is not the device's own origin is refused
-            with this status in both modes, before any change.
+            with this status in both modes, before any change. Also returned
+            when approvePermissions or keepSecureSettings is sent without an
+            `extensions:manage` credential.
           content:
             application/json:
               schema:
@@ -4324,12 +4442,11 @@ paths:
         "409":
           description: >
             The release is older than the installed version, or it adds
-            permissions to an installed plugin and the request carries no
-            `extensions:manage` credential
+            permissions to the installed plugin that the request did not approve
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/PluginReplacementConflict"
         "500":
           description: Download or installation failed
           content:
@@ -4349,11 +4466,15 @@ paths:
         transport exceptions.
         Invalid GitHub commit response structures return HTTP 400 with
         plain-language validation guidance and no response-body snippets.
-        Installing over an already installed plugin id without an
-        `extensions:manage` credential follows the source-write rules: a
-        package that adds permissions is refused with 409, and a package whose
-        plugin.js differs clears the plugin's stored secure settings and its
-        machine-control grant.
+        Installing over an installed plugin goes through the replacement
+        review described in doc/Plugins.md: a manifest that adds permissions
+        is refused with 409 unless the request carries an `extensions:manage`
+        credential and lists every added permission in approvePermissions, and
+        new code (a different plugin.js, or a package from another repository)
+        receives the plugin's stored secure settings only when the request
+        carries that credential and sets keepSecureSettings; otherwise they are
+        cleared before it loads and secureSettingsCleared is true. Without the
+        credential, approvePermissions or keepSecureSettings is refused with 403.
         When protection is ON, this operation needs `Authorization: Bearer
         <token>` scoped `extensions:manage` (see the extensionsManage
         security scheme). When protection is OFF (the default), it needs no
@@ -4376,6 +4497,19 @@ paths:
                 branch:
                   type: string
                   default: main
+                approvePermissions:
+                  type: array
+                  items:
+                    type: string
+                  description: >
+                    Added permissions the caller approves when replacing an
+                    installed plugin. Needs an `extensions:manage` credential.
+                keepSecureSettings:
+                  type: boolean
+                  default: false
+                  description: >
+                    Let replacement code keep the plugin's stored secure
+                    settings. Needs an `extensions:manage` credential.
       responses:
         "200":
           description: Plugin installed
@@ -4403,17 +4537,22 @@ paths:
             When protection is ON, the token is not scoped for
             `extensions:manage`; the request is refused before any change.
             A browser `Origin` that is not the device's own origin is refused
-            with this status in both modes, before any change.
+            with this status in both modes, before any change. Also returned
+            when approvePermissions or keepSecureSettings is sent without an
+            `extensions:manage` credential.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: The branch carries an older version than the installed one
+          description: >
+            The branch carries an older version than the installed one, or it
+            adds permissions to the installed plugin that the request did not
+            approve
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/PluginReplacementConflict"
         "500":
           description: Download or installation failed
           content:
@@ -4427,9 +4566,11 @@ paths:
       description: >
         Runs the same check the app runs on its update cadence. Unchanged
         plugins only get a new lastChecked; changed plugins are validated and
-        installed when the candidate keeps the same permissions or fewer, and
-        recorded as a pendingUpdate when it asks for more. One plugin failing
-        does not stop the others.
+        installed when the candidate keeps the same permissions or fewer and
+        does not hand the plugin's stored secure settings to new code, and
+        recorded as a pendingUpdate otherwise. The app's scheduled check also
+        skips plugins installed from a GitHub branch. One plugin failing does
+        not stop the others.
         After all items are processed, per-item outcomes are returned in the
         `results` array: `updated`, `alreadyCurrent`, `pendingApproval`, or
         `failed` with a plain-language `error`. Partial failures no longer
@@ -4496,15 +4637,18 @@ paths:
 
   /api/v1/plugins/{id}/update/approve:
     post:
-      summary: Approve and install a permission-escalating update
+      summary: Approve and install a pending update
       description: >
         Installs the exact candidate recorded in pendingUpdate - the stored
         release tag or commit - accepting its added permissions. If the source
         moved since detection, the fetched candidate is refused, recorded as
-        the new pendingUpdate and has to be approved again. When the plugin
-        has stored secure settings, approval needs an `extensions:manage`
-        credential in both modes (or the native Plugins screen); without one
-        the request is refused with 403 before anything is downloaded.
+        the new pendingUpdate and has to be approved again. The new code
+        receives the plugin's stored secure settings only when
+        keepSecureSettings is true; otherwise they are cleared before it loads.
+        When the update adds permissions or the plugin has stored secure
+        settings, approval needs an `extensions:manage` credential in both
+        modes (or the native Plugins screen); without one it is refused with
+        403 before anything is downloaded.
         When protection is ON, this operation needs `Authorization: Bearer
         <token>` scoped `extensions:manage` (see the extensionsManage
         security scheme). When protection is OFF (the default), it needs no
@@ -4519,6 +4663,19 @@ paths:
           required: true
           schema:
             type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keepSecureSettings:
+                  type: boolean
+                  default: false
+                  description: >
+                    Let the approved version keep the plugin's stored secure
+                    settings. Needs an `extensions:manage` credential.
       responses:
         "200":
           description: Plugin updated
@@ -4546,7 +4703,10 @@ paths:
             When protection is ON, the token is not scoped for
             `extensions:manage`; the request is refused before any change.
             A browser `Origin` that is not the device's own origin is refused
-            with this status in both modes, before any change.
+            with this status in both modes, before any change. Also returned
+            without an `extensions:manage` credential when the update adds
+            permissions or the plugin has stored secure settings, or when
+            keepSecureSettings is sent without one.
           content:
             application/json:
               schema:
@@ -6245,7 +6405,8 @@ paths:
         "403":
           description: >-
             The browser `Origin` is not the device's own origin; the import is
-            refused whole, in both modes, before the archive is read. The
+            refused whole by the browser admission policy, in both modes,
+            before the archive is read. The
             protection-is-ON credential requirement is unaffected: while
             protection is ON, an unauthorized import skips a gated setting key
             with a warning instead of refusing the archive, and an authorized
@@ -6301,6 +6462,12 @@ paths:
         section result; with protection OFF (the default) both apply. A push
         sends no token, so the target applies its own rule to the pushed
         archive.
+
+        While extension-management protection is ON, a `push` or `two_way`
+        sync sends this device's data to the named target only with
+        `Authorization: Bearer <token>` scoped `extensions:manage`; without
+        one it is refused with 401 or 403 before any network request. A
+        `pull` needs no token.
       tags: [Data Management]
       requestBody:
         required: true
@@ -6354,6 +6521,24 @@ paths:
                     or failed. It is false by default and is not inferred from
                     overwrite conflict handling.
       responses:
+        "401":
+          description: >-
+            Protection is ON, the request pushes (`push` or `two_way`) and
+            the bearer token is missing, malformed, unknown or revoked.
+            Nothing is sent. Also sends `WWW-Authenticate: Bearer`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            Protection is ON, the request pushes and the token is not scoped
+            for `extensions:manage`; or, in both modes, a browser `Origin`
+            that is not the device's own origin.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "200":
           description: Sync completed successfully
           content:
@@ -6377,16 +6562,6 @@ paths:
                     type: string
                   message:
                     type: string
-        "403":
-          description: >-
-            A pull or two-way sync that includes the `settings` section is
-            refused, in both modes and before any network request or write,
-            when the browser `Origin` is not the device's own origin. A push
-            and a pull that excludes `settings` do not depend on this check,
-            but a preflight for this operation from an untrusted origin is
-            refused before the body is read, so a browser page on such an
-            origin cannot send a push as a JSON request either; an actual
-            request from a non-browser client is unaffected.
         "408":
           description: Sync request body was not received within 30 seconds
         "413":
@@ -8374,6 +8549,14 @@ components:
           description: 'Whether to automatically check for updates. Automatic checks install plugin and skin updates, so setting true while it is off is gated only while extension management protection is ON and then requires a bearer token scoped extensions:manage (see POST /api/v1/settings); turning it off needs none.'
           type: boolean
           nullable: true
+        allowedHostNames:
+          description: 'Extra DNS names the API and skin servers answer besides numeric addresses, localhost, .local names and the device''s own host name. Stored lower-case without a trailing dot; an IP address or any other value is a 400. A change is gated only while extension management protection is ON, and then requires a bearer token scoped extensions:manage.'
+          type: array
+          maxItems: 32
+          items:
+            type: string
+            maxLength: 253
+          example: ["decent.lan"]
         chargingMode:
           type: string
           enum: [disabled, longevity, balanced, highAvailability]
@@ -8488,6 +8671,11 @@ components:
         automaticUpdateCheck:
           description: Whether automatic update checking is enabled
           type: boolean
+        allowedHostNames:
+          description: Extra DNS names the API and skin servers answer (see the request schema)
+          type: array
+          items:
+            type: string
         chargingMode:
           type: string
           enum: [disabled, longevity, balanced, highAvailability]
@@ -9253,9 +9441,8 @@ components:
           nullable: true
           description: >
             An update that was found but not installed because it requests
-            permissions the installed version does not hold, or because the
-            background update check found it for a plugin that has stored
-            secure settings (then addedPermissions is empty).
+            permissions the installed version does not hold, or because it
+            would hand the plugin's stored secure settings to new code.
         surfaces:
           type: array
           maxItems: 8
@@ -9390,13 +9577,45 @@ components:
           type: string
         loaded:
           type: boolean
+        secureSettingsCleared:
+          type: boolean
+          description: >
+            True when the plugin's stored secure settings were cleared because
+            new code replaced the code they were configured for
+
+    PluginReplacementConflict:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        id:
+          type: string
+          description: Plugin id; present when the conflict is an unapproved replacement
+        addedPermissions:
+          type: array
+          items:
+            type: string
+          description: >
+            Permissions the replacement adds, plus `driver:<id>` for each
+            device driver that is new or whose type or BLE matcher changed;
+            resend with these in approvePermissions to approve them
+        credentialRequired:
+          type: boolean
+          description: >
+            True when the request carried no `extensions:manage` credential and
+            therefore cannot approve the added permissions
 
     PluginSource:
       type: object
       properties:
         kind:
           type: string
-          enum: [github_release, github_branch, local_zip, local_folder]
+          enum: [github_release, github_branch, local_zip, local_folder, local_source]
+          description: >
+            local_source marks code written by PUT /api/v1/plugins/{id}/source.
+            Like the other local kinds it has no update source, so update
+            checks skip the plugin until it is installed from GitHub again.
         repo:
           type: string
           nullable: true
@@ -9444,6 +9663,11 @@ components:
           type: array
           items:
             type: string
+        handsOverSecureSettings:
+          type: boolean
+          description: >
+            True when installing the candidate would give new code the plugin's
+            stored secure settings; approval decides whether they are kept
         detectedAt:
           type: string
           format: date-time

@@ -24,7 +24,7 @@ const _settingsPagePath = '/api/v1/plugins/$_settingsPluginId/ui';
 const _thirdPartyPagePath = '/api/v1/plugins/dye2.reaplugin/ui';
 const _skinUpdatePath = '/api/v1/webui/skins/update';
 const _settingsPath = '/api/v1/settings';
-const _aliasHost = 'de1tablet.home';
+const _aliasHost = 'de1tablet.local';
 const _hostileOrigin = 'https://evil.example';
 const _foreignNumericHost = '10.9.9.9';
 const _managedInterfaceAddress = '192.168.12.64';
@@ -671,7 +671,7 @@ void main() {
       final before = List.of(surface.skins.mutations);
       final reply = await surface.send('POST', _skinUpdatePath, origin: 'null');
       expect(reply.status, 403, reason: _evidence('POST null origin', reply));
-      expect(reply.error, untrustedBrowserOriginError);
+      expect(reply.error, crossOriginRequestError);
       expect(reply.corsAllowOrigin, isEmpty);
       expect(surface.skins.mutations, before);
     });
@@ -688,7 +688,7 @@ void main() {
         403,
         reason: _evidence('POST foreign numeric docs', reply),
       );
-      expect(reply.error, untrustedBrowserOriginError);
+      expect(reply.error, crossOriginRequestError);
       expect(surface.skins.mutations, before);
     });
 
@@ -1015,7 +1015,7 @@ void main() {
           403,
           reason: _evidence('POST failed docs port', reply),
         );
-        expect(reply.error, untrustedBrowserOriginError);
+        expect(reply.error, crossOriginRequestError);
         expect(reply.corsAllowOrigin, isEmpty);
         expect(failedStart.skins.mutations, before);
       },
@@ -1905,7 +1905,7 @@ void main() {
         403,
         reason: _evidence('OPTIONS alias page origin', reply),
       );
-      expect(reply.error, untrustedBrowserOriginError);
+      expect(reply.error, crossOriginRequestError);
       expect(reply.corsAllowOrigin, isEmpty);
     });
 
@@ -1934,7 +1934,7 @@ void main() {
         403,
         reason: _evidence('POST alias page origin', reply),
       );
-      expect(reply.error, untrustedBrowserOriginError);
+      expect(reply.error, crossOriginRequestError);
       expect(reply.corsAllowOrigin, isEmpty);
       expect(surface.skins.mutations, before);
     });
@@ -1951,7 +1951,7 @@ void main() {
         403,
         reason: _evidence('POST alias docs origin', reply),
       );
-      expect(reply.error, untrustedBrowserOriginError);
+      expect(reply.error, crossOriginRequestError);
       expect(surface.skins.mutations, before);
     });
 
@@ -1969,7 +1969,7 @@ void main() {
         403,
         reason: _evidence('POST alias settings', reply),
       );
-      expect(reply.error, untrustedBrowserHostError);
+      expect(reply.error, crossOriginRequestError);
       expect(reply.corsAllowOrigin, isEmpty);
       expect(surface.skins.mutations, before);
     });
@@ -1991,7 +1991,7 @@ void main() {
           origin: _hostileOrigin,
         );
         expect(reply.status, 403, reason: _evidence('POST hostile', reply));
-        expect(reply.error, untrustedBrowserOriginError);
+        expect(reply.error, crossOriginRequestError);
         expect(reply.corsAllowOrigin, isEmpty);
         expect(surface.skins.mutations, before);
       },
@@ -2029,7 +2029,7 @@ void main() {
         'POST',
         _skinUpdatePath,
         origin: surface.aliasPageOrigin,
-        hostHeader: '127.0.0.1:${surface.apiPort}',
+        hostHeader: '127.0.0.1',
         headers: {
           'x-forwarded-host': '127.0.0.1:${surface.apiPort}',
           'x-forwarded-for': '127.0.0.1',
@@ -2039,7 +2039,7 @@ void main() {
       );
       expect(plain.status, 403, reason: _evidence('plain', plain));
       expect(forged.status, 403, reason: _evidence('forged', forged));
-      expect(forged.error, untrustedBrowserOriginError);
+      expect(forged.error, untrustedBrowserHostError);
       expect(surface.skins.mutations, before);
     });
 
@@ -2145,7 +2145,7 @@ void main() {
         403,
         reason: _evidence('POST alias with token', reply),
       );
-      expect(reply.error, untrustedBrowserOriginError);
+      expect(reply.error, crossOriginRequestError);
       expect(restricted.skins.mutations, before);
     });
 
@@ -2239,7 +2239,7 @@ void main() {
         403,
         reason: _evidence('POST hostile docs origin with token', reply),
       );
-      expect(reply.error, untrustedBrowserOriginError);
+      expect(reply.error, crossOriginRequestError);
       expect(reply.corsAllowOrigin, isEmpty);
       expect(restricted.skins.mutations, before);
     });
@@ -2261,7 +2261,7 @@ void main() {
             'stay untrusted even with a valid token.\n'
             '${_evidence('POST unbound docs port with token', reply)}',
       );
-      expect(reply.error, untrustedBrowserOriginError);
+      expect(reply.error, crossOriginRequestError);
       expect(restricted.skins.mutations, before);
     });
   });

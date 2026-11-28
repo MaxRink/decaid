@@ -151,12 +151,12 @@ class DataSyncHandler {
     final pullsSettings =
         (mode == SyncMode.pull || mode == SyncMode.twoWay) &&
         (sections == null || sections.contains(_settingsSection));
-    if (pullsSettings) {
-      final originRefusal = requireTrustedBrowserOrigin(
+    if (mode == SyncMode.push || mode == SyncMode.twoWay) {
+      final denial = await requireExtensionManagement(
         request,
-        action: 'POST /api/v1/data/sync settings pull',
+        action: 'POST /api/v1/data/sync push',
       );
-      if (originRefusal != null) return originRefusal;
+      if (denial != null) return denial;
     }
 
     DataTransferPhaseOutcome? pull;

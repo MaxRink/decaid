@@ -97,7 +97,7 @@ connect_machine() {
   local needle="$1" start
   start=$(date +%s)
   while (( $(date +%s) - start < 30 )); do
-    curl -sf "$BASE_URL/api/v1/devices/scan?connect=true" >/dev/null || {
+    curl -sf -X POST "$BASE_URL/api/v1/devices/scan?connect=true" >/dev/null || {
       echo "Scan request failed" >&2
       return 1
     }

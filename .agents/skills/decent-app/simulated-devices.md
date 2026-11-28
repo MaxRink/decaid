@@ -32,7 +32,7 @@ flutter run \
   --dart-define=preferredScaleId=MockScale
 ```
 
-`lib/main.dart` (~line 360) reads those defines and seeds `settingsController.setPreferredMachineId` / `setPreferredScaleId`, which `ConnectionManager` then uses to bypass the device selection screen and direct-connect on the first scan. After boot, `sb-dev`'s `connect_machine` helper polls `GET /api/v1/devices/scan?connect=true` and `GET /api/v1/devices` in a 30s loop, checking with `jq` that an entry with the requested machine `name` has `state == "connected"` before returning. For the scale, `sb-dev` just passes the dart-define and trusts the auto-connect — no post-boot verification.
+`lib/main.dart` (~line 360) reads those defines and seeds `settingsController.setPreferredMachineId` / `setPreferredScaleId`, which `ConnectionManager` then uses to bypass the device selection screen and direct-connect on the first scan. After boot, `sb-dev`'s `connect_machine` helper polls `POST /api/v1/devices/scan?connect=true` and `GET /api/v1/devices` in a 30s loop, checking with `jq` that an entry with the requested machine `name` has `state == "connected"` before returning. For the scale, `sb-dev` just passes the dart-define and trusts the auto-connect — no post-boot verification.
 
 ## Typical TDD recipes
 
@@ -77,5 +77,5 @@ Persistent desktop state lives under `AppDirectories.support`, which uses `getAp
 
 ## Known weirdness
 
-- **First scan can be empty.** `SimulatedDeviceService.enabledDevices` is populated by a `settingsController` listener (`lib/main.dart` ~line 349). If you scan before that listener fires, `scanForDevices()` returns with no devices and the stream emits nothing. `sb-dev connect_machine` works around this with a 30s re-scan loop; a manual `curl /api/v1/devices/scan?connect=true` may need retrying.
+- **First scan can be empty.** `SimulatedDeviceService.enabledDevices` is populated by a `settingsController` listener (`lib/main.dart` ~line 349). If you scan before that listener fires, `scanForDevices()` returns with no devices and the stream emits nothing. `sb-dev connect_machine` works around this with a 30s re-scan loop; a manual `curl -X POST /api/v1/devices/scan?connect=true` may need retrying.
 - **Scale id `MockScale` vs display name `Mock Scale`.** The scale's `deviceId` is `MockScale` (no space) — that's what you pass to `preferredScaleId` / `sb-dev --connect-scale` and what matches in connection policy. Its human-facing `name` field returned by `/api/v1/devices` is `"Mock Scale"` (with a space), so filter on `"Mock Scale"` when matching by name. The `MockDe1` machine uses the same string for both.

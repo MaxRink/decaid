@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:logging/logging.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
+import 'package:reaprime/src/plugins/plugin_replacement.dart';
 import 'package:reaprime/src/plugins/plugin_source.dart';
 import 'package:reaprime/src/plugins/plugin_source_service.dart';
 import 'package:reaprime/src/settings/plugins_settings_view.dart';
@@ -95,6 +96,7 @@ class _FakeSourceService extends PluginSourceService {
   final ValueNotifier<Future<void>?> updateCheck = ValueNotifier(null);
   int updateCalls = 0;
   int approvals = 0;
+  final List<bool> keptSecureSettings = [];
   Object? approvalError;
   int installCalls = 0;
   Object? installError;
@@ -107,7 +109,7 @@ class _FakeSourceService extends PluginSourceService {
     String? assetName,
     bool includePrerelease = false,
     ExtensionManagementApproval? approveExtensionManagement,
-    bool authorized = true,
+    PluginReplacementApprover? approveReplacement,
   }) async {
     installCalls++;
     if (installError != null) throw installError!;
@@ -131,8 +133,12 @@ class _FakeSourceService extends PluginSourceService {
   }
 
   @override
-  Future<PluginManifest> approvePendingUpdate(String pluginId) async {
+  Future<PluginManifest> approvePendingUpdate(
+    String pluginId, {
+    bool keepSecureSettings = false,
+  }) async {
     approvals++;
+    keptSecureSettings.add(keepSecureSettings);
     if (approvalError != null) throw approvalError!;
     return PluginManifest(
       id: pluginId,
@@ -759,6 +765,46 @@ void main() {
       expect(service.approvals, 1);
     },
   );
+
+  testWidgets('a pending update reaching stored secrets asks to keep them', (
+    tester,
+  ) async {
+    final service = _FakeSourceService(
+      _FakeLoader(const []),
+      source: PluginSource(
+        kind: PluginSourceKind.githubRelease,
+        repo: 'acme/plugin',
+        installedAt: DateTime(2026),
+        pendingUpdate: PluginPendingUpdate(
+          version: '1.1.0',
+          addedPermissions: const [],
+          handsOverSecureSettings: true,
+          detectedAt: DateTime(2026),
+        ),
+      ),
+    );
+    await pumpView(tester, sourceService: service, plugins: [manifest()]);
+
+    expect(
+      find.textContaining('the plugin holds stored passwords or tokens'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Review'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('requests new permissions'), findsNothing);
+    await tester.tap(find.text('Approve and update'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Review'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('keep-secure-settings')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Approve and update'));
+    await tester.pumpAndSettle();
+
+    expect(service.keptSecureSettings, [false, true]);
+  });
 
   testWidgets('a pending update changed during review is not approved', (
     tester,

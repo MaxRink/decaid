@@ -141,7 +141,7 @@ void main() {
     );
   });
 
-  group('the management browser origin policy stays separate', () {
+  group('the browser admission policy stays separate', () {
     late Handler guarded;
 
     setUp(() {
@@ -151,7 +151,7 @@ void main() {
         deviceAddresses: () async => const {},
       );
       guarded = const Pipeline()
-          .addMiddleware(extensionManagementBrowserOriginMiddleware(origins))
+          .addMiddleware(browserAdmissionMiddleware(origins))
           .addMiddleware(accountProxyCorsMiddleware(() => allowedOrigins))
           .addMiddleware(
             corsHeaders(
@@ -256,12 +256,12 @@ void main() {
         origin: 'https://evil.example',
       );
 
-      expect(response.statusCode, 200);
+      expect(response.statusCode, 403);
       expect(response.headers['access-control-allow-origin'], isNull);
     });
 
-    test('a loopback origin without socket peer provenance is refused while '
-        'the proxy keeps its own rule', () async {
+    test('a loopback origin without socket peer provenance is refused on '
+        'every route', () async {
       const origin = 'http://127.0.0.1:8080';
 
       final mutation = await guarded(
@@ -281,7 +281,7 @@ void main() {
           headers: const {'origin': origin},
         ),
       );
-      expect(proxied.statusCode, 200);
+      expect(proxied.statusCode, 403);
       expect(proxied.headers['access-control-allow-origin'], isNull);
     });
   });

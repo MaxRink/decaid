@@ -715,6 +715,8 @@ Future<void> startDecaidNormalServices({
     credentials: githubCredentials,
   );
   webUIService.legacySkinPathsProvider = webUIStorage.legacySkinPaths;
+  webUIService.allowedHostNamesProvider = () =>
+      settingsController.allowedHostNames;
 
   DecentAccountService? decentAccountService;
   DecentProxyService? decentProxyService;

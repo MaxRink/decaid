@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
 import 'package:reaprime/src/plugins/plugin_package.dart';
+import 'package:reaprime/src/plugins/plugin_replacement.dart';
 import 'package:reaprime/src/plugins/plugin_source.dart';
 import 'package:reaprime/src/plugins/plugin_source_service.dart';
 import 'package:reaprime/src/settings/plugins_settings_view.dart';
@@ -36,6 +37,8 @@ class _InstallingLoader extends Fake implements PluginLoaderService {
   final Directory root;
   final List<PluginManifest> plugins;
   final List<PluginManifest> installed = [];
+  final List<PluginReplacementDecision?> decisions = [];
+  bool holdsSecureSettings = false;
 
   @override
   Future<void> initialize() async {}
@@ -64,9 +67,28 @@ class _InstallingLoader extends Fake implements PluginLoaderService {
   Future<PluginManifest> installPluginPackage(
     Directory stagedDir, {
     bool allowDowngrade = false,
-    bool authorized = true,
+    bool sourceChanged = false,
+    PluginReplacementApprover? approveReplacement,
   }) async {
     final manifest = resolvePluginPackage(stagedDir).manifest;
+    final existing = getPluginManifest(manifest.id);
+    if (existing != null) {
+      final replacement = PluginReplacement(
+        installed: existing,
+        candidate: manifest,
+        addedPermissions: addedPluginPermissions(existing, manifest),
+        codeChanged: true,
+        sourceChanged: sourceChanged,
+        holdsSecureSettings: holdsSecureSettings,
+      );
+      if (replacement.needsReview) {
+        final decision = await approveReplacement?.call(replacement);
+        decisions.add(decision);
+        if (decision == null) {
+          throw PluginReplacementApprovalRequiredException(replacement);
+        }
+      }
+    }
     Directory(getPluginDirectory(manifest.id)).createSync(recursive: true);
     installed.add(manifest);
     plugins
@@ -89,20 +111,23 @@ class _LocalReleaseSourceService extends PluginSourceService {
     String? assetName,
     bool includePrerelease = false,
     ExtensionManagementApproval? approveExtensionManagement,
-    bool authorized = true,
+    PluginReplacementApprover? approveReplacement,
   }) => installFromFolder(
     releaseFolder,
     approveExtensionManagement: approveExtensionManagement,
+    approveReplacement: approveReplacement,
   );
 
   @override
   Future<PluginManifest> installFromFolder(
     String folderPath, {
     ExtensionManagementApproval? approveExtensionManagement,
+    PluginReplacementApprover? approveReplacement,
   }) {
     folderInstalls.add(folderPath);
     return super.installFromFolder(
       folderPath,
+      approveReplacement: approveReplacement,
       approveExtensionManagement: approveExtensionManagement == null
           ? null
           : (candidate) {
@@ -287,6 +312,83 @@ void main() {
 
       expect(find.byType(AlertDialog), findsOneWidget);
       expect(find.byType(ExtensionManagementWarning), findsNothing);
+    });
+  });
+
+  group('native install over an installed plugin', () {
+    testWidgets('reviews added permissions and the stored secrets', (
+      tester,
+    ) async {
+      final loader = _InstallingLoader(tempDir, [_manifest()])
+        ..holdsSecureSettings = true;
+      final sourceService = _LocalReleaseSourceService(
+        loader,
+        releaseFolder: pluginFolder(
+          permissions: [PluginPermissions.log.wireName],
+        ),
+      );
+      await pumpView(tester, loader: loader, sourceService: sourceService);
+
+      await startReleaseInstall(tester);
+
+      expect(
+        find.text('Replace Manager plugin 1.0.0 with 1.0.0?'),
+        findsOneWidget,
+      );
+      expect(find.text('• log'), findsOneWidget);
+      expect(find.byKey(const Key('keep-secure-settings')), findsOneWidget);
+
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(loader.installed, isEmpty);
+      expect(find.byType(SnackBar), findsNothing);
+
+      await startReleaseInstall(tester);
+      await tester.tap(find.byKey(const Key('keep-secure-settings')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('approve-plugin-replacement')));
+      await tester.pumpAndSettle();
+
+      expect(loader.installed.map((m) => m.id), [_pluginId]);
+      final decision = loader.decisions.single!;
+      expect(decision.approvedPermissions, {'log'});
+      expect(decision.keepSecureSettings, isTrue);
+    });
+
+    testWidgets('clears the secrets unless the user keeps them', (
+      tester,
+    ) async {
+      final loader = _InstallingLoader(tempDir, [_manifest()])
+        ..holdsSecureSettings = true;
+      final sourceService = _LocalReleaseSourceService(
+        loader,
+        releaseFolder: pluginFolder(),
+      );
+      await pumpView(tester, loader: loader, sourceService: sourceService);
+
+      await startReleaseInstall(tester);
+      expect(find.textContaining('requests new permissions'), findsNothing);
+      await tester.tap(find.byKey(const Key('approve-plugin-replacement')));
+      await tester.pumpAndSettle();
+
+      expect(loader.installed.map((m) => m.id), [_pluginId]);
+      expect(loader.decisions.single!.keepSecureSettings, isFalse);
+    });
+
+    testWidgets('a replacement that changes nothing installs silently', (
+      tester,
+    ) async {
+      final loader = _InstallingLoader(tempDir, [_manifest()]);
+      final sourceService = _LocalReleaseSourceService(
+        loader,
+        releaseFolder: pluginFolder(),
+      );
+      await pumpView(tester, loader: loader, sourceService: sourceService);
+
+      await startReleaseInstall(tester);
+
+      expect(loader.decisions, isEmpty);
+      expect(loader.installed.map((m) => m.id), [_pluginId]);
     });
   });
 

@@ -126,6 +126,9 @@ class RecordingWebUIService extends Fake implements WebUIService {
       browserOriginAddresses;
 
   @override
+  Set<String> admittedHostNames() => const {};
+
+  @override
   String serverPath() => '/recorded-skin';
 
   @override
@@ -491,7 +494,6 @@ class ExtensionManagementHarness {
         version: version,
       ),
       pluginJs: probePluginJs(id, onLoad: onLoad, onUnload: onUnload),
-      authorized: true,
     );
     if (load) await loader.enablePlugin(id);
   }

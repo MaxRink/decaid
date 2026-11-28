@@ -4,8 +4,10 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reaprime/src/services/account/proxy_token_service.dart';
 import 'package:reaprime/src/services/webserver/extension_management_auth.dart';
+import 'package:reaprime/src/services/webserver/request_host.dart';
 import 'package:reaprime/src/services/webserver_service.dart';
 import 'package:shelf/shelf.dart';
+import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 
 class _Peer implements HttpConnectionInfo {
@@ -28,16 +30,28 @@ const _managerToken = 'manager-token';
 const _crossOriginError =
     'This API does not accept requests from this browser origin';
 const _hostError = 'This API only answers browsers on the device address';
+const _crossSiteError =
+    'This API does not accept browser requests started by another site';
 
 void main() {
   late List<String> reached;
   late bool protectedMode;
   late Handler handler;
+  late Set<String> allowedNames;
 
   setUp(() {
     reached = [];
     protectedMode = false;
+    allowedNames = {};
     final routes = Router()
+      ..get('/api/v1/devices/scan', (Request r) {
+        reached.add('GET scan');
+        return Response.ok('{}');
+      })
+      ..post('/api/v1/devices/scan', (Request r) {
+        reached.add('POST scan');
+        return Response.ok('{}');
+      })
       ..get('/api/v1/machine/state', (Request r) {
         reached.add('GET state');
         return Response.ok('{}');
@@ -68,6 +82,10 @@ void main() {
       })
       ..post('/api/v1/machine/firmware/apply', (Request r) {
         reached.add('POST firmware/apply');
+        return Response.ok('{}');
+      })
+      ..delete('/api/v1/machine/firmware', (Request r) {
+        reached.add('DELETE firmware');
         return Response.ok('{}');
       })
       ..post('/api/v1/machine/calibration', (Request r) {
@@ -122,6 +140,7 @@ void main() {
         apiListenerPort: () => 8080,
         pagePorts: () => const {_skinPort},
         deviceAddresses: () async => const {_deviceAddress},
+        allowedHostNames: () => allowedNames,
       ),
     );
   });
@@ -191,15 +210,28 @@ void main() {
       expect(response.headers['access-control-allow-credentials'], isNull);
     });
 
-    test('a foreign origin cannot read API responses', () async {
+    test('a foreign origin cannot read or trigger GET routes', () async {
       final response = await send(
         'GET',
         '/api/v1/machine/state',
         origin: 'https://evil.example',
       );
-      expect(response.statusCode, 200);
+      expect(response.statusCode, 403);
+      expect(await errorOf(response), _crossOriginError);
       expect(response.headers['access-control-allow-origin'], isNull);
       expect(response.headers['access-control-allow-credentials'], isNull);
+      expect(reached, isEmpty);
+    });
+
+    test('a foreign origin with a token is still refused', () async {
+      final response = await send(
+        'POST',
+        '/api/v1/machine/calibration',
+        origin: 'https://evil.example',
+        headers: {'authorization': 'Bearer $_managerToken'},
+      );
+      expect(response.statusCode, 403);
+      expect(reached, isEmpty);
     });
 
     test('the literal null origin is foreign', () async {
@@ -270,6 +302,8 @@ void main() {
             host: host,
           );
           expect(read.headers['access-control-allow-origin'], origin);
+          expect(read.headers['access-control-allow-credentials'], 'true');
+          expect(read.headers['vary'], contains('Origin'));
           final preflight = await send(
             'OPTIONS',
             '/api/v1/machine/state/espresso',
@@ -307,7 +341,7 @@ void main() {
     test(
       'clients without an Origin, such as Home Assistant, are unchanged',
       () async {
-        for (final host in ['decaid.lan:8080', '$_deviceAddress:8080']) {
+        for (final host in ['decaid.local:8080', '$_deviceAddress:8080']) {
           final response = await send(
             'PUT',
             '/api/v1/machine/state/espresso',
@@ -329,6 +363,77 @@ void main() {
   });
 
   group('DNS rebinding', () {
+    test('forwarding headers cannot vouch for a rebound host', () async {
+      for (final forwarded in [
+        {'x-forwarded-host': '$_deviceAddress:8080'},
+        {'forwarded': 'host=$_deviceAddress:8080'},
+        {'x-forwarded-proto': 'http'},
+      ]) {
+        for (final host in [
+          'rebind.attacker.example:8080',
+          '$_deviceAddress:8080',
+        ]) {
+          final response = await send(
+            'GET',
+            '/api/v1/machine/state',
+            host: host,
+            peer: '192.168.12.20',
+            headers: {'sec-fetch-site': 'same-origin', ...forwarded},
+          );
+          expect(response.statusCode, 403, reason: '$host $forwarded');
+          expect(
+            await errorOf(response),
+            host.startsWith('rebind') ? unadmittedHostError : _hostError,
+          );
+        }
+      }
+      expect(reached, isEmpty);
+    });
+
+    test(
+      'a request that only carries a Referer is a browser request',
+      () async {
+        final rebound = await send(
+          'GET',
+          '/api/v1/machine/state',
+          host: 'rebind.attacker.example:8080',
+          peer: '192.168.12.20',
+          headers: {'referer': 'http://rebind.attacker.example:8080/'},
+        );
+        expect(rebound.statusCode, 403);
+        expect(await errorOf(rebound), unadmittedHostError);
+        final foreign = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: '$_deviceAddress:8080',
+          peer: '192.168.12.20',
+          headers: {'referer': 'https://evil.example/page'},
+        );
+        expect(foreign.statusCode, 403);
+        expect(await errorOf(foreign), _crossSiteError);
+        expect(reached, isEmpty);
+        final own = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: '$_deviceAddress:8080',
+          peer: '192.168.12.20',
+          headers: {'referer': 'http://$_deviceAddress:$_skinPort/'},
+        );
+        expect(own.statusCode, 200);
+      },
+    );
+
+    test('a non-browser client may send forwarding headers', () async {
+      final response = await send(
+        'GET',
+        '/api/v1/machine/state',
+        host: 'decaid.local:8080',
+        peer: '192.168.12.30',
+        headers: {'x-forwarded-for': '10.1.1.1', 'x-forwarded-host': 'x'},
+      );
+      expect(response.statusCode, 200);
+    });
+
     test('a browser request under a foreign host name is refused', () async {
       final response = await send(
         'GET',
@@ -338,7 +443,7 @@ void main() {
         headers: {'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'cors'},
       );
       expect(response.statusCode, 403);
-      expect(await errorOf(response), _hostError);
+      expect(await errorOf(response), unadmittedHostError);
       expect(reached, isEmpty);
     });
 
@@ -506,11 +611,212 @@ void main() {
     });
   });
 
-  group('machine control routes in protected mode', () {
+  group('browser requests without an Origin', () {
+    const host = '$_deviceAddress:8080';
+    const lanPeer = '192.168.12.20';
+    const navigation = {
+      'sec-fetch-site': 'cross-site',
+      'sec-fetch-mode': 'navigate',
+      'sec-fetch-dest': 'document',
+    };
+
+    test('a cross-site navigation cannot trigger a GET side effect', () async {
+      for (final method in ['GET', 'HEAD']) {
+        final response = await send(
+          method,
+          '/api/v1/devices/scan',
+          host: host,
+          peer: lanPeer,
+          headers: navigation,
+        );
+        expect(response.statusCode, 403, reason: method);
+        expect(response.headers['access-control-allow-origin'], isNull);
+      }
+      final refused = await send(
+        'GET',
+        '/api/v1/devices/scan',
+        host: host,
+        peer: lanPeer,
+        headers: navigation,
+      );
+      expect(await errorOf(refused), _crossSiteError);
+      expect(reached, isEmpty);
+    });
+
+    test('cross-site subresources and prefetches are refused', () async {
+      for (final headers in [
+        {
+          'sec-fetch-site': 'cross-site',
+          'sec-fetch-mode': 'no-cors',
+          'sec-fetch-dest': 'image',
+        },
+        {
+          'sec-fetch-site': 'cross-site',
+          'sec-fetch-mode': 'no-cors',
+          'sec-fetch-dest': 'script',
+        },
+        {
+          'sec-fetch-site': 'cross-site',
+          'sec-fetch-mode': 'navigate',
+          'sec-fetch-dest': 'empty',
+          'sec-purpose': 'prefetch',
+        },
+        {'sec-fetch-site': 'unexpected'},
+      ]) {
+        final response = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: host,
+          peer: lanPeer,
+          headers: headers,
+        );
+        expect(response.statusCode, 403, reason: '$headers');
+      }
+      expect(reached, isEmpty);
+    });
+
+    test('a same-site request needs a referrer on a device origin', () async {
+      Future<Response> sameSite(String? referer) => send(
+        'GET',
+        '/api/v1/devices/scan',
+        host: host,
+        peer: lanPeer,
+        headers: {
+          'sec-fetch-site': 'same-site',
+          'sec-fetch-mode': 'navigate',
+          'referer': ?referer,
+        },
+      );
+      expect((await sameSite(null)).statusCode, 403);
+      expect(
+        (await sameSite('http://$_deviceAddress:9999/page')).statusCode,
+        403,
+      );
+      expect(reached, isEmpty);
+      expect(
+        (await sameSite('http://$_deviceAddress:$_skinPort/index.html'))
+            .statusCode,
+        200,
+      );
+      expect(reached, ['GET scan']);
+    });
+
+    test('a typed URL and a same-origin page are admitted', () async {
+      for (final site in ['none', 'same-origin']) {
+        final response = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: host,
+          peer: lanPeer,
+          headers: {'sec-fetch-site': site, 'sec-fetch-mode': 'navigate'},
+        );
+        expect(response.statusCode, 200, reason: site);
+      }
+      expect(reached, ['GET scan', 'GET scan']);
+    });
+
+    test('a client without browser headers is admitted', () async {
+      final response = await send(
+        'GET',
+        '/api/v1/devices/scan',
+        host: 'decaid.local:8080',
+        peer: lanPeer,
+      );
+      expect(response.statusCode, 200);
+      expect(reached, ['GET scan']);
+    });
+  });
+
+  group('Host names on every request', () {
+    test('a rebound name is refused without any browser header', () async {
+      for (final (method, path, extra) in [
+        ('GET', '/api/v1/devices/scan', const <String, String>{}),
+        ('PUT', '/api/v1/machine/state/espresso', const <String, String>{}),
+        ('GET', '/ws/v1/machine/snapshot', websocket),
+      ]) {
+        final response = await send(
+          method,
+          path,
+          host: 'rebind.attacker.example:8080',
+          peer: '192.168.12.20',
+          headers: extra,
+        );
+        expect(response.statusCode, 403, reason: '$method $path');
+        expect(await errorOf(response), unadmittedHostError);
+      }
+      expect(reached, isEmpty);
+    });
+
+    test('numeric, loopback and .local hosts are admitted', () async {
+      for (final host in [
+        '$_deviceAddress:8080',
+        '10.9.9.9:8080',
+        '[2001:db8::5]:8080',
+        'localhost:8080',
+        'app.localhost:8080',
+        'decaid.local:8080',
+        'DECAID.LOCAL.:8080',
+      ]) {
+        final response = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: host,
+          peer: '192.168.12.20',
+        );
+        expect(response.statusCode, 200, reason: host);
+      }
+    });
+
+    test('the unspecified address is not a host', () async {
+      for (final host in ['0.0.0.0:8080', '[::]:8080']) {
+        final response = await send('GET', '/api/v1/devices/scan', host: host);
+        expect(response.statusCode, 403, reason: host);
+      }
+      expect(reached, isEmpty);
+    });
+
+    test('a DNS name is admitted only while it is allow-listed', () async {
+      Future<int> status() async => (await send(
+        'GET',
+        '/api/v1/devices/scan',
+        host: 'decaid.lan:8080',
+        peer: '192.168.12.20',
+      )).statusCode;
+      expect(await status(), 403);
+      allowedNames = {'decaid.lan'};
+      expect(await status(), 200);
+      final browser = await send(
+        'GET',
+        '/api/v1/devices/scan',
+        host: 'decaid.lan:8080',
+        peer: '192.168.12.20',
+        headers: {'referer': 'http://$_deviceAddress:$_skinPort/'},
+      );
+      expect(
+        browser.statusCode,
+        200,
+        reason:
+            'a native client that sends a Referer under an allow-listed '
+            'name is admitted',
+      );
+      allowedNames = {};
+      expect(await status(), 403);
+    });
+
+    test('in-process callers without a Host header keep working', () async {
+      final response = await handler(
+        Request('GET', Uri.parse('http://localhost/api/v1/devices/scan')),
+      );
+      expect(response.statusCode, 200);
+    });
+  });
+
+  group('privileged machine routes in protected mode', () {
     final routes = <(String, String, Map<String, String>)>[
       ('GET', '/ws/v1/machine/raw', websocket),
       ('POST', '/api/v1/machine/firmware', {}),
       ('POST', '/api/v1/machine/firmware/apply', {}),
+      ('DELETE', '/api/v1/machine/firmware', {}),
       ('POST', '/api/v1/machine/calibration', {}),
       ('PUT', '/api/v1/machine/calibration/flow', {}),
       ('PUT', '/api/v1/machine/scaleCalibration', {}),
@@ -545,5 +851,432 @@ void main() {
         expect(response.statusCode, 200);
       },
     );
+  });
+
+  group('side-effecting GET routes', () {
+    // What an <img src> with referrerpolicy="no-referrer" on another site
+    // sends to the numeric address over plain HTTP: no Origin, no Referer, no
+    // Sec-Fetch-* (browsers send those only to trustworthy origins).
+    Future<Response> blindGet() => send(
+      'GET',
+      '/api/v1/devices/scan?connect=true',
+      host: '$_deviceAddress:8080',
+      peer: '192.168.12.20',
+    );
+
+    test(
+      'a header-less GET scan needs a credential in protected mode',
+      () async {
+        protectedMode = true;
+        final refused = await blindGet();
+        expect(refused.statusCode, 401);
+        expect(reached, isEmpty);
+
+        final authorized = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: '$_deviceAddress:8080',
+          peer: '192.168.12.20',
+          headers: {'authorization': 'Bearer $_managerToken'},
+        );
+        expect(authorized.statusCode, 200);
+        final wrongScope = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: '$_deviceAddress:8080',
+          peer: '192.168.12.20',
+          headers: {'authorization': 'Bearer skin-token'},
+        );
+        expect(wrongScope.statusCode, isNot(200));
+        expect(reached, ['GET scan']);
+      },
+    );
+
+    test('the POST form needs no credential in either mode', () async {
+      for (final mode in [true, false]) {
+        protectedMode = mode;
+        final response = await send(
+          'POST',
+          '/api/v1/devices/scan?connect=false',
+          host: '$_deviceAddress:8080',
+          peer: '192.168.12.20',
+        );
+        expect(response.statusCode, 200, reason: 'protected: $mode');
+      }
+      expect(reached, ['POST scan', 'POST scan']);
+    });
+
+    test(
+      'the device\'s own pages keep the GET form in protected mode',
+      () async {
+        protectedMode = true;
+        final fromSkin = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          host: '$_deviceAddress:8080',
+          peer: '192.168.12.20',
+          origin: 'http://$_deviceAddress:$_skinPort',
+        );
+        expect(fromSkin.statusCode, 200);
+        final typed = await send(
+          'GET',
+          '/api/v1/devices/scan',
+          headers: {'sec-fetch-site': 'none'},
+        );
+        expect(typed.statusCode, 200);
+        expect(reached, ['GET scan', 'GET scan']);
+      },
+    );
+
+    test('a cross-site GET with browser headers stays refused', () async {
+      protectedMode = true;
+      final response = await send(
+        'GET',
+        '/api/v1/devices/scan',
+        host: '$_deviceAddress:8080',
+        peer: '192.168.12.20',
+        headers: {'referer': 'https://evil.example/'},
+      );
+      expect(response.statusCode, 403);
+      expect(reached, isEmpty);
+    });
+
+    test('compatibility mode keeps the deprecated GET form', () async {
+      final response = await blindGet();
+      expect(response.statusCode, 200);
+      expect(reached, ['GET scan']);
+    });
+  });
+
+  group('the WebSocket upgrade path', () {
+    test('refuses a browser upgrade that the API did not admit', () async {
+      var opened = false;
+      final upgrade = admittedWebSocketHandler((channel, _) => opened = true);
+      final response = await upgrade(
+        Request(
+          'GET',
+          Uri.parse('http://localhost:8080/ws/v1/machine/raw'),
+          headers: {'origin': 'https://evil.example', ...websocket},
+        ),
+      );
+      expect(response.statusCode, 403);
+      expect(await errorOf(response), _crossOriginError);
+      expect(opened, isFalse);
+    });
+  });
+
+  group('over a real loopback socket', () {
+    late HttpServer server;
+    late List<String> served;
+
+    setUp(() async {
+      served = [];
+      final routes = Router()
+        ..get('/api/v1/data/export', (Request r) {
+          served.add('export');
+          return Response.ok('{}');
+        })
+        ..put('/api/v1/machine/state/<s>', (Request r, String s) {
+          served.add('PUT state');
+          return Response.ok('{}');
+        })
+        ..post('/api/v1/machine/profile', (Request r) {
+          served.add('POST profile');
+          return Response.ok('{}');
+        })
+        ..get(
+          '/ws/v1/machine/raw',
+          admittedWebSocketHandler((channel, _) {
+            served.add('raw');
+            channel.sink.add('raw');
+          }),
+        );
+      final tokens = ProxyTokenService(skinToken: 'skin-token')
+        ..registerToken(
+          _managerToken,
+          const ProxyCaller(
+            id: 'api:manager',
+            scopes: {ProxyTokenService.scopeExtensionsManage},
+          ),
+        );
+      server = await shelf_io.serve(
+        buildWebServerHandler(
+          routes.call,
+          proxyTokenService: tokens,
+          requireExtensionManagementAuthorization: () async => protectedMode,
+          browserOrigins: ExtensionManagementBrowserOrigins(
+            apiListenerPort: () => server.port,
+            pagePorts: () => const {_skinPort},
+            deviceAddresses: () async => const {},
+            allowedHostNames: () => allowedNames,
+          ),
+        ),
+        InternetAddress.loopbackIPv4,
+        0,
+      );
+      addTearDown(() => server.close(force: true));
+    });
+
+    Future<HttpClientResponse> request(
+      String method,
+      String path, {
+      Map<String, String> headers = const {},
+      String? body,
+    }) async {
+      final client = HttpClient();
+      addTearDown(client.close);
+      final request = await client.open(method, '127.0.0.1', server.port, path);
+      headers.forEach(request.headers.set);
+      if (body != null) request.write(body);
+      final response = await request.close();
+      await response.drain<void>();
+      return response;
+    }
+
+    Future<WebSocket> openRaw(Map<String, String> headers) async {
+      final socket = await WebSocket.connect(
+        'ws://127.0.0.1:${server.port}/ws/v1/machine/raw',
+        headers: headers,
+      );
+      addTearDown(socket.close);
+      return socket;
+    }
+
+    const foreign = 'https://evil.example';
+    const skin = 'http://localhost:$_skinPort';
+
+    test('a foreign preflight is refused without a CORS grant', () async {
+      final response = await request(
+        'OPTIONS',
+        '/api/v1/machine/state/espresso',
+        headers: {'origin': foreign, 'access-control-request-method': 'PUT'},
+      );
+      expect(response.statusCode, 403);
+      expect(response.headers.value('access-control-allow-origin'), isNull);
+      expect(
+        response.headers.value('access-control-allow-credentials'),
+        isNull,
+      );
+    });
+
+    test('a foreign text/plain POST never reaches the handler', () async {
+      final response = await request(
+        'POST',
+        '/api/v1/machine/profile',
+        headers: {'origin': foreign, 'content-type': 'text/plain'},
+        body: '{}',
+      );
+      expect(response.statusCode, 403);
+      expect(served, isEmpty);
+    });
+
+    test('a foreign WebSocket upgrade is refused', () async {
+      await expectLater(
+        openRaw({'origin': foreign}),
+        throwsA(isA<WebSocketException>()),
+      );
+      expect(served, isEmpty);
+    });
+
+    test('a cross-site navigation is refused', () async {
+      final response = await request(
+        'PUT',
+        '/api/v1/machine/state/espresso',
+        headers: const {
+          'sec-fetch-site': 'cross-site',
+          'sec-fetch-mode': 'navigate',
+        },
+      );
+      expect(response.statusCode, 403);
+      expect(served, isEmpty);
+      final typed = await request(
+        'PUT',
+        '/api/v1/machine/state/espresso',
+        headers: const {'sec-fetch-site': 'none'},
+      );
+      expect(typed.statusCode, 200);
+      expect(served, ['PUT state']);
+    });
+
+    test('X-Forwarded-Host and Forwarded cannot pass the host check', () async {
+      for (final forwarded in [
+        {'x-forwarded-host': '127.0.0.1:${server.port}'},
+        {'forwarded': 'host=127.0.0.1:${server.port}'},
+      ]) {
+        final plain = await request(
+          'PUT',
+          '/api/v1/machine/state/espresso',
+          headers: {
+            'host': 'rebind.attacker.example:${server.port}',
+            'sec-fetch-site': 'same-origin',
+          },
+        );
+        expect(plain.statusCode, 403);
+        final forged = await request(
+          'PUT',
+          '/api/v1/machine/state/espresso',
+          headers: {
+            'host': 'rebind.attacker.example:${server.port}',
+            'sec-fetch-site': 'same-origin',
+            ...forwarded,
+          },
+        );
+        expect(forged.statusCode, 403, reason: '$forwarded');
+        await expectLater(
+          openRaw({
+            'host': 'rebind.attacker.example:${server.port}',
+            'origin': 'http://rebind.attacker.example:${server.port}',
+            ...forwarded,
+          }),
+          throwsA(isA<WebSocketException>()),
+        );
+      }
+      expect(served, isEmpty);
+    });
+
+    test('a rebound host name is refused for a browser', () async {
+      final read = await request(
+        'PUT',
+        '/api/v1/machine/state/espresso',
+        headers: {
+          'host': 'rebind.attacker.example:${server.port}',
+          'origin': 'http://rebind.attacker.example:${server.port}',
+        },
+      );
+      expect(read.statusCode, 403);
+      await expectLater(
+        openRaw({
+          'host': 'rebind.attacker.example:${server.port}',
+          'origin': 'http://rebind.attacker.example:${server.port}',
+        }),
+        throwsA(isA<WebSocketException>()),
+      );
+      expect(served, isEmpty);
+    });
+
+    test('the device skin origin and originless clients work', () async {
+      final preflight = await request(
+        'OPTIONS',
+        '/api/v1/machine/state/espresso',
+        headers: {'origin': skin, 'access-control-request-method': 'PUT'},
+      );
+      expect(preflight.statusCode, 200);
+      expect(preflight.headers.value('access-control-allow-origin'), skin);
+      final write = await request(
+        'PUT',
+        '/api/v1/machine/state/espresso',
+        headers: {'origin': skin},
+      );
+      expect(write.statusCode, 200);
+      final plain = await request(
+        'POST',
+        '/api/v1/machine/profile',
+        headers: {'host': 'decaid.local:${server.port}'},
+        body: '{}',
+      );
+      expect(plain.statusCode, 200);
+      for (final headers in [
+        {'origin': skin},
+        <String, String>{},
+      ]) {
+        final socket = await openRaw(headers);
+        expect(await socket.first, 'raw', reason: '$headers');
+      }
+      expect(served, ['PUT state', 'POST profile', 'raw', 'raw']);
+    });
+
+    test('a rebound GET without browser headers is refused', () async {
+      final noSignals = await request(
+        'GET',
+        '/api/v1/data/export',
+        headers: {'host': 'rebind.attacker.example:${server.port}'},
+      );
+      expect(noSignals.statusCode, 403);
+      final numeric = await request(
+        'GET',
+        '/api/v1/data/export',
+        headers: {'host': '192.168.12.64:${server.port}'},
+      );
+      expect(numeric.statusCode, 200);
+      expect(served, ['export']);
+    });
+
+    test('only numeric, local and allow-listed hosts are answered', () async {
+      allowedNames = {'decaid.lan'};
+      for (final host in [
+        '127.0.0.1',
+        '[::1]',
+        'localhost',
+        'decaid.local',
+        'decaid.lan',
+      ]) {
+        final response = await request(
+          'GET',
+          '/api/v1/data/export',
+          headers: {'host': '$host:${server.port}'},
+        );
+        expect(response.statusCode, 200, reason: host);
+      }
+      for (final host in ['rebind.attacker.example', 'other.lan']) {
+        final get = await request(
+          'GET',
+          '/api/v1/data/export',
+          headers: {'host': '$host:${server.port}'},
+        );
+        expect(get.statusCode, 403, reason: host);
+        final post = await request(
+          'POST',
+          '/api/v1/machine/profile',
+          headers: {'host': '$host:${server.port}'},
+          body: '{}',
+        );
+        expect(post.statusCode, 403, reason: host);
+        await expectLater(
+          openRaw({'host': '$host:${server.port}'}),
+          throwsA(isA<WebSocketException>()),
+        );
+      }
+      expect(served, List.filled(5, 'export'));
+    });
+
+    test(
+      'a request without a Host header is refused on a wildcard bind',
+      () async {
+        final wildcard = await shelf_io.serve(
+          buildWebServerHandler(
+            (Request r) => Response.ok('{}'),
+            browserOrigins: ExtensionManagementBrowserOrigins(
+              apiListenerPort: () => null,
+              pagePorts: () => const {},
+              deviceAddresses: () async => const {},
+            ),
+          ),
+          InternetAddress.anyIPv4,
+          0,
+        );
+        addTearDown(() => wildcard.close(force: true));
+        for (final extra in ['', 'X-Forwarded-Host: 127.0.0.1\r\n']) {
+          final socket = await Socket.connect('127.0.0.1', wildcard.port);
+          addTearDown(socket.destroy);
+          socket.write('GET /api/v1/data/export HTTP/1.0\r\n$extra\r\n');
+          final reply = await utf8.decoder.bind(socket).join();
+          expect(reply, startsWith('HTTP/1.0 403'), reason: extra);
+        }
+      },
+    );
+
+    test('protected mode gates the raw socket on extensions:manage', () async {
+      protectedMode = true;
+      await expectLater(openRaw(const {}), throwsA(isA<WebSocketException>()));
+      await expectLater(
+        openRaw(const {'origin': skin}),
+        throwsA(isA<WebSocketException>()),
+      );
+      expect(served, isEmpty);
+      final socket = await openRaw(const {
+        'authorization': 'Bearer $_managerToken',
+      });
+      expect(await socket.first, 'raw');
+    });
   });
 }

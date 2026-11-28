@@ -10,6 +10,7 @@ import 'package:network_info_plus/network_info_plus.dart';
 import 'package:shelf_plus/shelf_plus.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:reaprime/src/services/webserver/listener_health.dart';
+import 'package:reaprime/src/services/webserver/request_host.dart';
 
 @immutable
 class SkinOverride {
@@ -242,6 +243,17 @@ class WebUIService implements SkinServingSelectionSource {
   void Function()? skinProxyTokenRevoker;
   String? Function(String path)? skinIdentityProvider;
   Iterable<String> Function(String path)? legacySkinPathsProvider;
+  Iterable<String> Function()? allowedHostNamesProvider;
+
+  /// The DNS names, besides numeric, loopback and `.local` hosts, that the
+  /// skin and API servers answer: the `allowedHostNames` setting plus this
+  /// device's own host name.
+  Set<String> admittedHostNames() =>
+      hostNameAllowlist(allowedHostNamesProvider?.call() ?? const []);
+
+  late final Middleware _hostAdmission = admittedHostMiddleware(
+    admittedHostNames,
+  );
 
   Future<bool> _isDeviceAddress(String host) async {
     if (host == 'localhost' || host == '127.0.0.1' || host == '::1') {
@@ -287,15 +299,12 @@ class WebUIService implements SkinServingSelectionSource {
     return addresses;
   }
 
-  Future<String?> _skinApiUrl(Request request, int port) async {
-    final uri = request.requestedUri;
-    if (uri.scheme != 'http' || uri.port != port || uri.userInfo.isNotEmpty) {
-      return null;
-    }
-    if (!await _isDeviceHost(uri.host)) return null;
+  Future<String?> _skinApiUrl(RequestHost host, int port) async {
+    if ((host.port ?? 80) != port) return null;
+    if (!await _isDeviceHost(host.host)) return null;
     return Uri(
       scheme: 'http',
-      host: uri.host,
+      host: host.host,
       port: port,
       path: skinApiScriptPath,
     ).toString();
@@ -377,11 +386,11 @@ class WebUIService implements SkinServingSelectionSource {
             response.headers.containsKey('content-encoding')) {
           return response;
         }
-        final scriptUrl = await _skinApiUrl(request, this.port);
+        final host = directRequestHost(request);
+        if (host == null) return response;
+        final scriptUrl = await _skinApiUrl(host, this.port);
         if (scriptUrl == null) return response;
-        final token = await _isDeviceAddress(request.requestedUri.host)
-            ? skinProxyToken
-            : null;
+        final token = await _isDeviceAddress(host.host) ? skinProxyToken : null;
         final encoding = response.encoding ?? utf8;
         final body = await response.read().expand((chunk) => chunk).toList();
         final injected = injectSkinApiScriptTagBytes(
@@ -405,6 +414,7 @@ class WebUIService implements SkinServingSelectionSource {
     }
 
     final handler = const Pipeline()
+        .addMiddleware(_hostAdmission)
         .addMiddleware(logRequests())
         .addMiddleware(expirationModifier)
         .addMiddleware(skinApiInjector)
@@ -637,20 +647,51 @@ class WebUIService implements SkinServingSelectionSource {
     }
   }
 
+  Handler _redirectHandler(int Function() targetPort) =>
+      _hostAdmission((request) => _redirectResponse(request, targetPort()));
+
   Future<Response> _redirectResponse(Request request, int targetPort) async {
-    final uri = request.requestedUri;
-    if (uri.scheme != 'http' ||
-        uri.userInfo.isNotEmpty ||
-        !await _isDeviceHost(uri.host)) {
+    final direct = directRequestHost(request);
+    if (direct == null || !await _isDeviceHost(direct.host)) {
       return Response.notFound('Not found');
     }
+    final host = await _numericEntryHost(request, direct.host) ?? direct.host;
+    final location = request.requestedUri.replace(
+      scheme: 'http',
+      host: host,
+      port: targetPort,
+    );
     return Response(
       HttpStatus.temporaryRedirect,
       headers: {
-        HttpHeaders.locationHeader: uri.replace(port: targetPort).toString(),
+        HttpHeaders.locationHeader: location.toString(),
         HttpHeaders.cacheControlHeader: 'no-store',
       },
     );
+  }
+
+  Future<String?> _numericEntryHost(Request request, String host) async {
+    if (host.toLowerCase() == 'localhost' ||
+        InternetAddress.tryParse(host) != null) {
+      return null;
+    }
+    final info = request.context['shelf.io.connection_info'];
+    if (info is! HttpConnectionInfo) return null;
+    try {
+      final peer = info.remoteAddress;
+      final device = await currentBrowserOriginAddresses();
+      final named = <String>{};
+      for (final address in await _resolvedAddresses(host)) {
+        final numeric = _numericAddress(address);
+        if (numeric != null && device.contains(numeric)) named.add(numeric);
+      }
+      final candidates = named.isEmpty ? device : named;
+      return canonicalPageHost(peer: peer, addresses: candidates) ??
+          onLinkPageHost(peer: peer, addresses: candidates);
+    } catch (e) {
+      _log.fine('Could not pick a numeric skin address: $e');
+      return null;
+    }
   }
 
   Future<void> _serveEntryPoint(
@@ -664,8 +705,9 @@ class WebUIService implements SkinServingSelectionSource {
     await _entryServer?.close(force: true);
     if (version != _lifecycleVersion || (isCancelled?.call() ?? false)) return;
     final listenerId = newListenerIdentity();
+    final redirect = _redirectHandler(() => port);
     Future<Response> boundHandler(Request request) async {
-      final response = await _redirectResponse(request, port);
+      final response = await redirect(request);
       return response.change(
         headers: {...response.headersAll, listenerIdentityHeader: listenerId},
       );
@@ -719,7 +761,7 @@ class WebUIService implements SkinServingSelectionSource {
       HttpServer? server;
       try {
         server = await _bindSkinPort(
-          (request) => _redirectResponse(request, _entryPort),
+          _redirectHandler(() => _entryPort),
           aliasPort,
         );
       } catch (e) {

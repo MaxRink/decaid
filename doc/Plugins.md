@@ -165,7 +165,7 @@ A Decaid plugin consists of two required files:
 - **drivers**: Device classes the plugin may register. Each declaration has a plugin-local `id` and a `type`: `sensor`, `scale`, or `grinder`. A manifest may declare at most 8 drivers. Driver declarations authorize registration; they do not grant transport access. For example, a WebSocket-backed device also needs `network.websocket`. A driver may declare up to 8 `surfaces`, each with a unique safe `id`, `role` (`settings` or `diagnostics`), and a safe non-reserved `endpoint` naming a declared same-plugin HTTP endpoint. At most one surface has role `settings`. Surfaces require the `api` permission; optional `label` is display text. Plugins cannot supply URLs, authority, credentials, or routes through surfaces. Surface endpoints must not contain unpaired UTF-16 surrogates, which cannot round-trip through URI encoding; valid surrogate pairs remain supported.
 - **surfaces** (optional): Plugin-level pages with role `setup`, `settings` or `diagnostics`, not tied to a device. See [Plugin surfaces](#plugin-surfaces).
 - **discovery** (optional): Local-network service types the plugin may browse with `host.discovery`. See [Network discovery](#network-discovery-hostdiscovery).
-- **settings**: User-configurable options with `type` (`string`, `number`, `boolean`, `enum`), an optional `label` giving the setting a human-friendly name, an optional `description` explaining what the setting does, an optional `default`, and an optional `secure` flag for credentials such as passwords. Enum `values` are a JSON array of strings. Secure values use platform credential storage, are supplied in memory to `onLoad(settings)`, and are never returned by the REST API.
+- **settings**: User-configurable options with `type` (`string`, `number`, `boolean`, `enum`), an optional `label` giving the setting a human-friendly name, an optional `description` explaining what the setting does, an optional `default`, and an optional `secure` flag for credentials such as passwords. Enum `values` are a JSON array of strings. Secure values use platform credential storage, are supplied in memory to `onLoad(settings)`, and are never returned by the REST API. They belong to the code they were entered for: new code receives them only when the user keeps them (see [Replacing an installed plugin](#replacing-an-installed-plugin)).
 
   `GET /api/v1/plugins` returns this schema verbatim under `settings`, so a skin can render a settings form — labels, help text and defaults included — without reading the plugin's repository. `GET /api/v1/plugins/:id/settings` returns the stored values only.
 
@@ -490,7 +490,7 @@ origin check and are judged by the credential policy instead.
 
 | Routes | What they are |
 |--------|---------------|
-| The 18 plugin and skin routes decaid#1031 put behind `extensions:manage` (and that need a token only while extension management protection is ON): those marked **yes** in [Plugin Lifecycle Management](#plugin-lifecycle-management-rest-api) and the skin routes in `doc/Skins.md` (`doc/Api.md` lists them all) | The plugin and skin management operations |
+| The 18 plugin and skin routes decaid#1031 put behind `extensions:manage` (and that need a token only while extension management protection is ON): those marked **yes** in [Plugin Lifecycle Management](#plugin-lifecycle-management-rest-api) and the skin routes in `doc/Skins.md` (`doc/Api.md` lists them all), except `PUT /api/v1/plugins/:id/machine-control`, which only the user changes | The plugin and skin management operations |
 | `GET /api/v1/plugins`, `GET /api/v1/plugins/{id}/settings` | Reading plugins and their settings |
 | `GET /api/v1/webui/skins`, `GET /api/v1/webui/skins/default`, `GET /api/v1/webui/skins/{id}`, `GET /api/v1/webui/server/status` | Reading skins and the skin server |
 | `POST /api/v1/settings` with a JSON object holding only `defaultSkinId` or `automaticUpdateCheck` | The settings that choose the default skin and turn automatic update checks on or off (plugin and skin updates are installed; app updates are only offered) |
@@ -787,11 +787,11 @@ the network.
 ### Machine control grant
 
 A plugin `fetch` that writes (any method but `GET`/`HEAD`) to the host's own
-`/api/v1/machine/*` routes, for example
-`PUT /api/v1/machine/state/espresso`, reaches the API only after the user has
-allowed that plugin to control the machine. There is no manifest permission for
-it: a stock Decaid rejects unknown permission names, so the grant is a
-host-side, per-plugin setting the user turns on.
+`/api/v1/machine/*` routes, for example `PUT /api/v1/machine/state/espresso`,
+reaches the API only after the user has allowed that plugin to control the
+machine. There is no manifest permission for it: a stock Decaid rejects unknown
+permission names, so the grant is a host-side, per-plugin setting the user turns
+on.
 
 - Without the grant the call does not reach the API. `fetch` resolves (it does
   not reject) with `status` 403 and a JSON body
@@ -805,16 +805,30 @@ host-side, per-plugin setting the user turns on.
   `{"granted": true}` or `{"granted": false}` (an extension-management route:
   `extensions:manage` token while protection is ON). `GET /api/v1/plugins`
   reports it as `machineControl`.
-- The grant is stored per plugin id. It survives restarts and installed
-  updates, and is cleared when the plugin is removed or a source write changes
-  its `plugin.js`.
+- No plugin can change a grant: `host.localApi` refuses the route, and a plugin
+  `fetch` to it on the host answers 403 `machine_control_forbidden`, whatever
+  the protection mode.
+- The host checks the grant of the plugin whose realm sent the request (see
+  [Plugin isolation](#plugin-isolation)); nothing in the request names the
+  plugin, so one plugin cannot use another plugin's grant.
+- The grant is stored per plugin id and survives restarts. It is cleared when
+  the plugin is removed, and whenever its `plugin.js` changes, by a source write
+  or a package install or update; an update that keeps the same `plugin.js`
+  keeps the grant. New code asks again.
 - Firmware (`/api/v1/machine/firmware`, `/api/v1/machine/firmware/apply`) is
   refused for every plugin, with or without the grant, as 403
-  `{"code": "machine_control_forbidden"}`. `host.transport` still refuses the
-  raw machine socket `/ws/v1/machine/raw` and raw `tcp`/`tls` to the API port
-  for every plugin.
-- The target counts as the host when it resolves to loopback, `0.0.0.0` or an
-  address of this device, on the API port.
+  `{"code": "machine_control_forbidden"}`. So is a `fetch` to the raw machine
+  socket `/ws/v1/machine/raw`. `host.transport` refuses a WebSocket to
+  `/ws/v1/machine/raw` on the API port when the host is this device or a host
+  name, and raw `tcp`/`tls` connections to this device's API port, for every
+  plugin (`machine_control_forbidden`).
+- The target counts as the host when the connection it opened goes to loopback,
+  `0.0.0.0` or an address of this device, on the API port. The check uses the
+  peer address of the open connection, before the request is sent, so a host
+  name that resolves differently on a second lookup cannot slip past it.
+- Other routes that act on the machine indirectly, such as `PUT /api/v1/workflow`
+  (which uploads the workflow's profile) or the scale and grinder routes, are
+  not machine routes and need no grant.
 - The grant does not let a plugin start a machine that requires starts at the
   group head. When `GET /api/v1/machine/info` reports `"GHC": true` (an active
   group head controller), DE1 firmware ignores a remote start of `espresso`,
@@ -1671,6 +1685,14 @@ The `request` object:
 | `body` | any | Parsed JSON request body, `null` when the body is empty |
 | `query` | object | Query parameters, percent-decoded |
 
+Change state only on `POST` (or `PUT`/`DELETE`), never on `GET`. Over plain
+HTTP a page on another site can send a `GET` to the device with no browser
+headers at all (an `<img>` with `referrerpolicy="no-referrer"`), which Decaid
+cannot tell from a non-browser client, so a `GET` that uploads, saves or
+connects something can be triggered blind. A browser always sends `Origin` on a
+`POST`, and Decaid refuses foreign origins. Check `request.method` and answer
+`405` to a `GET` on an endpoint that writes.
+
 Plugin-defined endpoints need no token, and Decaid does not authenticate them.
 When a request carries an `Authorization: Bearer` token that Decaid itself
 recognises (an account-proxy or `extensions:manage` token), Decaid removes that
@@ -2094,12 +2116,34 @@ it in Decaid UI.
   server addresses or credentials from `host.storage`; keep them in plugin
   settings, whose POST route is gated and whose secure values are never returned
 - No filesystem access beyond the plugin's own directory
+- Secure settings are bound to the code and source they were entered for. No
+  install, source write or update hands them to different code, or adds a
+  permission or device driver, without a decision from the user on the Plugins
+  screen or from an `extensions:manage` credential; see
+  [Replacing an installed plugin](#replacing-an-installed-plugin). What this
+  does not cover in compatibility mode (protection OFF): a client on the LAN
+  can still replace the code of a plugin that holds no secrets, or replace
+  code and so clear a plugin's secrets. If the user then enters the
+  credentials again, they go to the replaced code. Check where a plugin came
+  from before configuring it again; turning on
+  **Settings → Security → "Require authorization for extension management"**
+  closes this, because every replacement then needs a token
+- The review compares permissions and device drivers only. Other things a
+  manifest declares, such as new `api` endpoints and plugin surfaces, are not
+  reviewed: they act within the permissions the plugin already holds. Nor are
+  changes to a grinder driver's `controls` or a scale driver's `capabilities`
+  when the driver's id, type and BLE matcher stay the same: they act on a
+  device the plugin already holds
 - Apart from the machine control limits below, `fetch` and `host.transport`
   are not limited by destination, so they can reach Decaid's own API like any
   client on the network. They carry no
   authority: the plugin and skin management routes answer 401 to them. Only
   `host.localApi`, with the `manage.extensions` permission, carries that
   authority, and only for the plugin's current loaded generation
+- Writes to the host's own `/api/v1/machine/*` routes are refused unless the
+  user granted the plugin [machine control](#machine-control-grant), and
+  firmware, the raw machine socket and raw `tcp`/`tls` to the host API port are
+  refused for every plugin
 - Each loaded plugin runs in its own JavaScript realm: a separate engine
   instance with its own global object, built-ins, host bridge, timers and
   pending requests (see [Plugin isolation](#plugin-isolation)). A plugin cannot
@@ -2135,6 +2179,7 @@ A plugin can be installed from four sources:
 | GitHub branch | yes | new commit on the branch |
 | Local ZIP | no | none, it is a snapshot |
 | Local folder | no | none, it is a snapshot |
+| Source write (`PUT /api/v1/plugins/:id/source`) | no | none, it is local code |
 
 Every install goes through the same validation: the package must resolve to a
 single plugin root holding both `manifest.json` and `plugin.js`, the manifest
@@ -2145,7 +2190,14 @@ root is rejected rather than guessed.
 Provenance for a tracked install is stored in a Decaid-owned
 `.rea_source.json` inside the plugin directory. It is not part of your plugin
 package, it is rewritten on every install, and it disappears when the plugin is
-removed.
+removed. Provenance always describes the installed code: a source write or a
+local ZIP or folder install over a GitHub-installed plugin replaces it with a
+local kind (`local_source`, `local_zip`, `local_folder`), so update checks stop
+tracking the old repository and never offer its code over the local one. Any
+pending update is dropped with it. Installing from GitHub again records that
+repository again. When a newer bundled copy replaces source-written code at
+startup, the `local_source` record is dropped so the bundled plugin is seeded
+with its canonical repository again.
 
 The Plugins page cogwheel menu provides **Refresh plugins**, **Check for
 updates**, and **Install plugin**. Installation opens the source choices:
@@ -2208,7 +2260,10 @@ skin updates, and on demand from the Plugins settings screen or
 - the swap is transactional. The plugin is unloaded only once the replacement is
   ready, and a failed copy or a failed reload restores the previous files,
   manifest and running plugin;
-- settings, secure settings and the auto-load preference survive an update. A
+- settings and the auto-load preference survive an update. Secure settings
+  survive an update that keeps `plugin.js` unchanged, or one approved with the
+  choice to keep them; see
+  [Replacing an installed plugin](#replacing-an-installed-plugin). A
   running plugin is restarted on the new version; a disabled one stays disabled;
 - one plugin's failure never stops the others; the failure is recorded in
   `lastError` when its metadata is writable. Diagnostic write failures are logged
@@ -2251,45 +2306,34 @@ several zip assets asks for an explicit choice.
 
 ### Permission escalation
 
-An automatic update installs only when the candidate manifest requests the same
-permissions as the installed version or fewer. If it asks for anything new, the
-update is not installed. It is recorded as a `pendingUpdate` carrying the
-candidate version and the added permissions, shown in the Plugins settings
-screen and in `GET /api/v1/plugins`, and installed only after explicit approval:
+An update check, scheduled or manual, installs a candidate on its own only when
+its manifest requests the same permissions as the installed version or fewer
+and it would not hand the plugin's stored secure settings to new code. Anything
+else is not installed. It is recorded as a `pendingUpdate` carrying the
+candidate version, the added permissions and `handsOverSecureSettings`, shown in
+the Plugins settings screen and in `GET /api/v1/plugins`, and installed only
+after explicit approval:
 
 ```bash
 curl -X POST http://tablet:8080/api/v1/plugins/my.reaplugin/update/approve \
-  -H "Authorization: Bearer $TOKEN"
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"keepSecureSettings": true}'
 ```
 
-The background update check (the scheduled one that runs while automatic
-update checks are on) is stricter than a manual check from the Plugins screen
-or `POST /api/v1/plugins/update`:
-
-- it records a `pendingUpdate` instead of installing whenever the plugin has
-  stored secure settings (passwords, tokens), even if no permission is added,
-  so new code never receives those secrets without review. Such a pending
-  update has an empty `addedPermissions`;
-- it skips plugins installed from a GitHub branch entirely. A branch has no
-  release to review, so branch installs only move on a manual check.
-
-A REST install (`POST /api/v1/plugins/install/github-release` or
-`/github-branch`) whose package carries the id of an already installed plugin
-is treated like a source write when the request has no `extensions:manage`
-credential: added permissions are refused with 409, and a changed `plugin.js`
-clears the plugin's stored secure settings and its
-[machine control grant](#machine-control-grant). Approving a pending update of
-a plugin that has stored secure settings needs the native Plugins screen or an
-`extensions:manage` credential in both modes; a request without one gets 403.
+The scheduled check (the one that runs while automatic update checks are on)
+also skips plugins installed from a GitHub branch: a branch has no release to
+review, so a branch install only moves on a manual check.
 
 A pending update can be approved by:
 
 - the user, in the Plugins settings screen;
-- a REST client sending a bearer token with the `extensions:manage` scope while
-  extension management protection is ON (see
-  [Authorization](#authorization)); without one the route answers 401, and with
-  a token of another scope 403. With protection OFF (the default) any client
-  can approve;
+- a REST client sending a bearer token with the `extensions:manage` scope (see
+  [Authorization](#authorization)). While protection is ON the route answers
+  401 without one and 403 with a token of another scope. While it is OFF (the
+  default) a client without the token can approve only an update that adds no
+  permission to a plugin without stored secure settings; anything else gets
+  403;
 - a plugin holding `manage.extensions`, through `host.localApi`. This includes
   approving its own pending update. That is the authority the user delegated
   when granting the permission, and it is why the permission carries a warning:
@@ -2329,6 +2373,61 @@ permission to an in-tree bundled plugin therefore lands without an approval step
 and without update provenance, and the permission-approval gate above applies only
 to plugins hosted in their own repository.
 
+### Replacing an installed plugin
+
+Everything that puts new code or a new manifest in place of an installed plugin
+goes through one review in `PluginLoaderService`: the Plugins screen installs
+(GitHub release, GitHub branch, ZIP, folder), the REST installs and
+`PUT /api/v1/plugins/:id/source`, update checks, and pending-update approval.
+The review compares the installed plugin with the candidate:
+
+- **Added permissions**: every permission in the candidate manifest that the
+  installed one lacks, `api`, `notifications`, `network.*`, `transport.ble` and
+  `manage.extensions` included. A device driver that is new, or whose type or
+  BLE matcher changed, counts as an added grant too, because it gives the
+  plugin access to devices it could not claim before. It is listed as
+  `driver:<id>` next to the permissions and approved the same way.
+- **Letter case**: an id that differs from an installed plugin's id only in
+  letter case is refused (400 on REST), because the plugin directory resolves
+  case-insensitively on macOS, iOS and Windows.
+- **Secure settings handed over**: the plugin has stored secure settings and the
+  candidate's `plugin.js` differs from the installed one, or the candidate comes
+  from a different repository than the one the plugin was installed from. A
+  plugin's identity is its code and where that code came from; the same id from
+  another owner is a new plugin as far as its secrets are concerned.
+
+A replacement that does neither installs without a question, so reloading the
+same code and same-code version bumps stay frictionless, and a first install of
+an id is never reviewed. Secure settings that a removed plugin left behind are
+cleared before a first install of the same id loads.
+
+Otherwise somebody allowed to decide has to:
+
+| Caller | Added permissions | Secure settings |
+|---|---|---|
+| Plugins screen (install over a plugin, **Review** of a pending update) | listed in a dialog; **Replace** or **Approve and update** grants them | kept only if **Let the new version use the stored passwords and tokens** is ticked; it starts unticked |
+| REST client with an `extensions:manage` credential | must be listed in `approvePermissions`, else `409` with `addedPermissions` | kept only with `"keepSecureSettings": true` |
+| REST client without a credential (compatibility mode) | `409` with `addedPermissions` and `"credentialRequired": true` | cleared before the new code loads; the response says `"secureSettingsCleared": true` |
+| Update check (scheduled, Plugins screen, `POST /api/v1/plugins/update`) | recorded as a `pendingUpdate` | recorded as a `pendingUpdate` with `handsOverSecureSettings` |
+
+Ordinary settings and the auto-load preference are kept either way. A refused
+replacement changes nothing, and a replacement that fails to load restores the
+previous files, the running plugin and the cleared secure settings. The only
+path outside the review is the app's own bundled copy, which replaces an older
+installed copy at startup because it ships with the app.
+
+What a plugin author sees: a new version can start without the passwords and
+tokens the previous one was given. Treat a missing secure setting as "not set
+up yet", ask for it, and do not assume an update inherits it. Releases that
+keep `plugin.js` byte-for-byte unchanged (for example a manifest-only change)
+keep their secure settings.
+
+What a user sees: an update of a plugin that holds passwords or tokens waits on
+the Plugins screen with **Review**, and installing a plugin over an existing
+one asks before it adds permissions or hands over stored secrets. Untick the
+choice, or answer a REST client's replacement, and the plugin has to be set up
+again.
+
 ## Plugin Lifecycle Management (REST API)
 
 Plugins can be managed via REST API. Routes marked **yes** in the Token column
@@ -2344,7 +2443,7 @@ OFF):
 | POST | `/api/v1/plugins/:id/enable` | yes | Load plugin + enable auto-load on startup |
 | POST | `/api/v1/plugins/:id/disable` | yes | Unload plugin + disable auto-load |
 | PUT | `/api/v1/plugins/:id/source` | yes | Create or overwrite `manifest.json` + `plugin.js` |
-| PUT | `/api/v1/plugins/:id/machine-control` | yes | Allow (`{"granted": true}`) or forbid machine control for the plugin |
+| PUT | `/api/v1/plugins/:id/machine-control` | yes | Allow (`{"granted": true}`) or forbid machine control for the plugin ([details](#machine-control-grant)) |
 | DELETE | `/api/v1/plugins/:id` | yes | Remove plugin (unload + delete files) |
 | POST | `/api/v1/plugins/install` | yes | Not supported (501); use the GitHub endpoints below |
 | POST | `/api/v1/plugins/install/github-release` | yes | Install from a GitHub release asset |
@@ -2379,8 +2478,8 @@ client. A malformed or wrong-scope credential is not an error while OFF either.
 
 A browser page is also refused with 403 when its `Origin` is not the device's
 own, before any handler work, in both modes and whatever credential it carries:
-`{"error":"Extension management is not allowed from this browser origin"}`.
-The routes it covers, the ports and addresses it trusts, the preflights it
+`{"error":"This API does not accept requests from this browser origin"}`, the
+same refusal every API route gives a foreign origin. The routes it covers, the ports and addresses it trusts, the preflights it
 refuses and the requests without an `Origin` that are unaffected are described
 in
 [Browser origins](Api.md#browser-origins).
@@ -2461,18 +2560,6 @@ Rules:
 - The update is partial. Only `manifest.json` and `plugin.js` are written; any
   other file in the plugin directory survives. Plugins that need new extra
   files still have to be installed from a directory.
-- Without an `extensions:manage` credential (a bearer with that scope, or a
-  `manage.extensions` plugin calling `host.localApi`), a write whose manifest
-  adds permissions to an installed plugin is rejected with 409: give the plugin new permissions
-  with a token, from the native Plugins screen, or through an install or
-  update that goes through approval. This applies in both modes: in
-  compatibility mode no token is needed for the route itself, but one is
-  still needed to add permissions.
-- Without that credential, a write whose `plugin.js` differs from the installed
-  one also clears the plugin's stored secure settings (passwords, tokens), so
-  replacement code never receives secrets the user entered for the old code;
-  the plugin has to be configured again. Ordinary settings are kept, and a
-  manifest-only write keeps secure settings too.
 - Downgrades are rejected with 409. The submitted version must be greater than
   or equal to the installed version; installing an older version requires
   removing the plugin first. Versions compare as semantic versions, so
@@ -2483,7 +2570,17 @@ Rules:
   and running plugin are restored and the request returns 500.
 - A plugin that was not loaded stays unloaded, and its new source is not
   executed or validated.
-- Stored settings and the auto-load preference are preserved.
+- The plugin's provenance becomes `local_source`: the write replaces any
+  GitHub release or branch record and its pending update, so later update
+  checks leave the plugin alone until it is installed from GitHub again.
+- Ordinary settings and the auto-load preference are preserved. Replacing an
+  installed plugin goes through
+  [the replacement review](#replacing-an-installed-plugin): a manifest that
+  adds permissions needs an `extensions:manage` credential and
+  `approvePermissions` (409 otherwise), and a changed `plugin.js` clears the
+  plugin's secure settings unless the credentialed request sets
+  `keepSecureSettings`. The same rules apply in compatibility mode, where the
+  route itself needs no token.
 - Overwriting a bundled plugin holds only until the next app start, where the
   bundled copy wins if its version is higher.
 - Updates, installs, removals, loads, and unloads for one plugin id are

@@ -45,6 +45,8 @@ abstract class SettingsService {
   Future<void> setRequireExtensionManagementAuthorization(bool value);
   Future<bool> automaticUpdateCheck();
   Future<void> setAutomaticUpdateCheck(bool value);
+  Future<List<String>> allowedHostNames();
+  Future<void> setAllowedHostNames(List<String> names);
   Future<UpdateChannel> updateChannel();
   Future<void> setUpdateChannel(UpdateChannel channel);
   Future<DateTime?> lastUpdateCheckTime();
@@ -332,6 +334,15 @@ class SharedPreferencesSettingsService extends SettingsService {
   @override
   Future<void> setAutomaticUpdateCheck(bool value) async {
     await prefs.setBool(SettingsKeys.automaticUpdateCheck.name, value);
+  }
+
+  @override
+  Future<List<String>> allowedHostNames() async =>
+      await prefs.getStringList(SettingsKeys.allowedHostNames.name) ?? const [];
+
+  @override
+  Future<void> setAllowedHostNames(List<String> names) async {
+    await prefs.setStringList(SettingsKeys.allowedHostNames.name, names);
   }
 
   @override
@@ -756,6 +767,7 @@ enum SettingsKeys {
   enableSimulatedWebViews,
   mockDe1GhcPresent,
   requireExtensionManagementAuthorization,
+  allowedHostNames,
 }
 
 enum SimulatedDevicesTypes { machine, scale, sensor, bengle, replay }

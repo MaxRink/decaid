@@ -492,6 +492,25 @@ void main() {
         expect(response.statusCode, 200);
         expect(connectionManager.lastScanReport, isNull);
       });
+
+      test('POST scans with the same parameters as the GET form', () async {
+        final discovery = await handler(
+          Request(
+            'POST',
+            Uri.parse('http://localhost/api/v1/devices/scan?connect=false'),
+          ),
+        );
+        expect(discovery.statusCode, 200);
+        expect(mockDiscovery.scanCallCount, 1);
+        expect(connectionManager.lastScanReport, isNull);
+
+        final connecting = await handler(
+          Request('POST', Uri.parse('http://localhost/api/v1/devices/scan')),
+        );
+        expect(connecting.statusCode, 200);
+        expect(mockDiscovery.scanCallCount, 2);
+        expect(connectionManager.lastScanReport, isNotNull);
+      });
     });
 
     group('deferred scans during the post-wake scale lease', () {

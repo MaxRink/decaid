@@ -37,7 +37,7 @@ const _trustedOrigin = 'http://127.0.0.1:$_trustedPagePort';
 const _origin = _trustedOrigin;
 const _untrustedOrigin = 'https://evil.example';
 const _originRefused =
-    'Extension management is not allowed from this browser origin';
+    'This API does not accept requests from this browser origin';
 const _bundledPluginIds = [
   'time-to-ready.reaplugin',
   'visualizer.reaplugin',
@@ -933,44 +933,59 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
           expect(invalid.error, 'manifest object is required');
         });
 
-        test('PUT source adds permissions only with a manager token', () async {
-          const id = 'growing.reaplugin';
-          final created = await send(
-            'PUT',
-            '/api/v1/plugins/$id/source',
-            authorization: bearer(),
-            body: {
-              'manifest': _manifestJson(id, permissions: ['log']),
-              'plugin': _echoPluginJs(id),
-            },
-          );
-          expect(created.status, 200, reason: '$created');
-
-          if (!required) {
-            final tokenless = await send(
+        test(
+          'PUT source adds permissions only with an approving manager token',
+          () async {
+            const id = 'growing.reaplugin';
+            final created = await send(
               'PUT',
               '/api/v1/plugins/$id/source',
+              authorization: bearer(),
+              body: {
+                'manifest': _manifestJson(id, permissions: ['log']),
+                'plugin': _echoPluginJs(id),
+              },
+            );
+            expect(created.status, 200, reason: '$created');
+
+            if (!required) {
+              final tokenless = await send(
+                'PUT',
+                '/api/v1/plugins/$id/source',
+                body: {
+                  'manifest': _manifestJson(id, version: '1.0.1'),
+                  'plugin': _echoPluginJs(id),
+                },
+              );
+              expect(tokenless.status, 409, reason: '$tokenless');
+              expect(service.getPluginManifest(id)?.version, '1.0.0');
+            }
+
+            final withToken = await send(
+              'PUT',
+              '/api/v1/plugins/$id/source',
+              authorization: 'Bearer $managerToken',
               body: {
                 'manifest': _manifestJson(id, version: '1.0.1'),
                 'plugin': _echoPluginJs(id),
               },
             );
-            expect(tokenless.status, 409, reason: '$tokenless');
-            expect(service.getPluginManifest(id)?.version, '1.0.0');
-          }
+            expect(withToken.status, 409, reason: 'approvePermissions missing');
 
-          final withToken = await send(
-            'PUT',
-            '/api/v1/plugins/$id/source',
-            authorization: 'Bearer $managerToken',
-            body: {
-              'manifest': _manifestJson(id, version: '1.0.1'),
-              'plugin': _echoPluginJs(id),
-            },
-          );
-          expect(withToken.status, 200, reason: '$withToken');
-          expect(service.getPluginManifest(id)?.version, '1.0.1');
-        });
+            final approved = await send(
+              'PUT',
+              '/api/v1/plugins/$id/source',
+              authorization: 'Bearer $managerToken',
+              body: {
+                'manifest': _manifestJson(id, version: '1.0.1'),
+                'plugin': _echoPluginJs(id),
+                'approvePermissions': ['api'],
+              },
+            );
+            expect(approved.status, 200, reason: '$approved');
+            expect(service.getPluginManifest(id)?.version, '1.0.1');
+          },
+        );
 
         test(
           'enable, disable, settings and delete apply; unknown ids are 404',
@@ -1117,10 +1132,17 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
             'proxy.decent_api',
           ]);
 
+          if (!required) {
+            final tokenless = await send(
+              'POST',
+              '/api/v1/plugins/$_releasedId/update/approve',
+            );
+            expect(tokenless.status, 403, reason: '$tokenless');
+          }
           final approved = await send(
             'POST',
             '/api/v1/plugins/$_releasedId/update/approve',
-            authorization: bearer(),
+            authorization: 'Bearer $managerToken',
           );
           expect(approved.status, 200, reason: '$approved');
           final after = await listedPlugin(_releasedId);
@@ -1460,7 +1482,6 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
             id,
             manifestJson: _manifestJson(id),
             pluginJs: _echoPluginJs(id),
-            authorized: true,
           );
           final reply = await send(
             'DELETE',
@@ -2017,7 +2038,11 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
             'POST',
             '/api/v1/plugins/$_idleId/enable',
             authorization: bearer(),
-            headers: const {'origin': origin},
+            headers: {
+              'origin': origin,
+              // An admitted Host, so the origin check is what refuses.
+              'host': 'localhost:${lanServer.port}',
+            },
             to: lanServer,
             host: peer.address,
           );
@@ -2089,7 +2114,7 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
             headers: forged,
           );
           expect(reply.status, 403, reason: '$reply');
-          expect(reply.error, _originRefused);
+          expect(reply.error, untrustedBrowserHostError);
 
           final raw = await rawSocketRequest(
             InternetAddress.loopbackIPv4,
@@ -2274,7 +2299,7 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
         });
 
         test('an untrusted preflight for a plugin-defined route is '
-            'is refused without a CORS grant', () async {
+            'refused without a CORS grant', () async {
           for (final (method, path) in [
             ('POST', '/api/v1/plugins/$_echoId/echo'),
             ('GET', '/api/v1/plugins/$_echoId/status'),
@@ -2349,32 +2374,23 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
           }
         });
 
-        test('an untrusted origin may still send reads but gets no CORS '
-            'grant, and cannot send writes', () async {
+        test('an untrusted origin cannot read or write read-only, '
+            'plugin-defined and unrelated routes', () async {
           for (final (method, path) in [
             ('GET', '/api/v1/plugins'),
             ('GET', '/api/v1/plugins/$_echoId/echo'),
             ('GET', '/api/v1/webui/server/status'),
+            ('POST', '/api/v1/plugins/$_echoId/echo'),
           ]) {
             final reply = await send(
               method,
               path,
               headers: {'origin': _untrustedOrigin},
             );
-            expect(
-              reply.status,
-              isNot(anyOf(401, 403)),
-              reason: '$method $path -> $reply',
-            );
+            expect(reply.status, 403, reason: '$method $path -> $reply');
+            expect(reply.error, crossOriginRequestError);
             expect(reply.headers.value('access-control-allow-origin'), isNull);
           }
-          final write = await send(
-            'POST',
-            '/api/v1/plugins/$_echoId/echo',
-            headers: {'origin': _untrustedOrigin},
-          );
-          expect(write.status, 403, reason: '$write');
-          expect(write.error, crossOriginRequestError);
         });
       });
     }
@@ -2621,7 +2637,6 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
           id,
           manifestJson: visualizerManifest(),
           pluginJs: _echoPluginJs(id),
-          authorized: true,
         );
       });
 
@@ -2908,8 +2923,14 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
               'X-Forwarded-Host': 'localhost',
             },
           );
-          expect(reply.status, 401, reason: '${endpoint.name}: ${reply.body}');
-          expect(reply.body, contains(_missingBearer), reason: endpoint.name);
+          // A browser request carrying forwarding headers is refused before
+          // the credential check.
+          expect(reply.status, 403, reason: '${endpoint.name}: ${reply.body}');
+          expect(
+            reply.body,
+            contains(untrustedBrowserHostError),
+            reason: endpoint.name,
+          );
           expect(
             service.isPluginLoaded(_idleId),
             isFalse,

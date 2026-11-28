@@ -105,7 +105,8 @@ void main() {
 
   test('dispatches every plugin and skin management route', () async {
     final routes = [
-      ...extensionManagementRoutes,
+      for (final route in extensionManagementRoutes)
+        if (!route.path.endsWith('/machine-control')) route,
       ...extensionManagementReadRoutes,
     ];
     for (final route in routes) {
@@ -122,6 +123,26 @@ void main() {
             '${route.method} ${route.path.replaceAll('<id>', 'a.reaplugin')}',
       ),
     );
+  });
+
+  test('never changes a machine-control grant', () async {
+    for (final id in ['a.reaplugin', 'self.reaplugin']) {
+      await expectLater(
+        send(
+          '/api/v1/plugins/$id/machine-control',
+          method: 'PUT',
+          body: {'granted': true},
+        ),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.message,
+            'message',
+            contains('machine-control grants'),
+          ),
+        ),
+      );
+    }
+    expect(received, isEmpty);
   });
 
   test('rejects every route outside plugin and skin management', () async {
@@ -221,10 +242,18 @@ void main() {
   test('refuses the security setting before dispatch in both modes', () async {
     for (final protect in [false, true]) {
       final dispatched = <String>[];
-      bridge.handler = buildWebServerHandler((request) {
-        dispatched.add('${request.method} /${request.url.path}');
-        return Response.ok('dispatched');
-      }, requireExtensionManagementAuthorization: () async => protect);
+      bridge.handler = buildWebServerHandler(
+        (request) {
+          dispatched.add('${request.method} /${request.url.path}');
+          return Response.ok('dispatched');
+        },
+        requireExtensionManagementAuthorization: () async => protect,
+        browserOrigins: ExtensionManagementBrowserOrigins(
+          apiListenerPort: () => 8080,
+          pagePorts: () => const {},
+          deviceAddresses: () async => const {},
+        ),
+      );
 
       for (final value in [true, false]) {
         for (final body in <Object>[

@@ -219,7 +219,9 @@ void main() {
       );
 
       await expectLater(
-        Future<Response>.sync(() => handler(_request('10.0.0.1'))),
+        Future<Response>.sync(
+          () => handler(_request('10.0.0.1', origin: null)),
+        ),
         throwsA(isA<HijackException>()),
       );
       await Future<void>.delayed(Duration.zero);
@@ -291,11 +293,12 @@ Request _request(
   String client, {
   String method = 'GET',
   String path = '/api/v1/info',
+  String? origin = 'http://localhost',
 }) {
   return Request(
     method,
     Uri.parse('http://localhost$path'),
-    headers: {'origin': 'http://localhost'},
+    headers: {'origin': ?origin},
     context: {'shelf.io.connection_info': _FakeConnectionInfo(client)},
   );
 }

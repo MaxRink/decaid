@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
+import 'package:reaprime/src/services/webserver/extension_management_auth.dart';
 import 'package:reaprime/src/services/webserver/info_handler.dart';
 import 'package:reaprime/src/services/webserver_service.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
@@ -21,6 +22,8 @@ class _TestPathProvider extends PathProviderPlatform {
   @override
   Future<String?> getTemporaryPath() async => path;
 }
+
+const _deviceAddress = '192.168.12.64';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -51,7 +54,14 @@ void main() {
         }),
       );
     }
-    return buildWebServerHandler(app.call);
+    return buildWebServerHandler(
+      app.call,
+      browserOrigins: ExtensionManagementBrowserOrigins(
+        apiListenerPort: () => 8080,
+        pagePorts: () => const {},
+        deviceAddresses: () async => const {_deviceAddress},
+      ),
+    );
   }
 
   test('manifest is exact, small, and uses the docs port', () async {
@@ -138,7 +148,7 @@ void main() {
       await File(assetPath).copy('${apiDirectory.path}/$filename');
     }
 
-    final manifestUri = Uri.parse('http://docs.example.test/api/v1/manifest');
+    final manifestUri = Uri.parse('http://docs.local/api/v1/manifest');
     final manifestResponse = await createHandler()(Request('GET', manifestUri));
     final manifest = jsonDecode(await manifestResponse.readAsString()) as Map;
     final docs = manifest['docs'] as Map;
@@ -191,18 +201,24 @@ void main() {
     expect(success.statusCode, 200);
     expect(success.headers['content-type'], contains('application/json'));
 
-    final preflight = await createHandler()(
+    Future<Response> preflight(String origin) async => createHandler()(
       Request(
         'OPTIONS',
-        Uri.parse('http://localhost/api/v1/manifest'),
-        headers: {
-          'origin': 'http://example.test',
-          'access-control-request-method': 'GET',
-        },
+        Uri.parse('http://$_deviceAddress:8080/api/v1/manifest'),
+        headers: {'origin': origin, 'access-control-request-method': 'GET'},
       ),
     );
-    expect(preflight.statusCode, 200);
-    expect(preflight.headers['access-control-allow-methods'], contains('GET'));
+    final own = await preflight('http://$_deviceAddress:8080');
+    expect(own.statusCode, 200);
+    expect(own.headers['access-control-allow-methods'], contains('GET'));
+    expect(
+      own.headers['access-control-allow-origin'],
+      'http://$_deviceAddress:8080',
+    );
+
+    final foreign = await preflight('http://example.test');
+    expect(foreign.statusCode, 403);
+    expect(foreign.headers['access-control-allow-origin'], isNull);
   });
 
   test('existing WebSocket routes still upgrade', () async {

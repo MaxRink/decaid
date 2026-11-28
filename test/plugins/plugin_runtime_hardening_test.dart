@@ -580,7 +580,7 @@ void main() {
             'host.transport.open({ kind: "websocket", url: "ws://127.0.0.1:${api.port}/ws/v1/machine/raw" })'
             '.then(() => report({ opened: true }), fail);',
       );
-      expect((ws as Map)['error'], contains('machine control'));
+      expect((ws as Map)['error'], contains('raw machine socket'));
       final tcp = await _run(
         manager,
         id: 'tcp.plugin',
@@ -589,7 +589,10 @@ void main() {
             'host.transport.open({ kind: "tcp", host: "localhost", port: ${api.port} })'
             '.then(() => report({ opened: true }), fail);',
       );
-      expect((tcp as Map)['error'], contains('machine control'));
+      expect(
+        (tcp as Map)['error'],
+        contains('raw connections to the host API'),
+      );
       expect(hits, isEmpty);
     });
   });

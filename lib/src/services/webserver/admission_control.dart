@@ -151,6 +151,13 @@ Handler admittedWebSocketHandler(
 }) {
   final admissionGate = gate ?? _webSocketAdmissionGate;
   return (request) async {
+    if (!isAdmittedBrowserRequest(request)) {
+      log.warning(
+        'WebSocket upgrade /${request.url.path} refused (403) for a browser '
+        'origin the API did not admit',
+      );
+      return _browserRefusal(crossOriginRequestError);
+    }
     final clientKey = clientIpFromRequest(request);
     final decision = admissionGate.acquire(clientKey);
     if (decision != AdmissionDecision.accepted) {
