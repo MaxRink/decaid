@@ -1,11 +1,10 @@
 name: PR checks
 
 on:
-  # Deliberately not filtered by base branch, matching the equivalent change on
-  # feature/skale-sdk-parity (7899450e, #29). No job here reads the base branch,
-  # so the filter had no purpose beyond preventing checks from running: it
-  # silently skipped every pull request whose base was not main, which left
-  # stacked work (a branch and the fix based on it) with no CI at all.
+  # Deliberately not filtered by base branch: version-code-guard must run for
+  # every PR that could land, and stacked work (a branch and the fix based on
+  # it) must not go without CI. No job here reads the base branch, so the filter
+  # had no purpose beyond preventing checks from running.
   pull_request:
     types: [opened, synchronize, reopened, edited]
 
@@ -398,6 +397,38 @@ jobs:
           python3 scripts/test_release_dye2.py
           python3 tool/ci/check_pr_evidence_test.py
           python3 tool/ci/test_contribution_policy.py
+
+  version-code-guard:
+    name: Android versionCode guard
+    needs: contribution-policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install build-tools (aapt2)
+        run: sdkmanager --install "build-tools;35.0.0"
+
+      - name: Test the guard itself (offline)
+        run: ./scripts/test_check_version_code_bump.sh
+
+      # The committed counter must be strictly greater than the versionCode of
+      # the newest published release APK, or shipping this commit would be an
+      # Android downgrade for everyone who installed that release.
+      # References are this repository's own releases. A fork that has not
+      # published a release yet has nothing installable to compare against, so
+      # only there the "no releases at all" case is skipped; every other failure
+      # to read a reference still fails the job.
+      - name: Committed versionCode must exceed the last published release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REPO: ${{ github.repository }}
+          VERSION_CODE_GUARD_ALLOW_SKIP: ${{ github.repository != 'decentespresso/decaid' && '1' || '0' }}
+        run: ./scripts/check_version_code_bump.sh
 
   pr-evidence-advisory:
     name: PR evidence advisory

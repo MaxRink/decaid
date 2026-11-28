@@ -13,6 +13,30 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Reads the committed Android versionCode counter. Kept in version control so a
+// full clone, a `git clone --depth 1` CI checkout and an exported source tree all
+// agree on one number. Bump procedure and CI guard: doc/RELEASE.md, section
+// "Android versionCode".
+val committedVersionCode: Int = rootProject.file("version.properties").let { counterFile ->
+    require(counterFile.isFile) {
+        "Missing ${counterFile.path}. It must contain a single 'versionCode=<integer>' entry."
+    }
+    // Plain parsing: in a project script `java` resolves to the Java plugin
+    // extension accessor, so java.util.Properties needs an explicit import.
+    val raw = counterFile.readLines()
+        .asSequence()
+        .map { line -> line.trim() }
+        .firstOrNull { line -> line.startsWith("versionCode=") }
+        ?.substringAfter('=')
+        ?.trim()
+    require(!raw.isNullOrEmpty()) { "${counterFile.path} is missing the 'versionCode' property." }
+    val code = raw.toIntOrNull()
+    if (code == null || code <= 0) {
+        throw GradleException("${counterFile.path}: versionCode must be a positive integer, got '$raw'.")
+    }
+    code
+}
+
 android {
     namespace = "net.tadel.reaprime"
     compileSdk = 36
@@ -37,26 +61,29 @@ android {
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = 28
         targetSdk = 35
-        // Use git commit count as versionCode so debug and release builds always
-        // share the same monotonically increasing version, preventing downgrade uninstalls.
-        versionCode = providers.exec {
-            commandLine("git", "rev-list", "--count", "origin/main")
-        }.standardOutput.asText.get().trim().toInt()
+        // versionCode is a committed counter (android/version.properties), not a
+        // value derived from git history: the same commit must yield the same
+        // versionCode in every clone. `git rev-list --count origin/main` failed
+        // in shallow clones and in checkouts without an `origin/main` ref.
+        versionCode = committedVersionCode
         versionName = flutter.versionName
     }
 
+    // The release config still points at android/app/debug.keystore (unchanged
+    // behaviour): CI writes that file from secrets.ANDROID_KEYSTORE_B64 before
+    // building, so release signing keys are unaffected by this change.
+    //
+    // The debug config is deliberately NOT declared. AGP's built-in "debug"
+    // signing config signs with the well-known ~/.android/debug.keystore, which
+    // AGP creates on first use. Declaring `storeFile = file("debug.keystore")`
+    // pointed at a path that android/.gitignore excludes (**/*.keystore), so a
+    // fresh clone could not build a debug APK at all.
     signingConfigs {
             create("release") {
                 storeFile = file("debug.keystore")
                 storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: "android"
                 keyAlias = System.getenv("ANDROID_KEY_ALIAS") ?: "androiddebugkey"
                 keyPassword = System.getenv("ANDROID_KEY_PASSWORD") ?: "android"
-            }
-            getByName("debug") {
-                storeFile = file("debug.keystore")
-                storePassword = "android"
-                keyAlias = "androiddebugkey"
-                keyPassword = "android"
             }
         }
 
