@@ -24,7 +24,16 @@ else
   VERSION="${TAG#v}"
 fi
 
-BUILD_NUMBER=$(git rev-list --count origin/main 2>/dev/null || echo "1")
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Keep in sync with android/app/build.gradle.kts: the build number is the
+# committed Android versionCode counter, so it is identical in every clone --
+# a shallow or CI checkout with no origin/main ref included.
+BUILD_NUMBER="$(sed -n 's/^versionCode=\([0-9][0-9]*\)$/\1/p' "$SCRIPT_DIR/android/version.properties" 2>/dev/null | head -n 1)"
+if [ -z "$BUILD_NUMBER" ]; then
+  echo "warning: android/version.properties has no versionCode; falling back to 1" >&2
+  BUILD_NUMBER=1
+fi
 
 BUILD_NAME="${VERSION%%-*}"
 
@@ -49,7 +58,6 @@ shift
 
 EXTRA_ARGS=("$@")
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ "$SKIP_SKINS" = true ]; then
   echo "Skipping skin bundling (--skip-skins)"
 elif [ -f "$SCRIPT_DIR/bundle_skins.sh" ]; then

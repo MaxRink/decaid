@@ -52,26 +52,73 @@ via `combineModelAndBurrs`. Invariants to preserve when changing this:
   whatever the session has already recorded, because that read can land after an upload has
   remembered its string.
 
-## Plugin runtime: global pinning differs by engine
+## Plugin runtime: one realm per plugin
 
-Not a bundled plugin's logic, but it decides what every bundled plugin can trust. `flutter_js`
-runs QuickJS (vendored `2026-06-04`, the same source on Android, Linux and Windows; Linux CI
-loads the prebuilt `linux/shared/libquickjs_c_bridge_plugin.so` built from it) and
-JavaScriptCore on macOS and iOS. A local `flutter test` on a Mac therefore never exercises the
-engine Android ships.
+Not a bundled plugin's logic, but it decides what every plugin can trust.
+`PluginManager` creates one `JavascriptRuntime` per loaded plugin (`_PluginRealm`) and
+disposes it when the plugin unloads, reloads or the manager is disposed. Invariants to
+preserve when changing this:
 
-- **Pin globals as getters, never as read-only data.** QuickJS stores global-object properties
-  as variable references, and `JS_DefineProperty` updates the reference without the
+- **Route by realm, never by a plugin-supplied id.** Each realm's `sendMessage` channels are
+  registered with closures bound to that realm, and `_pluginIdForBridgeMessage` rejects a
+  message unless the realm is still the plugin's current one, the bridge token is that
+  realm's token, and any `pluginId`/`generation` field matches the realm. Every Dart-to-JS
+  call (`__handleFetchResponse`, `__handleTransportReply`, `__handleDeviceReply`,
+  `__fireTimer`, `__dispatchToPlugin`, ...) goes through `_realmOf(pluginId, generation)`.
+  Do not add a manager-wide runtime or a global registry again: that is what let one plugin
+  hook another plugin's built-ins and read its bridge token. Fork-only bridges follow the
+  same rule: `host.discovery` rides the `host` channel and completes through the realm,
+  the machine-control grant is looked up for the realm's plugin id (`_PendingOp.pluginId`),
+  and storage, notifications and surface HTTP requests dispatch with `_realmOf`.
+- **Console is per realm and attributed host-side (#34).** `flutter_js` gives every runtime
+  its own `console` that posts to a `ConsoleLog` channel and `print`s it unattributed.
+  `_bootstrapRealm` replaces that channel handler with one bound to the realm, so console
+  lines are written through `_writePluginLog` (redaction, rate limit, `log` permission) as
+  `[JS:<realm's plugin id>] console.<level>: ...` at FINE. Nothing in the line or the
+  message can change the id. Host error reports must not use `console` (it is the
+  plugin's own, log-gated output): `__dispatchToPlugin` and `__dispatchTransportEvent`
+  return the caught exception text to Dart, which writes it via `_logPluginError` at
+  WARNING whatever the plugin's permissions, with its own limiter. Tests that wrap a runtime (`_CountingRuntime`) keep the
+  default `print` handler, because `channelFunctions` is the wrapper's own map.
+- **Ids are per realm, so key host maps by generation and check identity.** Timer ids and
+  fetch ids restart at 1 in every realm, and a retired generation's work can still finish
+  after a reload (a fetch still in `openUrl` cannot be aborted). Host-side maps are keyed by
+  plugin id and generation (`_timers` by `(pluginId, generation, id)`, `_PendingOp.keyFor`),
+  and completion removes an entry only if it is still the same object (`_completeOp`,
+  `_fireTimer`). Transport handles and device invocation ids are host-generated and unique.
+- **Keep the realm until cleanup is done.** `_unloadPlugin` runs `onUnload`, rejects pending
+  work and runs device disconnect cleanup inside the old realm, and only disposes it in its
+  `finally`. A new generation's realm is created after the old one is disposed.
+- **Engines differ, so test on both.** `flutter_js` runs QuickJS (vendored `2026-06-04` in
+  dart_js, the same source on Android, Linux and Windows; Linux CI loads the prebuilt
+  `linux/shared/libquickjs_c_bridge_plugin.so`) and JavaScriptCore on macOS and iOS, so a
+  plain `flutter test` on a Mac never exercises the engine Android ships. Build the bridge
+  from dart_js's `linux/shared/CMakeLists.txt` on macOS and run
+  `LIBQUICKJSC_PATH=<path>/libquickjs_c_bridge_plugin.dylib flutter test
+  test/plugins/plugin_realm_isolation_test.dart` to run the isolation suite on QuickJS too.
+- **The in-realm lock is defence in depth, not the boundary.** QuickJS stores global-object
+  properties as variable references and `JS_DefineProperty` updates them without the
   non-writable check, so `Object.defineProperty(globalThis, name, { value })` replaces a
   `writable: false, configurable: false` global (unfixed on bellard/quickjs master as of
-  2026-11-23; quickjs-ng is not affected). A non-configurable accessor refuses every data or
-  accessor redefinition on both engines. `__pinGlobal` in `plugin_manager.dart` creates host
-  globals that way, and `__lockPluginHostBridge` converts the configurable built-ins, host
-  globals and `globalThis` before the first plugin body runs.
-- **Leave non-configurable data globals alone.** They cannot become accessors, and on QuickJS
-  `writable: false` would not protect them anyway. Making one non-writable only breaks its
-  owner: `flutter_js` declares `var __NATIVE_FLUTTER_JS__timerCount`, and pinning it froze every
-  engine-level `setTimeout`/`setInterval` id. `console` (#34) is in this class and stays open.
-- **Pin `globalThis` itself.** The plugin wrapper reads `globalThis.__reaprimePluginHostBridge`
-  and `globalThis.__registerPlugin`; a rebound `globalThis` hands a later plugin's bridge token
-  to whoever rebound it, on both engines.
+  2026-11-23). `__pinGlobal` therefore pins the host's globals and `globalThis` as
+  non-configurable getters, which both engines honour, and the host shims call built-ins
+  captured at bootstrap. Built-ins and their prototypes are deliberately not frozen: inside a
+  single-plugin realm that would only stop a plugin changing its own realm, and it breaks
+  ordinary code through the override mistake (`o.toString = ...` or `arr.push = ...` ignored
+  in sloppy code and throwing in strict code, subclasses of `Array`/`Map`/`Promise`).
+  `__NATIVE_FLUTTER_JS__*` stays unpinned because `flutter_js` must keep it writable or every
+  engine-level timer id repeats.
+- **Realm creation can fail.** `_createRealm` turns a throwing `createJsRuntime` or a realm
+  that cannot evaluate into a failed load of that plugin only. A `NULL` from QuickJS's
+  `JS_NewRuntime`/`JS_NewContext` is not checked inside dart_js's native bridge
+  (`jsNewRuntime`), so that case needs a dart_js fix. A per-realm `memoryLimit` (supported
+  by `QuickJsRuntime2`) is now cheap to add and would bound each plugin separately.
+- **Cost.** One engine instance per loaded plugin. Measured on macOS arm64 with 40 trivial
+  plugins: QuickJS about 0.4 MiB RSS and 3 ms per load (the QuickJS heap of a bootstrapped,
+  locked realm is about 0.33 MiB, `qjs -d`), JavaScriptCore about 2 MiB and 3.6 ms, against
+  about 0.2 MiB and 0.7 ms per plugin in the former shared runtime. The cost scales with the
+  number of loaded plugins, not with reloads, because a reload disposes the old realm first.
+- **Test seam.** `debugPrepareRealm` runs in a new realm after the host bootstrap and before
+  the lock, where tests stub `__timerSet`, `__fetchFor` or `fetch`; `jsRealmOf(pluginId)`
+  returns a plugin's runtime for assertions.
+

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter_js/flutter_js.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:reaprime/src/plugins/plugin_manager.dart';
 import 'package:reaprime/src/plugins/plugin_manifest.dart';
@@ -51,8 +52,10 @@ Future<PluginManager> _loadPlugin(
   String fetchSource, {
   Map<String, dynamic> settings = const {},
 }) async {
-  final manager = PluginManager(kvStore: FakeKeyValueStoreService());
-  final setupResult = manager.js.evaluate('''
+  final manager = PluginManager(
+    kvStore: FakeKeyValueStoreService(),
+    debugPrepareRealm: (_, js) {
+      final setupResult = js.evaluate('''
     globalThis.__testTimers = [];
     globalThis.__nextTimerId = 1;
     globalThis.__timerSet = (pluginId, generation, callback, delay = 0) => {
@@ -75,7 +78,9 @@ Future<PluginManager> _loadPlugin(
     $fetchSource
     globalThis.__fetchFor = (pluginId, generation, url, init = {}) => globalThis.fetch(url, init);
   ''');
-  expect(setupResult.isError, isFalse, reason: setupResult.stringResult);
+      expect(setupResult.isError, isFalse, reason: setupResult.stringResult);
+    },
+  );
   await manager.loadPlugin(
     id: _manifest.id,
     manifest: _manifest,
@@ -91,10 +96,13 @@ Future<PluginManager> _loadPlugin(
   return manager;
 }
 
+JavascriptRuntime _js(PluginManager manager) => manager.jsRealmOf(_manifest.id);
+
 Future<Object?> _waitForJs(PluginManager manager, String expression) async {
   for (var i = 0; i < 500; i++) {
-    manager.js.executePendingJob();
-    final result = manager.js.evaluate('JSON.stringify(($expression) ?? null)');
+    _js(manager).executePendingJob();
+    final result = _js(manager)
+        .evaluate('JSON.stringify(($expression) ?? null)');
     expect(result.isError, isFalse, reason: result.stringResult);
     final value = jsonDecode(result.stringResult);
     if (value != null) return value;
@@ -290,7 +298,7 @@ Future<Object?> _uploadedGrinderModel(PluginManager manager) async {
 }
 
 bool _jsBool(PluginManager manager, String expression) {
-  final result = manager.js.evaluate('JSON.stringify(($expression) ?? null)');
+  final result = _js(manager).evaluate('JSON.stringify(($expression) ?? null)');
   expect(result.isError, isFalse, reason: result.stringResult);
   return jsonDecode(result.stringResult) == true;
 }
@@ -376,7 +384,8 @@ String? _uploadedModelAt(Map<String, dynamic> upload) {
 }
 
 Map<String, dynamic> _lastContextPut(PluginManager manager) {
-  final result = manager.js.evaluate('JSON.stringify(globalThis.__puts ?? [])');
+  final result = _js(manager)
+      .evaluate('JSON.stringify(globalThis.__puts ?? [])');
   expect(result.isError, isFalse, reason: result.stringResult);
   final puts = (jsonDecode(result.stringResult) as List)
       .cast<Map<String, dynamic>>()
@@ -391,9 +400,8 @@ Map<String, dynamic> _lastContextPut(PluginManager manager) {
 }
 
 void _setRemoteGrinderModel(PluginManager manager, String value) {
-  final result = manager.js.evaluate(
-    'globalThis.__remoteGrinderModel = ${jsonEncode(value)}',
-  );
+  final result = _js(manager)
+      .evaluate('globalThis.__remoteGrinderModel = ${jsonEncode(value)}');
   expect(result.isError, isFalse, reason: result.stringResult);
 }
 
@@ -664,7 +672,7 @@ void main() {
           },
         },
       });
-      final finishUpload = manager.js.evaluate('''
+      final finishUpload = _js(manager).evaluate('''
       globalThis.__currentShot = ${jsonEncode(duringUpload)};
       globalThis.__finishUpload();
     ''');
@@ -769,11 +777,11 @@ void main() {
       'globalThis.__patches.length === 1 ? true : null',
     );
 
-    final finishRefresh = manager.js.evaluate('globalThis.__finishRefresh()');
+    final finishRefresh = _js(manager).evaluate('globalThis.__finishRefresh()');
     expect(finishRefresh.isError, isFalse, reason: finishRefresh.stringResult);
     await _waitForJs(manager, 'globalThis.__refreshRead');
     for (var i = 0; i < 20; i++) {
-      manager.js.executePendingJob();
+      _js(manager).executePendingJob();
       await Future<void>.delayed(const Duration(milliseconds: 1));
     }
     final patches =
@@ -963,6 +971,12 @@ void main() {
       },
     );
     await firstSync.timeout(const Duration(seconds: 5));
+    // The mock Visualizer server state lives in the plugin's realm, which the
+    // restart replaces; carry it over so only the plugin itself restarts.
+    final remoteState = await _waitForJs(
+      manager,
+      '({remoteTags: globalThis.__remoteTags, patches: globalThis.__patches})',
+    );
     await manager.unloadPlugin(_manifest.id);
     final storedOwnership = await manager.kvStore.get(
       namespace: _manifest.id,
@@ -982,6 +996,14 @@ void main() {
       },
       jsCode: _pluginSource,
     );
+    final restored = _js(manager).evaluate('''
+      (() => {
+        const state = ${jsonEncode(remoteState)};
+        globalThis.__remoteTags = state.remoteTags;
+        globalThis.__patches = state.patches;
+      })();
+    ''');
+    expect(restored.isError, isFalse, reason: restored.stringResult);
     _dispatchShotUpdate(
       manager,
       _shot(
@@ -1137,7 +1159,7 @@ void main() {
       },
     );
     await _waitForJs(manager, 'globalThis.__forwardPatch');
-    manager.js.evaluate('globalThis.__runTimers(30000)');
+    _js(manager).evaluate('globalThis.__runTimers(30000)');
     final localUpdate = await _waitForJs(
       manager,
       'globalThis.__localUpdate',
@@ -1209,7 +1231,7 @@ void main() {
         },
       },
     );
-    final resolve = manager.js.evaluate('''
+    final resolve = _js(manager).evaluate('''
       globalThis.__remoteTags = ['old', 'remote'];
       globalThis.__firstResolver({ ok: true, json: async () => ({ id: 'visualizer-9', updated_at: 1 }) });
     ''');
@@ -1288,9 +1310,9 @@ void main() {
         (tagPatch['shot'] as Map<String, dynamic>).containsKey('tags'),
         isFalse,
       );
-      final failTagSync = manager.js.evaluate('globalThis.__failTagSync()');
+      final failTagSync = _js(manager).evaluate('globalThis.__failTagSync()');
       expect(failTagSync.isError, isFalse, reason: failTagSync.stringResult);
-      while (manager.js.executePendingJob() > 0) {}
+      while (_js(manager).executePendingJob() > 0) {}
       final event = await errorEvent.timeout(const Duration(seconds: 5));
       expect(event['payload']['error'], contains('Visualizer Premium'));
       expect(event['payload']['error'], contains('HTTP 400'));
@@ -1498,7 +1520,7 @@ void main() {
       'key': 'backSyncCursor',
       'value': '100',
     });
-    manager.js.evaluate('globalThis.__runTimers(30000)');
+    _js(manager).evaluate('globalThis.__runTimers(30000)');
 
     final localUpdate = await _waitForJs(
       manager,
@@ -1537,7 +1559,7 @@ void main() {
       'key': 'backSyncCursor',
       'value': '100',
     });
-    manager.js.evaluate('globalThis.__runTimers(30000)');
+    _js(manager).evaluate('globalThis.__runTimers(30000)');
 
     final localUpdate = await _waitForJs(
       manager,
@@ -1581,7 +1603,7 @@ void main() {
       'key': 'backSyncCursor',
       'value': '100',
     });
-    manager.js.evaluate('globalThis.__runTimers(30000)');
+    _js(manager).evaluate('globalThis.__runTimers(30000)');
 
     final localUpdate = await _waitForJs(
       manager,
@@ -1627,7 +1649,7 @@ void main() {
         'key': 'backSyncCursor',
         'value': '100',
       });
-      manager.js.evaluate('globalThis.__runTimers(30000)');
+      _js(manager).evaluate('globalThis.__runTimers(30000)');
 
       final localUpdate = await _waitForJs(
         manager,
@@ -1659,7 +1681,7 @@ void main() {
 
       _startAutoUpload(manager);
       await _waitForJs(manager, 'globalThis.__uploadStamp');
-      manager.js.evaluate('globalThis.__runTimers(30000)');
+      _js(manager).evaluate('globalThis.__runTimers(30000)');
 
       final update = await _waitForJs(
         manager,
@@ -1695,7 +1717,7 @@ void main() {
 
       _startAutoUpload(manager);
       await _waitForJs(manager, 'globalThis.__uploadStamp');
-      manager.js.evaluate('globalThis.__runTimers(30000)');
+      _js(manager).evaluate('globalThis.__runTimers(30000)');
 
       final update = await _waitForJs(
         manager,
@@ -1715,7 +1737,7 @@ void main() {
         settings: const {'BackSync': true},
       );
       _primeBackSyncMapping(manager);
-      manager.js.evaluate('globalThis.__runTimers(30000)');
+      _js(manager).evaluate('globalThis.__runTimers(30000)');
 
       final update = await _waitForJs(
         manager,
@@ -1738,7 +1760,7 @@ void main() {
       settings: const {'BackSync': true},
     );
     _primeBackSyncMapping(manager);
-    manager.js.evaluate('globalThis.__runTimers(30000)');
+    _js(manager).evaluate('globalThis.__runTimers(30000)');
 
     final update = await _waitForJs(
       manager,
@@ -1823,9 +1845,8 @@ void main() {
       _startAutoUpload(manager);
       await _waitForJs(manager, 'globalThis.__uploads[0]');
 
-      final clearBurrs = manager.js.evaluate(
-        'globalThis.__shot.workflow.context.grinderBurrs = null',
-      );
+      final clearBurrs = _js(manager)
+          .evaluate('globalThis.__shot.workflow.context.grinderBurrs = null');
       expect(clearBurrs.isError, isFalse, reason: clearBurrs.stringResult);
       manager.dispatchEvent(_manifest.id, 'storageRead', {
         'key': 'uploadedGrinderModels',

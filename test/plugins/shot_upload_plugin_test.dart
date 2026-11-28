@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter_js/flutter_js.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart' as http_testing;
@@ -91,6 +92,9 @@ PluginManifest _manifest() => PluginManifest.fromJson(
   ) as Map<String, dynamic>,
 );
 
+JavascriptRuntime _js(PluginManager manager) =>
+    manager.jsRealmOf(_manifest().id);
+
 String _pluginSource() =>
     File('assets/plugins/shot-upload.reaplugin/plugin.js').readAsStringSync();
 
@@ -101,7 +105,7 @@ Future<void> _pumpUntil(
 }) async {
   final deadline = DateTime.now().add(timeout);
   while (!ready() && DateTime.now().isBefore(deadline)) {
-    while (manager.js.executePendingJob() > 0) {}
+    while (_js(manager).executePendingJob() > 0) {}
     await Future<void>.delayed(Duration.zero);
   }
 }
@@ -137,8 +141,8 @@ void main() {
           );
         }),
       ),
-    );
-    final r = manager.js.evaluate('''
+      debugPrepareRealm: (_, js) {
+        final r = js.evaluate('''
       globalThis.__timerSet = (pluginId, generation, callback, delay) => 1;
       globalThis.__timerClear = () => {};
       globalThis.__puts = [];
@@ -154,7 +158,9 @@ void main() {
         throw new Error('Unexpected URL: ' + url);
       };
     ''');
-    expect(r.isError, isFalse, reason: r.stringResult);
+        expect(r.isError, isFalse, reason: r.stringResult);
+      },
+    );
 
     await manager.loadPlugin(
       id: _manifest().id,
@@ -204,7 +210,7 @@ void main() {
       expect(body['machine'].containsKey('bleId'), isFalse);
       expect(body['app']['version'], '9.9.9');
       final fetches = jsonDecode(
-        manager.js
+        _js(manager)
             .evaluate('JSON.stringify(globalThis.__fetches)')
             .stringResult,
       ) as List;
@@ -214,7 +220,7 @@ void main() {
       );
 
       final puts = jsonDecode(
-        manager.js.evaluate('JSON.stringify(globalThis.__puts)').stringResult,
+        _js(manager).evaluate('JSON.stringify(globalThis.__puts)').stringResult,
       ) as List;
       expect(puts, hasLength(1));
       expect(puts.single['url'], endsWith('/api/v1/shots/shot-1'));

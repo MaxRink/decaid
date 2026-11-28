@@ -118,7 +118,9 @@ void main() {
           'batteryLevel': 0,
         });
         Future<String> notification(String update) async {
-          manager.js.evaluate('globalThis.infoUpdate = $update');
+          manager
+              .jsRealmOf('info.ble.scale')
+              .evaluate('globalThis.infoUpdate = $update');
           final result = manager.emitStream.firstWhere(
             (e) => e['event'] == 'infoUpdate',
           );
@@ -189,13 +191,17 @@ void main() {
         expect(information.currentDeviceInformation, isNull);
         await scale.disconnect();
         transport = PluginBleFixtureTransport('AA:BB');
-        manager.js.evaluate('globalThis.infoUpdate = null');
+        manager
+            .jsRealmOf('info.ble.scale')
+            .evaluate('globalThis.infoUpdate = null');
         await scale.onConnect();
         final stale = manager.emitStream.firstWhere(
           (e) => e['event'] == 'retainedInfo',
         );
-        manager.js.evaluate('globalThis.publishRetainedInfo()');
-        while (manager.js.executePendingJob() > 0) {}
+        manager
+            .jsRealmOf('info.ble.scale')
+            .evaluate('globalThis.publishRetainedInfo()');
+        while (manager.jsRealmOf('info.ble.scale').executePendingJob() > 0) {}
         expect(
           (await stale.timeout(const Duration(seconds: 2)))['payload'],
           'stale_session',
@@ -311,7 +317,9 @@ void main() {
             final held = manager.emitStream.firstWhere(
               (e) => e['event'] == 'held',
             );
-            manager.js.evaluate('globalThis.hold = true');
+            manager
+                .jsRealmOf('timing.scale')
+                .evaluate('globalThis.hold = true');
             for (var offset = 0; offset < batchSize; offset++) {
               now = now.add(const Duration(milliseconds: 100));
               final value = 53 + batch * batchSize + offset;
@@ -326,8 +334,8 @@ void main() {
               if (offset == 0) await held.timeout(const Duration(seconds: 2));
             }
             now = now.add(Duration(milliseconds: publicationDelay));
-            manager.js.evaluate('globalThis.release()');
-            while (manager.js.executePendingJob() > 0) {}
+            manager.jsRealmOf('timing.scale').evaluate('globalThis.release()');
+            while (manager.jsRealmOf('timing.scale').executePendingJob() > 0) {}
             await finished.timeout(const Duration(seconds: 2));
           }
           expect(pluginSamples.length, nativeSamples.length);
@@ -360,8 +368,10 @@ void main() {
           final duplicate = manager.emitStream.firstWhere(
             (e) => e['event'] == 'duplicate',
           );
-          manager.js.evaluate('globalThis.trySample(globalThis.lastSample)');
-          while (manager.js.executePendingJob() > 0) {}
+          manager
+              .jsRealmOf('timing.scale')
+              .evaluate('globalThis.trySample(globalThis.lastSample)');
+          while (manager.jsRealmOf('timing.scale').executePendingJob() > 0) {}
           expect(
             (await duplicate.timeout(const Duration(seconds: 2)))['payload'],
             'stale_sample',
@@ -381,14 +391,19 @@ void main() {
               final held = manager.emitStream.firstWhere(
                 (e) => e['event'] == 'held',
               );
-              manager.js.evaluate('globalThis.hold = true');
+              manager
+                  .jsRealmOf('timing.scale')
+                  .evaluate('globalThis.hold = true');
               transport.subscribers.values.single(Uint8List.fromList([80]));
               await held.timeout(const Duration(seconds: 2));
             }
 
             void release() {
-              manager.js.evaluate('globalThis.release()');
-              while (manager.js.executePendingJob() > 0) {}
+              manager
+                  .jsRealmOf('timing.scale')
+                  .evaluate('globalThis.release()');
+              while (manager.jsRealmOf('timing.scale').executePendingJob() >
+                  0) {}
             }
 
             await holdSample();
@@ -432,7 +447,9 @@ void main() {
               (e) =>
                   e['event'] == 'rejection' && e['payload'] == 'stale_sample',
             );
-            manager.js.evaluate('globalThis.crash = true');
+            manager
+                .jsRealmOf('timing.scale')
+                .evaluate('globalThis.crash = true');
             transport.subscribers.values.single(Uint8List.fromList([83]));
             expect(
               (await pluginFailure.timeout(
