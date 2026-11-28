@@ -1526,7 +1526,10 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
                   'POST',
                   path,
                   bearer: protected ? managerToken : null,
-                  headers: const {'origin': origin},
+                  headers: {
+                    'origin': origin,
+                    'host': 'localhost:${harness.port}',
+                  },
                 );
                 expect(
                   refused.status,

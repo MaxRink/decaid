@@ -2017,7 +2017,11 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
             'POST',
             '/api/v1/plugins/$_idleId/enable',
             authorization: bearer(),
-            headers: const {'origin': origin},
+            headers: {
+              'origin': origin,
+              // An admitted Host, so the origin check is what refuses.
+              'host': 'localhost:${lanServer.port}',
+            },
             to: lanServer,
             host: peer.address,
           );
