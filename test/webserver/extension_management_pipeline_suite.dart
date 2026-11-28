@@ -2899,8 +2899,14 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
               'X-Forwarded-Host': 'localhost',
             },
           );
-          expect(reply.status, 401, reason: '${endpoint.name}: ${reply.body}');
-          expect(reply.body, contains(_missingBearer), reason: endpoint.name);
+          // A browser request carrying forwarding headers is refused before
+          // the credential check.
+          expect(reply.status, 403, reason: '${endpoint.name}: ${reply.body}');
+          expect(
+            reply.body,
+            contains(untrustedBrowserHostError),
+            reason: endpoint.name,
+          );
           expect(
             service.isPluginLoaded(_idleId),
             isFalse,
