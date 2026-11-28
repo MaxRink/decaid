@@ -491,7 +491,6 @@ class ExtensionManagementHarness {
         version: version,
       ),
       pluginJs: probePluginJs(id, onLoad: onLoad, onUnload: onUnload),
-      authorized: true,
     );
     if (load) await loader.enablePlugin(id);
   }

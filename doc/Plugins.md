@@ -2534,18 +2534,6 @@ Rules:
 - The update is partial. Only `manifest.json` and `plugin.js` are written; any
   other file in the plugin directory survives. Plugins that need new extra
   files still have to be installed from a directory.
-- Without an `extensions:manage` credential (a bearer with that scope, or a
-  `manage.extensions` plugin calling `host.localApi`), a write whose manifest
-  adds permissions to an installed plugin is rejected with 409: give the plugin new permissions
-  with a token, from the native Plugins screen, or through an install or
-  update that goes through approval. This applies in both modes: in
-  compatibility mode no token is needed for the route itself, but one is
-  still needed to add permissions.
-- Without that credential, a write whose `plugin.js` differs from the installed
-  one also clears the plugin's stored secure settings (passwords, tokens), so
-  replacement code never receives secrets the user entered for the old code;
-  the plugin has to be configured again. Ordinary settings are kept, and a
-  manifest-only write keeps secure settings too.
 - Downgrades are rejected with 409. The submitted version must be greater than
   or equal to the installed version; installing an older version requires
   removing the plugin first. Versions compare as semantic versions, so

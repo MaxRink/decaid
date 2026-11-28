@@ -45,7 +45,6 @@ void main() {
         },
         pluginJs:
             'function createPlugin() { return {id: "first", onLoad() { ${fail ? 'throw new Error("load failed");' : ''} }}; }',
-        authorized: true,
       )
       .then((_) {});
 

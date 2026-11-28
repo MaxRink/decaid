@@ -6,9 +6,25 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:logging/logging.dart';
 import 'package:reaprime/src/plugins/plugin_loader_service.dart';
+import 'package:reaprime/src/services/account/decent_account_service.dart'
+    show CredentialStore;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'plugin_test_helpers.dart';
+
+class _MemoryCredentialStore implements CredentialStore {
+  final Map<String, String> values = {};
+
+  @override
+  Future<String?> read({required String key}) async => values[key];
+
+  @override
+  Future<void> write({required String key, required String value}) async =>
+      values[key] = value;
+
+  @override
+  Future<void> delete({required String key}) async => values.remove(key);
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -323,5 +339,68 @@ void main() {
         expect(service.getPluginManifest(id)?.version, '1.0.0');
       },
     );
+  }
+
+  // The startup refresh of a bundled copy writes the new plugin.js directly,
+  // outside the replacement review: an app update must keep the secrets the
+  // user entered (Visualizer upload key, E64 grinder password).
+  for (final (pluginId, secrets) in [
+    ('visualizer.reaplugin', {'UploadKey': 'vzu_test', 'Password': 'pw'}),
+    (
+      'mahlkoenig-e64.reaplugin',
+      {'PasswordsJson': '{"e64":{"host":"e64.local","password":"pw"}}'},
+    ),
+  ]) {
+    test('a bundled refresh with new code keeps $pluginId secrets', () async {
+      final bundledManifest = File('assets/plugins/$pluginId/manifest.json')
+          .readAsStringSync();
+      final bundledScript = File('assets/plugins/$pluginId/plugin.js')
+          .readAsStringSync();
+      final directory = Directory('${tempDir.path}/plugins/$pluginId')
+        ..createSync(recursive: true);
+      File('${directory.path}/manifest.json').writeAsStringSync(
+        jsonEncode({...jsonDecode(bundledManifest), 'version': '0.0.1'}),
+      );
+      File('${directory.path}/plugin.js').writeAsStringSync('// old code\n');
+      final store = _MemoryCredentialStore();
+      await service.dispose();
+      service = PluginLoaderService(
+        kvStore: FakeKeyValueStoreService(),
+        credentialStore: store,
+      );
+      await service.initialize();
+      await service.savePluginSettings(pluginId, secrets);
+      await service.setMachineControlGrant(pluginId, true);
+      final stored = Map.of(store.values);
+      expect(stored, isNotEmpty);
+
+      await service.dispose();
+      assets['assets/plugins/$pluginId/manifest.json'] = bundledManifest;
+      assets['assets/plugins/$pluginId/plugin.js'] = bundledScript;
+      rootBundle.evict('assets/plugins/$pluginId/manifest.json');
+      rootBundle.evict('assets/plugins/$pluginId/plugin.js');
+      service = PluginLoaderService(
+        kvStore: FakeKeyValueStoreService(),
+        credentialStore: store,
+      );
+      await service.initialize();
+
+      expect(
+        service.getPluginManifest(pluginId)?.version,
+        (jsonDecode(bundledManifest) as Map)['version'],
+      );
+      expect(
+        File('${directory.path}/plugin.js').readAsStringSync(),
+        bundledScript,
+      );
+      expect(store.values, stored);
+      final settings = await service.pluginSettings(pluginId);
+      for (final key in secrets.keys) {
+        expect(settings[key], {'isSet': true}, reason: key);
+      }
+      expect(service.machineControlGranted(pluginId), isTrue);
+      rootBundle.evict('assets/plugins/$pluginId/manifest.json');
+      rootBundle.evict('assets/plugins/$pluginId/plugin.js');
+    });
   }
 }
