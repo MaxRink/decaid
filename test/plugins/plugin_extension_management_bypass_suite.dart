@@ -232,6 +232,7 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
               'forwarded': 'for=127.0.0.1;host=localhost',
               'x-forwarded-host': 'localhost',
             },
+            status: 403,
           );
 
           await expectNoSideEffect();
@@ -901,6 +902,8 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
     group('manual update checks', () {
       const pluginsUpdate = '/api/v1/plugins/update';
       const skinsUpdate = '/api/v1/webui/skins/update';
+      const forwardedBrowserError =
+          'This API only answers browsers on the device address';
       const forgedLoopbackHeaders = {
         'origin': 'http://localhost:3000',
         'referer': 'http://localhost/',
@@ -1108,6 +1111,8 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
           String dormant, {
           Map<String, String> headers = const {},
           int status = 401,
+          String error =
+              'This API does not accept requests from this browser origin',
         }) async {
           for (final request in requests(target, dormant)) {
             final outcome = await harness.externalRequestFrom(
@@ -1135,9 +1140,7 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
               );
             } else {
               expect(jsonDecode(outcome.body), {
-                'error':
-                    'Extension management is not allowed from this browser '
-                    'origin',
+                'error': error,
               }, reason: '${request.method} ${request.path} via $host');
             }
           }
@@ -1154,6 +1157,8 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
                 target,
                 dormant,
                 headers: forgedLoopbackHeaders,
+                status: 403,
+                error: forwardedBrowserError,
               );
             }
             expect(await harness.extensionState(), before);
@@ -1183,6 +1188,7 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
               dormant,
               headers: forgedLoopbackHeaders,
               status: 403,
+              error: forwardedBrowserError,
             );
             expect(await harness.extensionState(), before);
           }),
@@ -1205,7 +1211,11 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
                   path,
                   headers: headers,
                 );
-                expect(outcome.status, 401, reason: '$path $headers');
+                expect(
+                  outcome.status,
+                  headers.isEmpty ? 401 : 403,
+                  reason: '$path $headers',
+                );
               }
             }
 
@@ -1420,7 +1430,7 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
     group('browser origin boundary', () {
       const untrustedOrigin = 'https://evil.example';
       const refusedError =
-          'Extension management is not allowed from this browser origin';
+          'This API does not accept requests from this browser origin';
 
       Future<void> withProtected(
         Future<void> Function(ExtensionManagementHarness harness) body,

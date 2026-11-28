@@ -37,7 +37,7 @@ const _trustedOrigin = 'http://127.0.0.1:$_trustedPagePort';
 const _origin = _trustedOrigin;
 const _untrustedOrigin = 'https://evil.example';
 const _originRefused =
-    'Extension management is not allowed from this browser origin';
+    'This API does not accept requests from this browser origin';
 const _bundledPluginIds = [
   'time-to-ready.reaplugin',
   'visualizer.reaplugin',
@@ -2089,7 +2089,7 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
             headers: forged,
           );
           expect(reply.status, 403, reason: '$reply');
-          expect(reply.error, _originRefused);
+          expect(reply.error, untrustedBrowserHostError);
 
           final raw = await rawSocketRequest(
             InternetAddress.loopbackIPv4,
@@ -2274,7 +2274,7 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
         });
 
         test('an untrusted preflight for a plugin-defined route is '
-            'is refused without a CORS grant', () async {
+            'refused without a CORS grant', () async {
           for (final (method, path) in [
             ('POST', '/api/v1/plugins/$_echoId/echo'),
             ('GET', '/api/v1/plugins/$_echoId/status'),
@@ -2349,32 +2349,23 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
           }
         });
 
-        test('an untrusted origin may still send reads but gets no CORS '
-            'grant, and cannot send writes', () async {
+        test('an untrusted origin cannot read or write read-only, '
+            'plugin-defined and unrelated routes', () async {
           for (final (method, path) in [
             ('GET', '/api/v1/plugins'),
             ('GET', '/api/v1/plugins/$_echoId/echo'),
             ('GET', '/api/v1/webui/server/status'),
+            ('POST', '/api/v1/plugins/$_echoId/echo'),
           ]) {
             final reply = await send(
               method,
               path,
               headers: {'origin': _untrustedOrigin},
             );
-            expect(
-              reply.status,
-              isNot(anyOf(401, 403)),
-              reason: '$method $path -> $reply',
-            );
+            expect(reply.status, 403, reason: '$method $path -> $reply');
+            expect(reply.error, crossOriginRequestError);
             expect(reply.headers.value('access-control-allow-origin'), isNull);
           }
-          final write = await send(
-            'POST',
-            '/api/v1/plugins/$_echoId/echo',
-            headers: {'origin': _untrustedOrigin},
-          );
-          expect(write.status, 403, reason: '$write');
-          expect(write.error, crossOriginRequestError);
         });
       });
     }
