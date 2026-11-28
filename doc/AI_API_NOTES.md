@@ -316,67 +316,93 @@ section, or for development and automation from `--extensions-token` or the
   and the middleware's `automaticUpdateCheckEnabled`/`localOrigins`/`clock`
   parameters were deleted. Background scheduling still reads
   `automaticUpdateCheck` inside the update services.
-- The browser boundary is `extensionManagementBrowserOriginMiddleware`, the
-  outermost middleware in `buildWebServerHandler`, so it runs before
-  `accountProxyCorsMiddleware`, the general `corsHeaders` echo, authentication
-  and body reading. It classifies `Origin` through
-  `ExtensionManagementBrowserOrigins`: originless (no header) passes, trusted
+- The browser boundary is `browserAdmissionMiddleware`
+  (`webserver/browser_admission.dart`), the only browser-origin middleware in
+  `buildWebServerHandler`. It runs directly after the built-in page redirect and
+  before `accountProxyCorsMiddleware`, the CORS allowlist, authentication and
+  body reading, on every route. `buildWebServerHandler` requires
+  `browserOrigins`, so the pipeline cannot be built without it. The former
+  `extensionManagementBrowserOriginMiddleware` and the handler-level
+  `requireTrustedBrowserOrigin`/`isUntrustedBrowserOrigin` checks in the
+  settings, import and sync handlers were removed: an untrusted origin never
+  reaches a handler, so they were unreachable, and every refusal now has the
+  same body.
+- It classifies `Origin` through `ExtensionManagementBrowserOrigins`: trusted
   means scheme `http`, a literal local host (`localhost`, `127.0.0.1`, `::1` or
   a numeric local-interface address) and a port that is either the live skin
   page port (`WebUIService.browserOriginPorts`, which follows the active
   server, restart and dynamic allocation), the actual API listener port, or the
   built-in API docs viewer port while `startApiDocsServer`'s bind succeeded
   (`docsListenerPort` callback, null after `WebServerPortInUse`); every other
-  value is untrusted. A literal loopback host additionally needs socket
-  peer provenance: `classify` takes the `shelf.io.connection_info` context
-  value, and a loopback origin is trusted only when `remoteAddress` is loopback
-  or equals an address from the fresh interface listing. A missing, wrong-typed
-  or throwing peer, or a non-loopback peer that is not one of this device's
-  current addresses, is refused, so another machine's browser cannot borrow
-  `localhost`. The address listing is
-  `WebUIService.currentBrowserOriginAddresses()`, which enumerates the live
-  interfaces whenever a comparison needs them (no cache, no skin-serve gate, no
-  stale WiFi fallback), so it is available before any skin is served and a
-  retired address drops out without one; an enumeration failure is caught into
-  a fail-closed refusal. Nothing is taken from the request itself, so `Host`,
-  `Referer`, forwarding headers and DNS names cannot widen it, and a retired
-  port (including the port 3000 redirect) is not trusted. Untrusted actual
-  requests to the 18 routes are refused `403` before the handler. The three
-  body-gated routes are decided by `requireTrustedBrowserOrigin` in the handler:
-  import always (before the archive is read), a settings body that contains a
-  gated key, and a pull/two-way sync that includes `settings` (before any
-  network or write). Untrusted preflights for a guarded method on a guarded path
-  are refused `403` with no `access-control-*` headers before the general CORS
-  middleware can answer; that includes `POST /api/v1/settings`,
-  `/api/v1/data/import` and `/api/v1/data/sync`, whose relevance depends on a
-  body a preflight does not carry, so a browser cannot send a safe settings
-  write or a `push` sync as a JSON request from an untrusted origin even though
-  the actual request is admitted. Preflights for read-only methods on shared
-  paths and for plugin-defined routes keep the general answer. Handler-level
-  refusals are
-  marked in the response context and stripped of `access-control-*` by the outer
-  middleware (`_withoutAffirmativeCors`). Origin is not authentication: an
-  originless or forged-origin LAN client is unaffected, which is why
-  originless LAN compatibility and the protected-mode recommendation for shared
-  deployments both stay explicit in `doc/Api.md`.
-- `apiBrowserBoundaryMiddleware` runs directly inside the extension-management
-  origin middleware and applies to every route on the API port. It only acts on
-  requests that carry `Origin` or `Sec-Fetch-Site` (browsers), so originless
-  LAN clients are untouched. It first checks `requestedUri.host` (which
-  `shelf_io` builds from `Host`) with `ExtensionManagementBrowserOrigins.isDeviceHost`
-  (loopback names or a numeric address from the same live interface listing),
-  which is the DNS-rebinding guard: a rebound name is never a device host even
-  though it resolves to one. It then classifies `Origin` with the same
-  `classify`; an untrusted origin may only `GET`/`HEAD` without an upgrade, and
-  those responses lose every `access-control-*` header, so the general
-  `corsHeaders` echo effectively becomes an allowlist. Everything else
-  (including preflights and simple `text/plain` POSTs) is refused before the
-  handler. Because untrusted origins never reach a write handler now, the
-  handler-level `requireTrustedBrowserOrigin` checks in the settings, import
-  and sync handlers are defence in depth only. Machine control routes
-  (`machineControlRoutes`) share the extension-management credential gate in
-  `extensionManagementAuthMiddleware`, so they read the protection mode and need
-  `extensions:manage` only while it is ON.
+  value is untrusted. A literal loopback host additionally needs socket peer
+  provenance: `classify` takes the `shelf.io.connection_info` context value,
+  and a loopback origin is trusted only when `remoteAddress` is loopback or
+  equals an address from the fresh interface listing, so another machine's
+  browser cannot borrow `localhost`. The address listing is
+  `WebUIService.currentBrowserOriginAddresses()`; the middleware takes one
+  `snapshot()` per request, so a request enumerates the interfaces at most
+  once however many checks it needs, and an enumeration failure is a
+  fail-closed refusal.
+- Before any of that, `admittedHostMiddleware` (`webserver/request_host.dart`)
+  is the first middleware of `buildWebServerHandler` and wraps every skin
+  listener (skin port, port 3000 entry, alias ports). It reads the raw `Host`
+  through `rawRequestHost` (forwarding headers ignored; no `Host` falls back to
+  the listener address, `0.0.0.0` on a wildcard bind, which is refused) and
+  admits only `isAdmittedHost`: numeric addresses except the unspecified ones,
+  `localhost`/`*.localhost`, `*.local`, `Platform.localHostname` and the
+  `allowedHostNames` setting (`hostNameAllowlist`, fed through
+  `WebUIService.allowedHostNamesProvider` from `SettingsController`). It runs
+  for every request, browser or not, because over plain HTTP browsers send no
+  Fetch Metadata and a rebound `fetch(..., {referrerPolicy: 'no-referrer'})`
+  carries no browser signal at all. Changing `allowedHostNames` over
+  `POST /api/v1/settings` goes through `requireExtensionManagement`; it is not
+  in `extensionManagementSettingsKeys`, so `host.localApi` cannot change it.
+- A request is a browser request when it carries `Origin`, `Referer` or any
+  `Sec-Fetch-*` header; everything else passes on. For a browser
+  request the middleware refuses `Forwarded` and `X-Forwarded-*` headers and
+  validates the raw `Host` header with `directRequestHost`
+  (`webserver/request_host.dart`), never `requestedUri.host`: `dart:io`
+  builds `requestedUri` from `X-Forwarded-Host` and `X-Forwarded-Proto` when
+  they are present, so a rebound same-origin page could otherwise name the
+  device address in a header. `admitsBrowserHost` requires a numeric host to
+  be loopback or in the same listing (`isDeviceHost`) and a name to pass
+  `isAdmittedHost`; a name is still never a trusted origin.
+- With `Origin` it refuses every method from an untrusted origin, `GET`
+  included: `GET /api/v1/devices/scan` scans and connects, so "safe" methods
+  are not assumed to be side-effect free. Without `Origin` it reads
+  `Sec-Fetch-Site`: `none` and `same-origin` pass, `same-site` and a missing
+  value (a `Referer` without Fetch Metadata) pass only with a `Referer` whose
+  origin `classify` trusts (the device's other ports share its site), and
+  `cross-site` or an unknown value is refused. This closes navigation,
+  prefetch and `<img>`-triggered GETs, which carry no `Origin`. A request the
+  rule admits is marked with `admittedBrowserRequestContextKey`; in protected
+  mode `extensionManagementAuthMiddleware` asks a request to a
+  `sideEffectGetRoutes` entry (`GET /api/v1/devices/scan`) for an
+  `extensions:manage` credential unless it carries that mark, which closes the
+  header-less `<img>` GET over plain HTTP. Each such route has a `POST` form.
+- An admitted origin is recorded in the request context.
+  `browserCorsMiddleware`, which replaced the reflecting `shelf_cors_headers`
+  middleware at the same pipeline position, emits CORS headers only for that
+  recorded origin and adds `Vary: Origin` to every response.
+  `admittedWebSocketHandler` refuses an upgrade whose `Origin` is not the
+  recorded one, so a socket reached without the pipeline still fails closed.
+- Origin is not authentication: an originless or forged-origin LAN client is
+  unaffected, which is why originless LAN compatibility and the protected-mode
+  recommendation for shared deployments both stay explicit in `doc/Api.md`.
+  The privileged machine routes (`privilegedMachineRoutes`) share the
+  extension-management credential gate in `extensionManagementAuthMiddleware`,
+  so they read the protection mode and need `extensions:manage` only while it
+  is ON; a `push` or `two_way` sync is gated in `DataSyncHandler` through
+  `requireExtensionManagement` because the mode is in the body.
+- The skin server reads the same raw `Host` through `directRequestHost`: a
+  request with forwarding headers gets neither the skin API script nor the
+  account-proxy token, and the port 3000 entry and alias redirects send a name
+  that resolves to the device to a numeric address: `canonicalPageHost` over
+  the device addresses the name resolves to, and when that is ambiguous
+  `onLinkPageHost`, the candidate sharing the longest prefix with the peer
+  (at least /16 IPv4, /64 IPv6; dart:io exposes neither netmasks nor the
+  socket's local address). Only when nothing fits is the name kept. The
+  built-in pages keep `canonicalPageHost`'s fail-closed tie handling.
 - A name is still never authority, but a browser that reached a built-in page
   through one would load a page whose every management request is then refused.
   `builtinBrowserCanonicalRedirect` therefore canonicalises the *page entry*

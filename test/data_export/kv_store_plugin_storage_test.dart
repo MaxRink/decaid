@@ -7,6 +7,7 @@ import 'package:hive_ce_flutter/adapters.dart';
 import 'package:reaprime/src/services/account/proxy_token_service.dart';
 import 'package:reaprime/src/services/webserver/data_export_handler.dart';
 import 'package:reaprime/src/services/webserver_service.dart';
+import 'package:reaprime/src/services/webserver/extension_management_auth.dart';
 import 'package:shelf_plus/shelf_plus.dart';
 import 'package:reaprime/src/services/storage/hive_store_service.dart';
 import 'package:reaprime/src/services/webserver/data_export/data_export_section.dart';
@@ -130,6 +131,11 @@ void main() {
         app.call,
         proxyTokenService: tokens,
         requireExtensionManagementAuthorization: () async => false,
+        browserOrigins: ExtensionManagementBrowserOrigins(
+          apiListenerPort: () => 8080,
+          pagePorts: () => const {},
+          deviceAddresses: () async => const {},
+        ),
       );
     });
 

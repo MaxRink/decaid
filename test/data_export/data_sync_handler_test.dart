@@ -11,6 +11,7 @@ import 'package:reaprime/src/services/webserver/data_export/data_export_section.
 import 'package:reaprime/src/services/webserver/data_export/data_transfer_limits.dart';
 import 'package:reaprime/src/services/webserver/data_export_handler.dart';
 import 'package:reaprime/src/services/webserver/data_sync_handler.dart';
+import 'package:reaprime/src/services/webserver/extension_management_auth.dart';
 import 'package:shelf_plus/shelf_plus.dart';
 
 class MockExportSection implements DataExportSection {
@@ -226,6 +227,15 @@ int _crc32(List<int> bytes) {
   return crc ^ 0xFFFFFFFF;
 }
 
+Handler _compatibilityMode(Handler routes) => const Pipeline()
+    .addMiddleware(
+      extensionManagementAuthMiddleware(
+        null,
+        requireExtensionManagementAuthorization: () async => false,
+      ),
+    )
+    .addHandler(routes);
+
 void main() {
   final sections = [
     MockExportSection(filename: 'profiles.json', exportData: {'profiles': []}),
@@ -247,7 +257,7 @@ void main() {
     );
     final app = Router().plus;
     syncHandler.addRoutes(app);
-    return app.call;
+    return _compatibilityMode(app.call);
   }
 
   Future<Response> sendSync(Handler handler, Map<String, dynamic> body) async =>
@@ -741,7 +751,7 @@ void main() {
         );
         final app = Router().plus;
         sync.addRoutes(app);
-        final response = await app.call(
+        final response = await _compatibilityMode(app.call)(
           Request(
             'POST',
             Uri.parse('http://localhost/api/v1/data/sync'),
@@ -946,7 +956,7 @@ void main() {
         );
         final app = Router().plus;
         sync.addRoutes(app);
-        final response = await app.call(
+        final response = await _compatibilityMode(app.call)(
           Request(
             'POST',
             Uri.parse('http://localhost/api/v1/data/sync'),

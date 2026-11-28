@@ -22,7 +22,7 @@ test -n "$PRIMARY"
 curl -sf -X PUT "$BASE/api/v1/scale/tare" >/dev/null
 websocat --no-async-stdio -n -U -t --max-messages-rev 3 "$WS/ws/v1/scale/snapshot" | jq -s -e 'any(.[]; has("weightFlow"))'
 
-curl -sf "$BASE/api/v1/devices/scan?connect=false" | jq -e \
+curl -sf -X POST "$BASE/api/v1/devices/scan?connect=false" | jq -e \
   'any(.[]; .id == "MockScale" and .state == "discovered")'
 curl -sf "$BASE/api/v1/devices" | jq -e \
   'any(.[]; .type == "scale" and .state == "connected" and .connectionRole == "primary")'

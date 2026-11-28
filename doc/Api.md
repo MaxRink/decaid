@@ -84,7 +84,7 @@ same operations: each then needs `Authorization: Bearer <token>` with the scope
 `automaticUpdateCheck` exception in either mode.
 
 While protection is ON the same token is also required for the
-[machine control routes](#machine-control-routes) (raw machine access,
+[privileged machine routes](#privileged-machine-routes) (raw machine access,
 firmware, calibration and advanced machine settings). The rest of the API is
 unchanged (general API authentication is tracked in #1135). Both modes run the same
 handlers with the same validation, manifest checks, pending-update rules,
@@ -121,7 +121,7 @@ in a Token column.
 | POST | `/api/v1/webui/server/start` |
 | POST | `/api/v1/webui/server/stop` |
 
-### Machine control routes
+### Privileged machine routes
 
 These routes can rewrite machine firmware, calibration or low-level settings, or
 send arbitrary bytes to the machine. While protection is ON each needs the same
@@ -134,6 +134,7 @@ working:
 | GET (WebSocket upgrade) | `/ws/v1/machine/raw` |
 | POST | `/api/v1/machine/firmware` |
 | POST | `/api/v1/machine/firmware/apply` |
+| DELETE | `/api/v1/machine/firmware` |
 | POST | `/api/v1/machine/calibration` |
 | PUT | `/api/v1/machine/calibration/:target` |
 | PUT | `/api/v1/machine/scaleCalibration` |
@@ -145,6 +146,12 @@ calibration, advanced-settings and firmware screens answer 401; use the native
 settings or a client holding a token. Browsers cannot send a bearer on a
 WebSocket upgrade, so with protection ON the raw socket is for native clients
 only.
+
+`POST /api/v1/data/sync` with `mode` `push` or `two_way` sends this device's
+data to the `target` the request names, so while protection is ON it needs the
+same token and is refused with 401/403 before any network request; a `pull`
+keeps the body rules below. The rest of the API stays open to LAN clients in
+both modes; general REST and WebSocket authentication is tracked in #1135.
 
 Two more routes are gated by what the body contains, and only while protection
 is ON:
@@ -239,32 +246,78 @@ checks stop tracking the previous repository. See doc/Plugins.md,
 
 ### Browser origins
 
-Every request a browser sends to the API port is checked, in both modes and
-for every route, not only extension management:
+**Host names (every request).** DNS rebinding needs a DNS name the attacker
+controls, so the API port and every skin port (the live skin port, the port 3000
+entry point and the alias ports) answer a request only when its raw `Host`
+header is one of:
 
-- **Writes and WebSocket upgrades.** A request with an `Origin` that is not one
-  of the device's own origins (table below) is refused with `403` and
-  `{"error":"This API does not accept requests from this browser origin"}`
-  before any handler runs, if its method is anything other than `GET` or `HEAD`
-  or it is a WebSocket upgrade. That covers "simple" cross-site requests that
-  a browser sends without a preflight (`text/plain` or form bodies), so a web
-  page elsewhere cannot start a shot, write calibration, upload firmware or
-  open `/ws/v1/machine/raw`.
-- **Preflights.** An `OPTIONS` preflight from a foreign origin is refused the
-  same way, with no `access-control-*` header.
-- **Reads.** A `GET` or `HEAD` from a foreign origin is answered, but without
-  any `access-control-*` header, so the browser does not let that page read the
-  response. `Access-Control-Allow-Origin` and
-  `Access-Control-Allow-Credentials` are only sent to the device's own origins.
-- **Host names (DNS rebinding).** A request that carries an `Origin` or a
-  `Sec-Fetch-Site` header (that is, one sent by a browser) is refused with `403`
-  and `{"error":"This API only answers browsers on the device address"}` unless
-  its `Host` is `localhost`, a loopback address or a numeric address currently
-  assigned to the device. Open the API, plugin pages and skins by numeric
-  address or `localhost`; a browser that reaches them through a DNS name (a
-  `/etc/hosts` entry, a router name, a reverse proxy) is refused. Non-browser
-  clients (no `Origin`, no `Sec-Fetch-*`) may use any host name.
+- a numeric IPv4 or IPv6 address (any address, so clients and browsers that use
+  an IP keep working), except the unspecified `0.0.0.0` and `::`;
+- `localhost` or a name under `.localhost`;
+- an mDNS name under `.local`;
+- this device's own host name as the operating system reports it
+  (`Platform.localHostname`; on Android this is `localhost`, so the name a
+  router registers for the tablet, such as `android-xxxx.fritz.box`, is not
+  admitted and needs `allowedHostNames`);
+- a name in the `allowedHostNames` setting (see [Settings](#settings)).
 
+Any other `Host` is refused with `403` and
+`{"error":"This device only answers its IP address, localhost, .local names and the host names in the allowedHostNames setting"}`
+before any handler runs, for every method and for WebSocket upgrades, whether or
+not the request looks like it came from a browser. Names compare
+case-insensitively and without a trailing dot. `Forwarded` and `X-Forwarded-*`
+headers never change the host this check sees. A request without a `Host`
+header is judged by the listener address, which on the default wildcard bind is
+`0.0.0.0` and therefore refused; in-process callers (`host.localApi`) use
+`localhost`. Browsers send no Fetch Metadata to a plain-HTTP LAN address, so a
+rebound page can make a `fetch` with no `Origin`, `Referer` or `Sec-Fetch-*`;
+this rule is what refuses it.
+
+On top of that, every request a browser sends to the API port passes one
+admission policy before any handler runs, in both modes and for every route,
+including routes added later and plugin-defined routes:
+
+- **Foreign origins are refused.** A request whose `Origin` is not one of the
+  device's own origins (the table below) is refused with `403` and
+  `{"error":"This API does not accept requests from this browser origin"}`,
+  whatever its method. That includes preflights, WebSocket upgrades, `GET`
+  requests and the "simple" requests a browser sends without a preflight
+  (`text/plain` or form bodies), so a page elsewhere cannot start a shot,
+  change settings, write calibration, upload firmware, open
+  `/ws/v1/machine/raw` or read exports and logs. A bearer token does not lift
+  this refusal.
+- **CORS is an allowlist.** `Access-Control-Allow-Origin` (with
+  `Access-Control-Allow-Credentials` and `Vary: Origin`) is only sent to the
+  device's own origins, and only they get a preflight answer. Refusals carry no
+  `access-control-*` header.
+- **Browser hosts.** A request that carries `Origin`, `Referer` or any
+  `Sec-Fetch-*` header is treated as a browser request. It is refused with
+  `403` and `{"error":"This API only answers browsers on the device address"}`
+  when its numeric `Host` is not loopback or an address currently assigned to
+  the device, and when it carries `Forwarded` or any `X-Forwarded-*` header,
+  because those would otherwise replace the host the check sees. A host name
+  admitted by the rule above passes; a name that resolves to the device is
+  still never a trusted *origin* (see the table below).
+- **Cross-site requests without an `Origin`.** Browsers omit `Origin` on
+  navigations, link prefetches and `<img>`/`<script>` loads, but send
+  `Sec-Fetch-Site`. Such a request is refused with `403` and
+  `{"error":"This API does not accept browser requests started by another site"}`
+  for every method when `Sec-Fetch-Site` is `cross-site` or any unknown value, so
+  a page elsewhere cannot trigger a side-effecting `GET` (for example
+  `GET /api/v1/devices/scan`) by navigating to it. `same-site` is admitted only
+  when the `Referer` belongs to one of the device's own origins, because the
+  device's other ports share its site; a page that sends no referrer
+  (`Referrer-Policy: no-referrer`) is refused. A browser that sends a `Referer`
+  but no Fetch Metadata is held to the same rule. `none` (a typed URL or
+  bookmark) and `same-origin` are admitted. A form or `no-cors` `POST` from a
+  page with `Referrer-Policy: no-referrer` still carries `Origin: null`, which is
+  refused like any foreign origin. A device page that loads API resources across
+  loopback names (`localhost` against `127.0.0.1`) is cross-site to the browser,
+  so use the page's own host name for the API.
+- **WebSocket upgrades** are checked a second time where every socket is
+  accepted (`admittedWebSocketHandler`): an upgrade that carries an `Origin` the
+  policy did not admit is refused with `403` even if it reaches a socket handler
+  some other way.
 - **Framing.** HTML from the host itself (the bundled settings page, the docs
   viewer, any non-plugin page) carries `X-Frame-Options: SAMEORIGIN` and
   `Content-Security-Policy: frame-ancestors 'self'`. Plugin pages and surfaces
@@ -274,38 +327,104 @@ for every route, not only extension management:
   `127.0.0.1`; IPv6 literals are not valid CSP sources and are left out), so
   the active skin can embed them and other sites cannot.
 
-Requests without an `Origin` (and without `Sec-Fetch-Site`) are not affected:
-Home Assistant, `curl`, MCP clients, native app code and `host.localApi` keep
-working, in both modes.
+Every API response carries `Vary: Origin`, so a cache never serves one
+origin's answer to another.
 
-Extension management additionally keeps its own, older browser-origin check,
-described next.
+Requests without `Origin`, `Referer` and `Sec-Fetch-*` are only subject to the
+host name rule: Home Assistant, `curl`, MCP clients, native app code and
+`host.localApi` keep working in both modes, by IP address, `localhost`, a
+`.local` name, the device's own host name or an allow-listed name, and behind a
+forwarding proxy. A native client that sends a `Referer` is a browser request
+and is held to the browser rules as well.
 
-A browser page is also checked against its `Origin`, in both modes and
-independently of any credential. The check runs ahead of the general CORS
-middleware, the account-proxy CORS rule and the authentication middleware, and
-refuses with `403` and
-`{"error":"Extension management is not allowed from this browser origin"}`
-before any handler work, naming no internal configuration and applying nothing.
-A valid `extensions:manage` bearer, an approved `manage.extensions` plugin grant
-and compatibility mode all make no difference to it.
+**What remains.** The policy is a browser boundary, not authentication:
 
-Which requests it refuses:
+- Over plain HTTP no browser sends Fetch Metadata, so a page elsewhere can
+  still make a header-less `GET` to the device's *numeric* address, for example
+  `<img referrerpolicy="no-referrer" src="http://192.168.1.5:8080/api/v1/devices/scan">`.
+  Such a request is indistinguishable from `curl`, and the browser does not
+  let the page read the response. Reading needs a same-origin page, and a
+  rebound page's origin is its DNS name, which the host name rule refuses.
+  What such a request can still do is limited to
+  [side-effecting `GET` routes](#side-effecting-get-routes):
+  in protected mode they need an `extensions:manage` credential unless the
+  browser rule admitted the request as one of the device's own pages, so a
+  blind `GET` gets `401` and changes nothing. In compatibility mode the
+  deprecated `GET` forms still run; use their `POST` forms. Plugin-defined
+  routes (`/api/v1/plugins/<id>/<endpoint>`) receive the method and decide for
+  themselves; a plugin that changes state on `GET` can be triggered blind in
+  both modes. Browsers that enforce Private / Local Network Access
+  restrictions block or prompt for this request.
+- An allow-listed name, the device's own host name and `.local` names are
+  trusted not to be under an attacker's control. Only allow-list names served by
+  DNS you control.
+- A trusted origin has full API control: script running in an installed skin,
+  a plugin page or the docs viewer can call every route. A cross-site scripting
+  flaw in an installed skin is therefore equivalent to API control; install
+  skins and plugins only from sources you trust. The docs viewer loads its
+  third-party scripts at pinned versions with Subresource Integrity.
+- A non-browser LAN client can still call every route that protected mode does
+  not cover. Authentication for the rest of the REST and WebSocket API is
+  tracked in #1135.
 
-- The 19 routes in the table above, on every method and path pair.
-- `POST /api/v1/data/import`, refused whole before the archive is read: whether
-  an archive carries a gated settings key is only known after parsing it, so
-  the conservative answer applies to every import.
-- `POST /api/v1/settings`, refused when the body contains a gated key
-  (`webUiPath`, a changed `defaultSkinId`, `automaticUpdateCheck` turned on),
-  and none of that body's keys are applied. A safe body that reaches the
-  handler is unaffected; its preflight is refused before the body is known — see
-  [Deliberate limits of the setting](#deliberate-limits-of-the-setting).
-- A pulling `POST /api/v1/data/sync`, refused when the pull includes the
-  `settings` section (the default), before any network request or write. The
-  section list is part of the request body, so a pull or `two_way` sync that
-  excludes `settings`, a `push`, and any other section are not refused by this
-  check: it is an extension-management boundary, not a general data-import one.
+#### Side-effecting GET routes
+
+These `GET` routes change state, so their `GET` form is deprecated in favour of
+a `POST` form that takes the same query parameters:
+
+| Deprecated | Use instead | Effect |
+|---|---|---|
+| `GET /api/v1/devices/scan` | `POST /api/v1/devices/scan` | Scans, and by default connects the devices it finds |
+
+- **Protected mode:** the `GET` form needs an `extensions:manage` bearer token
+  (`401`/`403` as on the extension management routes) unless the browser rule
+  admitted the request as coming from one of the device's own pages (an own
+  `Origin`, a `Referer` from an own origin, or `Sec-Fetch-Site` `none` or
+  `same-origin`). A request with none of those headers, which is what an
+  `<img>` on another site sends, needs the token. The `POST` form is as open as
+  the device's other control routes (`PUT /api/v1/devices/connect`): a browser
+  always sends `Origin` on a `POST`, so the browser rule already covers it.
+- **Compatibility mode:** the `GET` form still runs for every client, and so
+  can still be fired blind by a page elsewhere. Clients should move to `POST`.
+- No other host route changes state on `GET`. Reads that do work on the device
+  (`GET /api/v1/data/export`, `GET /api/v1/machine/calibration`, which reads the
+  machine live) change nothing. The account proxy needs a bearer token.
+
+#### Compatibility
+
+- **DNS names need `.local` or the allowlist.** Every client, browser or not,
+  that reaches the device through a DNS name other than `localhost`, a `.local`
+  name or the device's own host name (a router DNS record, a hosts file entry,
+  a reverse proxy that passes its upstream name as `Host`) gets `403` until the
+  name is added to `allowedHostNames`.
+- **Browsers: open the device by numeric address or `localhost`.** A page
+  opened under a DNS name is not one of the device's origins, so its API calls
+  are refused. The skin entry point (port 3000) and inactive skin alias ports
+  redirect an admitted name that resolves to the device to a numeric device
+  address: the address the name resolves to on the device, and when the device
+  holds several addresses of the client's family (Wi-Fi and Ethernet, IPv6
+  stable and privacy addresses), the one that shares the longest prefix with the
+  client (at least /16 for IPv4, /64 for IPv6). Only when none fits does the
+  redirect keep the name. So `http://decent.local:3000` lands on a working skin.
+  A reverse proxy in front
+  of the device must enforce its own origin check and must not forward the
+  browser's `Origin`, `Referer` and `Sec-Fetch-*` headers; browser requests that
+  arrive with `Forwarded` or `X-Forwarded-*` headers are refused, and the skin
+  server injects neither the skin API script nor the account-proxy token into a
+  page requested with them.
+- **Skin development servers** on another computer or port are foreign origins.
+  Proxy the API through the dev server so the browser only talks to the dev
+  server's own origin, and drop the `Origin` header on the proxied requests; see
+  [Developing against a device](Skins.md#3-connect-to-gateway-during-development).
+- **Protected mode and skins.** With protection ON the
+  [privileged machine routes](#privileged-machine-routes) need an
+  `extensions:manage` token, which skin pages do not have, so a skin's
+  calibration, advanced-settings, settings-reset and firmware screens answer 401
+  and the raw machine socket is for native clients holding a token.
+
+Extension management routes, imports, settings and syncs go through the same
+policy and answer with the same `403` body; there is no separate
+extension-management origin check any more.
 
 What counts as the device's own origin:
 
@@ -333,8 +452,8 @@ refused while the skin server is on another port. The port 3000 entry point only
 redirects to the active origin and an inactive skin's alias port only serves a
 redirect, so a skin page always runs, and posts, from its live origin. `Host`,
 `Referer`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`, `Forwarded` and
-DNS resolution are never consulted, so a name that resolves to the device (DNS
-rebinding) is not enough.
+DNS resolution never make an origin trusted, so a name that resolves to the
+device (DNS rebinding) is not enough.
 
 #### Opening a built-in page through a name
 
@@ -427,7 +546,7 @@ for a shared or commercial deployment.
 | Approved `manage.extensions` plugin via `host.localApi` | Allowed | Allowed |
 | Trusted native Flutter controls | Allowed | Allowed |
 | Decent account proxy | Existing account scopes | Same account scopes |
-| [Machine control routes](#machine-control-routes) | No credential | Needs `extensions:manage` |
+| [Privileged machine routes](#privileged-machine-routes) | No credential | Needs `extensions:manage` |
 | Other REST/WS APIs | Existing behaviour, no new gate | Existing behaviour, not protected by this setting |
 
 The rows assume a request that carries no untrusted browser `Origin`; the
@@ -453,7 +572,7 @@ key-value store, `host.localApi` nor the account proxy can write it. `GET
   silently downgrading security because storage failed.
 - **The current value is resolved per relevant request, once** (and refreshed
   when the app resumes from the background). Only a request whose outcome can
-  depend on the mode reads it: the 19 routes, the machine control routes, a
+  depend on the mode reads it: the 19 routes, the privileged machine routes, a
   gated settings body, an import,
   and a `settings`-bearing pull or `two_way` sync. Everything else — machine
   state, polling, the account proxy, read-only and plugin-defined routes and
@@ -468,9 +587,9 @@ key-value store, `host.localApi` nor the account proxy can write it. `GET
   proposed in #925; #1135 remains the separate, optional full REST/WS
   authentication. Use a trusted network until then.
 - **CORS is limited to the device's own origins.** Responses carry
-  `Access-Control-Allow-Origin` only for the device's own origins, foreign
-  preflights are refused, and foreign writes and WebSocket upgrades are refused
-  before any handler runs (see [Browser origins](#browser-origins)). This is a
+  `Access-Control-Allow-Origin` only for the device's own origins, and every
+  request from a foreign origin, preflights and WebSocket upgrades included, is
+  refused before any handler runs (see [Browser origins](#browser-origins)). This is a
   browser boundary, not authentication: a non-browser LAN client can still call
   every route that protection does not cover.
 - **A preflight for a body-gated path is refused before its body exists.** A
@@ -480,11 +599,10 @@ key-value store, `host.localApi` nor the account proxy can write it. `GET
   `settings`-bearing pull are refused on their content anyway, so the only
   stricter outcomes are a safe `POST /api/v1/settings` body and a `push` sync: a
   browser page on an untrusted origin cannot send either as an ordinary JSON
-  request, because the browser stops at the refused preflight. A body the
-  browser sends without one (a simple content type carrying the same JSON) and
-  any request from a non-browser client still reach the handler, are applied as
-  usual and keep the CORS echo. This is the conservative answer for a path whose
-  relevance depends on a body a preflight does not have.
+  request, because the browser stops at the refused preflight, and the
+  API-wide browser admission policy refuses the same body sent without one (a
+  simple content type). A request from a non-browser client still reaches the
+  handler and is applied as usual.
 - **A plugin holding `manage.extensions` is full trust**, in both modes: it can
   install or rewrite plugins, approve permission escalations and change
   extension settings. Token rotation and revocation apply to named tokens
@@ -674,7 +792,8 @@ Pre-stream responses are `400` for malformed input, `404` for an unknown artifac
 | Method | Path | Description | Handler |
 |--------|------|-------------|---------|
 | GET | `/api/v1/devices` | List devices (present + remembered) | `devices_handler.dart` |
-| GET | `/api/v1/devices/scan` | Scan and fill missing device slots; set `?connect=false` for discovery only | |
+| POST | `/api/v1/devices/scan` | Scan and fill missing device slots; set `?connect=false` for discovery only | |
+| GET | `/api/v1/devices/scan` | Deprecated `GET` form of the scan; needs `extensions:manage` in protected mode unless sent by one of the device's own pages ([details](#side-effecting-get-routes)) | |
 | PUT | `/api/v1/devices/connect` | Connect to device by ID (`connectionRole: primary|auxiliary` for scales) | |
 | PUT | `/api/v1/devices/disconnect` | Disconnect device | |
 | PUT | `/api/v1/devices/forget` | Forget a remembered device | |
@@ -1023,9 +1142,18 @@ from normal scan results; it is never a persisted `grinderId`.
 | Method | Path | Description | Handler |
 |--------|------|-------------|---------|
 | GET | `/api/v1/settings` | All app settings (gateway, theme, charging, devices, etc.) | `settings_handler.dart` |
-| POST | `/api/v1/settings` | Update settings (partial, key-by-key); while extension management protection is ON, `webUiPath`, a changed `defaultSkinId` and turning `automaticUpdateCheck` on need an `extensions:manage` token ([details](#extension-management-authorization)) | |
+| POST | `/api/v1/settings` | Update settings (partial, key-by-key); while extension management protection is ON, `webUiPath`, a changed `defaultSkinId`, a changed `allowedHostNames` and turning `automaticUpdateCheck` on need an `extensions:manage` token ([details](#extension-management-authorization)) | |
 
-Settings fields include: `gatewayMode`, `themeMode`, `logLevel`, `weightFlowMultiplier`, `volumeFlowMultiplier`, `hotWaterFlowMultiplier`, `scalePowerMode`, `blockOnNoScale`, `blockTareDuringShot`, `stopHotWaterAtWeight`, `preferredMachineId`, `preferredScaleId`, `preferredGrinderDeviceId`, `defaultSkinId`, `automaticUpdateCheck`, `chargingMode`, `nightModeEnabled`, `nightModeSleepTime`, `nightModeMorningTime`, `lowBatteryBrightnessLimit`, `keepAwake`, `keepServiceRunning`, `simulatedDevices`.
+Settings fields include: `gatewayMode`, `themeMode`, `logLevel`, `weightFlowMultiplier`, `volumeFlowMultiplier`, `hotWaterFlowMultiplier`, `scalePowerMode`, `blockOnNoScale`, `blockTareDuringShot`, `stopHotWaterAtWeight`, `preferredMachineId`, `preferredScaleId`, `preferredGrinderDeviceId`, `defaultSkinId`, `automaticUpdateCheck`, `allowedHostNames`, `chargingMode`, `nightModeEnabled`, `nightModeSleepTime`, `nightModeMorningTime`, `lowBatteryBrightnessLimit`, `keepAwake`, `keepServiceRunning`, `simulatedDevices`.
+
+`allowedHostNames` (array of strings, default `[]`): extra DNS names the API
+and skin servers answer besides numeric addresses, `localhost`, `.local` names
+and the device's own host name (see [Browser origins](#browser-origins)). At
+most 32 names of dot-separated DNS labels; they are stored lower-case without a
+trailing dot, and an IP address or any other value is a `400`. A change needs an
+`extensions:manage` token in protected mode and, like every write, is refused
+from a foreign browser origin. The same list is editable under Settings >
+Security > Allowed host names.
 
 Android session-only USB IDs are usable for the current attachment but are not durable device identities. Writing one to `preferredMachineId` leaves the existing preference unchanged. For `preferredScaleId`, a currently discovered, protocol-identified serial-less USB Half Decent Scale is saved as the durable family selector `usb-hds:any`; unsupported or absent session-only scale IDs return `400`. Clients may also save `usb-hds:any` directly without a connected scale. `null` still clears either preference.
 
@@ -1338,7 +1466,7 @@ archive is also bounded by the 2 GiB import request limit.
 | POST | `/api/v1/account/proxy/<path>` | Auth-enriching write proxy (relays body) | `account_proxy_handler.dart` |
 | PUT | `/api/v1/account/proxy/<path>` | Auth-enriching write proxy (relays body) | `account_proxy_handler.dart` |
 
-Linking/unlinking a Decent account is **native-only** — there are no network login/logout routes. Apart from the account proxy, extension management and (in protected mode) the machine control routes, the webserver is unauthenticated to non-browser LAN clients (browsers on other origins are refused, see [Browser origins](#browser-origins)), so exposing credential operations would let any LAN client or browser origin store attacker credentials or unlink the account. The status response omits the linked email (PII).
+Linking/unlinking a Decent account is **native-only** — there are no network login/logout routes. Apart from the account proxy, extension management and (in protected mode) the privileged machine routes, the webserver is unauthenticated to non-browser LAN clients (browsers on other origins are refused, see [Browser origins](#browser-origins)), so exposing credential operations would let any LAN client or browser origin store attacker credentials or unlink the account. The status response omits the linked email (PII).
 
 The **proxy** lets clients *use* the account without ever seeing the credentials: it attaches the linked account's Basic auth server-side, forwards to `decentespresso.com`, and relays the upstream status + body verbatim. It requires `Authorization: Bearer <token>`. The account proxy's scopes are independent of [extension management](#extension-management-authorization), which is the other surface with a scope of its own (and needs it only while extension management protection is ON): an `extensions:manage` token cannot use the proxy, and an account-proxy token cannot manage extensions. `GET` requires `account:proxy` (including the skin token injected into served skin pages); `POST`/`PUT` require the stronger `account:proxy:write` scope, so the read-only skin token cannot write. Forwarding is restricted to the `support/api/` prefix. The OpenAPI spec documents the generated-client-safe `/support/api/{endpoint}` form; use this raw catch-all route when a Decent backend path contains additional slashes. Each served skin generation gets a fresh token bound to that skin's immutable consent key; switching or stopping the skin server revokes the previous token. The skin's origin normally remains stable across restarts, with a temporary fallback if its assigned port is occupied; see [Skin Origins and Browser Storage](Skins.md#skin-origins-and-browser-storage). The stable port 3000 entry point redirects without caching to the active origin and is the address to bookmark. The first request from each skin, plugin, or named API client pauses for native approval on the Decaid device. Explicit allow and deny decisions are remembered; a 30-second timeout denies only that request. Responses: 401 (missing/invalid token or no linked account), 403 (token unscoped, path not allowed, or account access not granted). Write-scoped tokens are minted from the account page's API-token UI by enabling "Allow write access". Headless operators can grant session-only access with `--trust-consent=<caller-key>` or `--trust-all-consent`.
 

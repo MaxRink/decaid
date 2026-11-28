@@ -685,6 +685,12 @@ void main() {
           '/api/v1/data/sync',
           json: syncBody(mode),
         );
+        if (mode == 'two_way') {
+          expect(reply.status, 401, reason: 'its push phase needs a token');
+          expect(pullRequests, isEmpty);
+          expect(settings.defaultSkinId, _currentSkinId);
+          return;
+        }
         expect(reply.status, 200, reason: '$reply');
         final section = reply.json['pull']['settings'] as Map<String, dynamic>;
         expect(section['warnings'], [_skinWarning]);
@@ -806,7 +812,67 @@ void main() {
             expect(settings.automaticUpdateCheck, isTrue);
             expect(settings.gatewayMode, GatewayMode.full);
           });
+
+          test('changing allowedHostNames $label $outcome', () async {
+            final reply = await send(
+              'POST',
+              '/api/v1/settings',
+              authorization: credentialHeader(kind),
+              json: {
+                'allowedHostNames': ['Decent.LAN.', 'proxy.home.arpa'],
+              },
+            );
+            if (!admitted) {
+              expect(reply.status, refusal, reason: '$reply');
+              expect(reply.json, refusalBody(kind), reason: '$reply');
+              expect(settings.allowedHostNames, isEmpty);
+              return;
+            }
+            expect(reply.status, 200, reason: '$reply');
+            expect(settings.allowedHostNames, [
+              'decent.lan',
+              'proxy.home.arpa',
+            ]);
+          });
         }
+
+        test(
+          'allowedHostNames is validated and the current value is free',
+          () async {
+            for (final bad in [
+              'decent.lan',
+              ['evil example'],
+              ['192.168.1.5'],
+              [1],
+              List.filled(33, 'a.lan'),
+            ]) {
+              final reply = await send(
+                'POST',
+                '/api/v1/settings',
+                authorization: credentialHeader('manager'),
+                json: {'allowedHostNames': bad},
+              );
+              expect(reply.status, 400, reason: '$bad');
+            }
+            final same = await send(
+              'POST',
+              '/api/v1/settings',
+              json: {'allowedHostNames': <String>[]},
+            );
+            expect(same.status, 200);
+            final foreign = await send(
+              'POST',
+              '/api/v1/settings',
+              authorization: credentialHeader('manager'),
+              origin: 'http://evil.example',
+              json: {
+                'allowedHostNames': ['evil.example'],
+              },
+            );
+            expect(foreign.status, 403);
+            expect(settings.allowedHostNames, isEmpty);
+          },
+        );
 
         test('a default skin already in effect stays legacy', () async {
           final reply = await send(
@@ -968,6 +1034,24 @@ void main() {
           });
         });
 
+        test('a push needs a token only in protected mode', () async {
+          final tokenless = await send(
+            'POST',
+            '/api/v1/data/sync',
+            json: {'target': 'http://192.168.1.50:8080', 'mode': 'push'},
+          );
+          expect(tokenless.status, protect ? 401 : 200, reason: '$tokenless');
+          expect(pushedBodies, hasLength(protect ? 0 : 1));
+          final authorized = await send(
+            'POST',
+            '/api/v1/data/sync',
+            authorization: 'Bearer $managerToken',
+            json: {'target': 'http://192.168.1.50:8080', 'mode': 'push'},
+          );
+          expect(authorized.status, 200, reason: '$authorized');
+          expect(pushedBodies, hasLength(protect ? 1 : 2));
+        });
+
         for (final mode in ['pull', 'two_way']) {
           test('$mode applies both keys in compatibility mode and skips both '
               'in protected mode', () async {
@@ -976,6 +1060,12 @@ void main() {
               '/api/v1/data/sync',
               json: {'target': 'http://192.168.1.50:8080', 'mode': mode},
             );
+            if (protect && mode == 'two_way') {
+              expect(reply.status, 401, reason: 'a push needs a token');
+              expect(pullRequests, isEmpty);
+              expect(pushedBodies, isEmpty);
+              return;
+            }
             expect(reply.status, 200, reason: '$reply');
             final section =
                 reply.json['pull']['settings'] as Map<String, dynamic>;
@@ -1052,6 +1142,53 @@ void main() {
           expect(storage.calls, isEmpty);
           expect(webUi.calls, isEmpty);
         });
+
+        for (final origin in [_trustedOrigin, null]) {
+          final caller = origin == null
+              ? 'an originless caller'
+              : 'a trusted page';
+          test('an unchanged skin from $caller does not override a '
+              'concurrent skin change', () async {
+            final gatewayWriteStarted = settingsService.pauseNextGatewayWrite();
+            final pending = send(
+              'POST',
+              '/api/v1/settings',
+              json: {'gatewayMode': 'full', 'defaultSkinId': _currentSkinId},
+              origin: origin,
+            );
+            await gatewayWriteStarted;
+
+            await settings.setDefaultSkinId(_otherSkinId);
+            settingsService.resumeGatewayWrite();
+
+            final reply = await pending;
+            expect(reply.status, 200, reason: '$reply');
+            expect(settings.gatewayMode, GatewayMode.full);
+            expect(settings.defaultSkinId, _otherSkinId);
+            if (protect) expect(storage.calls, isEmpty);
+          });
+
+          test('an already-on automatic update check from $caller is written '
+              'back only when no token is needed', () async {
+            await settings.setAutomaticUpdateCheck(true);
+            final gatewayWriteStarted = settingsService.pauseNextGatewayWrite();
+            final pending = send(
+              'POST',
+              '/api/v1/settings',
+              json: {'gatewayMode': 'full', 'automaticUpdateCheck': true},
+              origin: origin,
+            );
+            await gatewayWriteStarted;
+
+            await settings.setAutomaticUpdateCheck(false);
+            settingsService.resumeGatewayWrite();
+
+            final reply = await pending;
+            expect(reply.status, 200, reason: '$reply');
+            expect(settings.gatewayMode, GatewayMode.full);
+            expect(settings.automaticUpdateCheck, !protect);
+          });
+        }
 
         test(
           'safe settings from an untrusted origin are refused too',
@@ -1293,6 +1430,10 @@ void main() {
           200,
         );
         expect(settings.automaticUpdateCheck, isFalse);
+        expect(settingsService.requireExtensionManagementAuthorizationReads, 0);
+      });
+
+      test('a push reads it exactly once', () async {
         expect(
           (await send(
             'POST',
@@ -1302,7 +1443,7 @@ void main() {
           200,
         );
         expect(pushedBodies, hasLength(1));
-        expect(settingsService.requireExtensionManagementAuthorizationReads, 0);
+        expect(settingsService.requireExtensionManagementAuthorizationReads, 1);
       });
 
       test('an origin refusal short-circuits before the read', () async {
@@ -1622,6 +1763,9 @@ void main() {
               final reply = await send(
                 'POST',
                 '/api/v1/data/sync',
+                authorization: protect && mode == 'two_way'
+                    ? 'Bearer $managerToken'
+                    : null,
                 json: {'target': 'http://192.168.1.50:8080', 'mode': mode},
               );
               expect(reply.status, 200, reason: '$reply');
@@ -1677,6 +1821,7 @@ void main() {
           final reply = await send(
             'POST',
             '/api/v1/data/sync',
+            authorization: protect ? 'Bearer $managerToken' : null,
             json: {'target': 'http://192.168.1.50:8080', 'mode': 'push'},
           );
           expect(reply.status, 200, reason: '$reply');

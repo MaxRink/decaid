@@ -191,12 +191,12 @@ only from a request whose socket peer is the device itself — loopback or one
 of its current addresses — so a page on another computer cannot borrow the name
 even with a valid token. `Origin: null`, `https`, a hostname, another
 device's address and a malformed value are refused with `403` and
-`{"error":"Extension management is not allowed from this browser origin"}`,
-whether or not the page sends a token, and the refusal applies to the same
-routes and body-gated keys as everywhere else; see
-[Browser origins](Api.md#browser-origins). Requests that carry no `Origin`
-header, such as the skin's own asset and `GET` requests and non-browser
-clients, are unaffected.
+`{"error":"This API does not accept requests from this browser origin"}`,
+whether or not the page sends a token, on every API route; see
+[Browser origins](Api.md#browser-origins). A skin's own same-origin asset and
+`GET` requests carry no `Origin` and pass, and non-browser clients are
+unaffected. A skin is trusted with full API control, so a cross-site scripting
+flaw in a skin is equivalent to API control: do not render untrusted HTML.
 
 Skins get no implicit management authority. The account-proxy token Decaid
 injects into served skin pages has only the `account:proxy` scope, and the
@@ -392,10 +392,12 @@ is the recommended way back to the WebUI.
 
 **A bookmark to a skin's own port still works.** While a skin is not active,
 its assigned port keeps a lightweight listener that answers requests for a
-device address, or a hostname that resolves to one, with
+device address, or an admitted hostname (`.local`, the device's own name or an
+`allowedHostNames` entry) that resolves to one, with
 `307 Temporary Redirect` and `Cache-Control: no-store` to the entry point,
-preserving the request's host, path and query and changing only the port. Any
-other host gets the same plain 404 the entry point returns. A
+preserving the request's host, path and query and changing only the port. A
+name that is not admitted gets `403`; any other host gets the same plain 404
+the entry point returns. A
 bookmark created after the entry point redirected you to a skin therefore
 recovers on whatever skin is active now, instead of failing with a connection
 error. That listener returns nothing but the redirect: no skin files, no
@@ -515,8 +517,8 @@ Diagnostic builds (`--dart-define=diagnostics=true`) bundle the temporary
 `ble-reconnect-diagnostics` skin. It samples `/api/v1/diagnostics/ble`, listens
 to `/ws/v1/devices` and `/ws/v1/machine/snapshot`, guides the sleep and
 scale-power sequence, and exports a timestamped JSON report. The diagnostics
-endpoint is read-only; discovery probes are explicit calls to
-`/api/v1/devices/scan?connect=false` or `connect=true`.
+endpoint is read-only; discovery probes are explicit
+`POST /api/v1/devices/scan?connect=false` or `connect=true` calls.
 
 ## Core API Endpoints
 
@@ -549,8 +551,14 @@ Returns all discovered devices with their connection states.
 
 #### Scan for Devices
 ```http
-GET /api/v1/devices/scan
+POST /api/v1/devices/scan
 ```
+
+The `GET` form still works but is deprecated: a page on another site can
+trigger it blind, so in protected mode it needs an `extensions:manage` token
+unless the request comes from one of the device's own pages (see
+[Side-effecting GET routes](Api.md#side-effecting-get-routes)). Skins should
+send `POST`; it takes the same query parameters.
 
 Triggers a scan-first connection cycle. With the default `connect=true`, Decaid preserves connected devices and automatically fills only missing machine and scale slots. Preferred devices connect without prompting when found; missing preferred devices or multiple candidates produce machine-first, then scale ambiguity on `ws/v1/devices`. Set `connect=false` for discovery only. Use `quick=true` to return immediately without waiting for scan results.
 
@@ -3353,7 +3361,7 @@ Here's a complete minimal skin implementation:
 
 ### Scale Not Responding
 - Check scale is connected: `GET /api/v1/devices`
-- Scan and reconnect a missing scale: `GET /api/v1/devices/scan`
+- Scan and reconnect a missing scale: `POST /api/v1/devices/scan`
 - If alternatives produce ambiguity, connect the selected scale: `PUT /api/v1/devices/connect` with `{"deviceId":"..."}`
 - Check scale battery level via scale snapshot stream
 
@@ -3520,43 +3528,89 @@ curl -X POST http://localhost:8080/api/v1/webui/skins/install/url \
   -d '{"url": "file:///path/to/my-skin.zip"}'
 ```
 
-**Option D: Serve Locally and Point Browser** (during development):
+**Option D: Serve Locally Through a Proxy** (during development):
 
 ```bash
-# In your Next.js project
+# In your skin project
 npm run dev
 
-# Access directly at http://localhost:3000
-# Connect to Decaid API at http://<gateway-ip>:8080
+# Open the dev server (for example http://localhost:5173); it proxies the
+# Decaid API, see below
 ```
 
 ### 3. Connect to Gateway During Development
 
-When developing locally, your skin needs to connect to the Decaid gateway:
+Decaid answers browsers only from its own origins: the skin page it serves, the
+API port and the API docs port, on `localhost` or the device's numeric address
+(see [Browser origins](Api.md#browser-origins)). A page served by a dev server
+on your computer is a different origin, so a `fetch` or WebSocket from it
+straight to `http://<gateway-ip>:8080` is refused with 403 and gets no CORS
+grant. Let the dev server proxy the API instead: the page then only talks to
+its own origin, and the proxy forwards the requests to the device without the
+browser's `Origin` header, like any other non-browser client. The proxy then
+carries the device's trust, so it must itself refuse requests from any origin
+other than the dev page; otherwise every website open in the same browser could
+use the device through it.
+
+With Vite:
 
 ```javascript
-// Use environment variable or config
-const GATEWAY_URL = process.env.NEXT_PUBLIC_GATEWAY_URL || 'http://192.168.1.100:8080';
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://192.168.1.100:8080';
+// vite.config.js
+const gateway = 'http://192.168.1.100:8080';
+const devOrigins = new Set(['http://localhost:5173', 'http://127.0.0.1:5173']);
+const forwardDevPageOnly = (proxy) => {
+  const forward = (proxyRequest, request) => {
+    const origin = request.headers.origin;
+    if (origin !== undefined && !devOrigins.has(origin)) {
+      proxyRequest.destroy();
+      return;
+    }
+    proxyRequest.removeHeader('origin');
+  };
+  proxy.on('proxyReq', forward);
+  proxy.on('proxyReqWs', forward);
+};
 
-// In your API client
-export const apiClient = {
-  async getMachineState() {
-    const response = await fetch(`${GATEWAY_URL}/api/v1/machine/state`);
-    return response.json();
+export default {
+  base: './',
+  server: {
+    proxy: {
+      '/api': {
+        target: gateway,
+        changeOrigin: true,
+        configure: forwardDevPageOnly,
+      },
+      '/ws': {
+        target: gateway,
+        changeOrigin: true,
+        ws: true,
+        configure: forwardDevPageOnly,
+      },
+    },
   },
-  
-  connectSnapshot() {
-    return new WebSocket(`${WS_URL}/ws/v1/machine/snapshot`);
-  }
 };
 ```
 
-**Development `.env.local`:**
-```bash
-NEXT_PUBLIC_GATEWAY_URL=http://192.168.1.100:8080
-NEXT_PUBLIC_WS_URL=ws://192.168.1.100:8080
+In the skin, use the proxy paths on the dev server and the API port of the
+page's host when Decaid serves it:
+
+```javascript
+const apiHost = import.meta.env.DEV ? location.host : `${location.hostname}:8080`;
+
+export const apiClient = {
+  async getMachineState() {
+    const response = await fetch(`http://${apiHost}/api/v1/machine/state`);
+    return response.json();
+  },
+
+  connectSnapshot() {
+    return new WebSocket(`ws://${apiHost}/ws/v1/machine/snapshot`);
+  },
+};
 ```
+
+Other dev servers work the same way as long as the proxy forwards WebSockets,
+refuses other origins and removes the `Origin` header of the dev page.
 
 ---
 
@@ -3809,7 +3863,7 @@ This shows "Back to MySkin" in the settings plugin's nav bar. When clicked, it n
 
 **External links:** When a skin runs inside the embedded webview (mobile/desktop app), navigations to the active skin origin, `localhost:3000`, and the settings plugin load in place; any other `http`/`https` link opens in the **system browser** while the skin stays loaded. A plain `<a href="https://…">` works, but the in-app webview blocks `target="_blank"` popups (`javaScriptCanOpenWindowsAutomatically: false`). For JS-driven links, use a delegated click handler with `window.open(url, '_blank')` and a `location.href` fallback so the navigation reaches `shouldOverrideUrlLoading` and is handed off to the OS.
 
-**Return to the dashboard:** Port 3000 is a stable no-store entry point that redirects to the selected skin's origin, normally retained across restarts as described in [Skin Origins and Browser Storage](#skin-origins-and-browser-storage). The active origin loads the tokenless `/__decent/skin-api.js` from an absolute same-origin URL, which exposes `window.decentApp.exitToDashboard()` and `window.decentApp.switchSkin(skinId)`, described in [Switching Skins from an Embedded Skin](#switching-skins-from-an-embedded-skin). ReaPrime stores a newly rotated, skin-bound account-proxy token in escaped page metadata that only the same-origin script reads; switching or stopping the server revokes it. Separate skin origins prevent a stale tab from reading another skin's token. Token injection accepts loopback and IP addresses currently assigned to the device, including Ethernet and secondary adapters; arbitrary hostnames and stale addresses are rejected. If local interface enumeration is unavailable, the WiFi address cached for the server link is used as a fallback. A hostname that resolves to one of those addresses — a router DNS record, an mDNS name, a hosts file entry — reaches the entry redirect and receives the script tag, but never the token, which stays restricted to loopback and literal device addresses so the DNS-rebinding boundary holds. A skin that needs the account-proxy token must therefore be opened by loopback or device IP; a skin that only needs `window.decentApp` also works when opened by name. The script response also uses `Cross-Origin-Resource-Policy: same-origin`. In the embedded webview the callback closes the skin and reveals the Decent dashboard. In an external browser it is a no-op. The same script exposes `window.decentApp.exitApp()`, for example after asking the machine to sleep. It returns `false` and does nothing outside the embedded WebView. Like `switchSkin`, it navigates the top frame to `/__decent/exit-app?nonce=<nonce>` on its own origin, and Decaid accepts the request only with the active `SkinView`'s main-frame nonce, so a cross-origin subframe cannot trigger it. On Android it moves Decaid to the background like the Home button, so machine connections and wake schedules keep running and reopening Decaid returns to the skin. Desktop builds quit. iOS does not let apps close themselves, so the call does nothing there. The script works with `script-src 'self'`; policies that reject all same-origin scripts, such as `script-src 'none'` or nonce-only policies without `'self'`, also reject this API.
+**Return to the dashboard:** Port 3000 is a stable no-store entry point that redirects to the selected skin's origin, normally retained across restarts as described in [Skin Origins and Browser Storage](#skin-origins-and-browser-storage). The active origin loads the tokenless `/__decent/skin-api.js` from an absolute same-origin URL, which exposes `window.decentApp.exitToDashboard()` and `window.decentApp.switchSkin(skinId)`, described in [Switching Skins from an Embedded Skin](#switching-skins-from-an-embedded-skin). ReaPrime stores a newly rotated, skin-bound account-proxy token in escaped page metadata that only the same-origin script reads; switching or stopping the server revokes it. Separate skin origins prevent a stale tab from reading another skin's token. Token injection accepts loopback and IP addresses currently assigned to the device, including Ethernet and secondary adapters; arbitrary hostnames and stale addresses are rejected. If local interface enumeration is unavailable, the WiFi address cached for the server link is used as a fallback. A hostname that resolves to one of those addresses — a router DNS record, an mDNS name, a hosts file entry — is redirected by the port 3000 entry point (and an inactive skin's alias port) to the device's numeric address (the address the name resolves to, or with several addresses of the client's family the one on the client's subnet; only when none fits is the name kept). Names other than `.local`, the device's own host name and `allowedHostNames` entries get `403` on every skin port, so `http://decent.local:3000` opens the skin on a working origin with the token; the API refuses browser pages opened by name. A page fetched from the skin port itself by name still receives the script tag but never the token, which stays restricted to loopback and literal device addresses so the DNS-rebinding boundary holds. The skin server reads the raw `Host` header and serves neither the script tag nor the token to a request carrying `Forwarded` or `X-Forwarded-*` headers. The script response also uses `Cross-Origin-Resource-Policy: same-origin`. In the embedded webview the callback closes the skin and reveals the Decent dashboard. In an external browser it is a no-op. The same script exposes `window.decentApp.exitApp()`, for example after asking the machine to sleep. It returns `false` and does nothing outside the embedded WebView. Like `switchSkin`, it navigates the top frame to `/__decent/exit-app?nonce=<nonce>` on its own origin, and Decaid accepts the request only with the active `SkinView`'s main-frame nonce, so a cross-origin subframe cannot trigger it. On Android it moves Decaid to the background like the Home button, so machine connections and wake schedules keep running and reopening Decaid returns to the skin. Desktop builds quit. iOS does not let apps close themselves, so the call does nothing there. The script works with `script-src 'self'`; policies that reject all same-origin scripts, such as `script-src 'none'` or nonce-only policies without `'self'`, also reject this API.
 
 The embedded webview also shows a platform-specific navigation guide when a skin opens. On Windows, choose **Back to Dashboard** from the system menu, available from the window icon or by right-clicking the title bar. Disable or restore the guide in **Settings** under **General** with **Skin navigation guide**.
 
@@ -4249,15 +4303,21 @@ Check asset paths are relative:
 ### WebSocket Connection Fails
 
 During development with skin on `localhost:3000` and gateway on `192.168.1.100:8080`:
-- The gateway only accepts browser writes and WebSocket upgrades from its own
-  origins and only grants CORS to them (see
-  [Browser origins](Api.md#browser-origins)), so a dev server on your computer
-  is refused with 403. Proxy the API through the dev server instead, so the
-  browser talks to its own origin, and drop the `Origin` header on the proxied
-  request (Vite: `server.proxy` with a `configure` hook that calls
-  `proxyReq.removeHeader('origin')`, plus `ws: true` for WebSockets), or
-  install the build on the device and test it there
-- Use explicit gateway IP in `NEXT_PUBLIC_WS_URL` only for that proxy target
+- The gateway only answers browsers from its own origins and only grants CORS to
+  them (see [Browser origins](Api.md#browser-origins)), so a page on a dev
+  server is refused with 403. Proxy the API through the dev server and drop the
+  `Origin` header, as in
+  [Connect to Gateway During Development](#3-connect-to-gateway-during-development),
+  or install the build on the device and test it there
+- Open skins by the device's numeric address or `localhost`; a page opened
+  through a DNS or mDNS name is not a device origin, so its API calls are
+  refused (the port 3000 entry redirects `.local` and allow-listed names to the
+  numeric address). The API and skin ports answer only numeric addresses,
+  `localhost`, `.local` names, the device's own host name and the names in the
+  `allowedHostNames` setting; any other `Host` gets `403`
+- Build API URLs from the page's own `location.hostname`: a page on `localhost`
+  that loads images or links from `127.0.0.1:8080` (or the reverse) is
+  cross-site to the browser and is refused
 - Check browser console for connection errors
 
 ### Skin Not Appearing in Decaid

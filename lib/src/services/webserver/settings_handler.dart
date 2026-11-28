@@ -60,6 +60,7 @@ class SettingsHandler {
         'preferredGrinderDeviceId': preferredGrinderDeviceId,
         'defaultSkinId': defaultSkinId,
         'automaticUpdateCheck': automaticUpdateCheck,
+        allowedHostNamesSetting: _controller.allowedHostNames,
         'chargingMode': _controller.chargingMode.name,
         'nightModeEnabled': _controller.nightModeEnabled,
         'nightModeSleepTime': _controller.nightModeSleepTime,
@@ -92,25 +93,45 @@ class SettingsHandler {
           json['automaticUpdateCheck'] == true &&
           !_controller.automaticUpdateCheck;
       if (changesSkin || enablesAutomaticUpdates) {
-        final originRefusal = requireTrustedBrowserOrigin(
-          request,
-          action: 'POST /api/v1/settings extension settings',
-        );
-        if (originRefusal != null) return originRefusal;
         final denial = await requireExtensionManagement(
           request,
           action: 'POST /api/v1/settings extension settings',
         );
         if (denial != null) return denial;
       }
-      final freezeUntrustedExtensionSettings = isUntrustedBrowserOrigin(
-        request,
-      );
       if (json.containsKey('webUiPath') &&
           !_webUIStorage.containsSkinPath(json['webUiPath'].toString())) {
         return jsonBadRequest({
           'error': 'webUiPath must be a skin folder inside the skin storage',
         });
+      }
+      List<String>? allowedHostNames;
+      if (json.containsKey(allowedHostNamesSetting)) {
+        final value = json[allowedHostNamesSetting];
+        final names = value is List && value.length <= maxAllowedHostNames
+            ? [
+                for (final name in value)
+                  name is String ? normalizeHostName(name) : null,
+              ]
+            : const [null];
+        if (names.contains(null)) {
+          return jsonBadRequest({
+            'message':
+                '$allowedHostNamesSetting must be a list of at most '
+                '$maxAllowedHostNames DNS host names',
+          });
+        }
+        allowedHostNames = {...names.nonNulls}.toList();
+        if (!const ListEquality<String>().equals(
+          allowedHostNames,
+          _controller.allowedHostNames,
+        )) {
+          final denial = await requireExtensionManagement(
+            request,
+            action: 'POST /api/v1/settings $allowedHostNamesSetting',
+          );
+          if (denial != null) return denial;
+        }
       }
       if (json.containsKey('gatewayMode')) {
         final GatewayMode? gatewayMode = GatewayModeFromString.fromString(
@@ -244,7 +265,6 @@ class SettingsHandler {
         }
       }
       if (json.containsKey('defaultSkinId') &&
-          !freezeUntrustedExtensionSettings &&
           await mayManageExtensions(request)) {
         final value = json['defaultSkinId'];
         if (value is String) {
@@ -262,9 +282,7 @@ class SettingsHandler {
       if (json.containsKey('automaticUpdateCheck')) {
         final value = json['automaticUpdateCheck'];
         if (value is bool) {
-          if (!value ||
-              (!freezeUntrustedExtensionSettings &&
-                  await mayManageExtensions(request))) {
+          if (!value || await mayManageExtensions(request)) {
             await _controller.setAutomaticUpdateCheck(value);
           }
         } else {
@@ -272,6 +290,9 @@ class SettingsHandler {
             'message': 'automaticUpdateCheck must be a boolean',
           });
         }
+      }
+      if (allowedHostNames != null) {
+        await _controller.setAllowedHostNames(allowedHostNames);
       }
       if (json.containsKey('chargingMode')) {
         final mode = ChargingModeFromString.fromString(json['chargingMode']);

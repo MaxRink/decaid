@@ -242,10 +242,18 @@ void main() {
   test('refuses the security setting before dispatch in both modes', () async {
     for (final protect in [false, true]) {
       final dispatched = <String>[];
-      bridge.handler = buildWebServerHandler((request) {
-        dispatched.add('${request.method} /${request.url.path}');
-        return Response.ok('dispatched');
-      }, requireExtensionManagementAuthorization: () async => protect);
+      bridge.handler = buildWebServerHandler(
+        (request) {
+          dispatched.add('${request.method} /${request.url.path}');
+          return Response.ok('dispatched');
+        },
+        requireExtensionManagementAuthorization: () async => protect,
+        browserOrigins: ExtensionManagementBrowserOrigins(
+          apiListenerPort: () => 8080,
+          pagePorts: () => const {},
+          deviceAddresses: () async => const {},
+        ),
+      );
 
       for (final value in [true, false]) {
         for (final body in <Object>[

@@ -7,19 +7,11 @@ import 'package:shelf_router/shelf_router.dart';
 
 import 'package:reaprime/src/services/account/proxy_token_service.dart';
 import 'package:reaprime/src/services/webserver/proxy_auth_middleware.dart';
+import 'package:reaprime/src/services/webserver/request_host.dart';
 
 const extensionManagementGrantContextKey = 'decaid.extensionManagementGrant';
 
-const untrustedBrowserOriginError =
-    'Extension management is not allowed from this browser origin';
-
 const _authorizationContextKey = 'decaid.extensionManagementAuthorization';
-
-const _browserOriginContextKey = 'decaid.browserOriginVerdict';
-
-const _originRefusalContextKey = 'decaid.browserOriginRefusal';
-
-const _shelfConnectionInfoContextKey = 'shelf.io.connection_info';
 
 final _log = Logger('ExtensionManagement');
 
@@ -46,13 +38,30 @@ final class ExtensionManagementBrowserOrigins {
     required this.apiListenerPort,
     required this.pagePorts,
     required this.deviceAddresses,
+    this.allowedHostNames = _noAllowedHostNames,
   });
 
   final int? Function() apiListenerPort;
   final Set<int> Function() pagePorts;
   final Future<Set<String>> Function() deviceAddresses;
 
+  /// Normalized DNS names, besides numeric, loopback and `.local` hosts, that
+  /// the API answers (see [isAdmittedHost]).
+  final Set<String> Function() allowedHostNames;
+
+  static Set<String> _noAllowedHostNames() => const {};
+
   static const loopbackHosts = {'localhost', '127.0.0.1', '::1'};
+
+  ExtensionManagementBrowserOrigins snapshot() {
+    Future<Set<String>>? addresses;
+    return ExtensionManagementBrowserOrigins(
+      apiListenerPort: apiListenerPort,
+      pagePorts: pagePorts,
+      deviceAddresses: () => addresses ??= deviceAddresses(),
+      allowedHostNames: allowedHostNames,
+    );
+  }
 
   Future<BrowserOriginVerdict> classify(
     String? origin, {
@@ -115,7 +124,7 @@ final class ExtensionManagementBrowserOrigins {
   }
 
   Future<bool> isDevicePeer(Request request) async {
-    final peer = _socketPeer(request.context[_shelfConnectionInfoContextKey]);
+    final peer = _socketPeer(request.context['shelf.io.connection_info']);
     return peer != null &&
         await _isDeviceAddress(peer, 'the request from ${peer.address}');
   }
@@ -137,6 +146,13 @@ final class ExtensionManagementBrowserOrigins {
     }
     final peerKey = _hostKey(peer.address);
     return peerKey != null && addresses.contains(peerKey);
+  }
+
+  /// The `Host` rule for browser requests: a numeric host must be loopback or
+  /// a current device address; a name must pass [isAdmittedHost].
+  Future<bool> admitsBrowserHost(String host) async {
+    if (InternetAddress.tryParse(host) != null) return isDeviceHost(host);
+    return isAdmittedHost(host, allowedHostNames());
   }
 
   Future<bool> isDeviceHost(String host) async {
@@ -207,16 +223,31 @@ const extensionManagementRoutes = <ExtensionManagementRoute>[
   ExtensionManagementRoute('POST', '/api/v1/webui/server/stop'),
 ];
 
-const machineControlRoutes = <ExtensionManagementRoute>[
+const privilegedMachineRoutes = <ExtensionManagementRoute>[
   ExtensionManagementRoute('GET', '/ws/v1/machine/raw'),
   ExtensionManagementRoute('POST', '/api/v1/machine/firmware'),
   ExtensionManagementRoute('POST', '/api/v1/machine/firmware/apply'),
+  ExtensionManagementRoute('DELETE', '/api/v1/machine/firmware'),
   ExtensionManagementRoute('POST', '/api/v1/machine/calibration'),
   ExtensionManagementRoute('PUT', '/api/v1/machine/calibration/<target>'),
   ExtensionManagementRoute('PUT', '/api/v1/machine/scaleCalibration'),
   ExtensionManagementRoute('POST', '/api/v1/machine/settings/advanced'),
   ExtensionManagementRoute('DELETE', '/api/v1/machine/settings/reset'),
 ];
+
+/// GET routes that change state. Their GET form is deprecated: a page on
+/// another site can fire it blind, with no browser headers at all (an
+/// `<img src>` with `referrerpolicy="no-referrer"`). In protected mode a
+/// request to one of them that the browser rule did not admit as coming from
+/// one of the device's own pages needs an `extensions:manage` credential.
+/// Each has a POST form, as open as the device's other control routes.
+const sideEffectGetRoutes = <ExtensionManagementRoute>[
+  ExtensionManagementRoute('GET', '/api/v1/devices/scan'),
+];
+
+/// Set by the browser rule on a request it admitted as coming from one of the
+/// device's own pages.
+const admittedBrowserRequestContextKey = 'decaid.admittedBrowserRequest';
 
 const extensionManagementReadRoutes = <ExtensionManagementRoute>[
   ExtensionManagementRoute('GET', '/api/v1/plugins'),
@@ -236,12 +267,6 @@ const extensionManagementSettingsKeys = {
   'defaultSkinId',
   'automaticUpdateCheck',
 };
-
-const extensionManagementBodySensitiveRoutes = <ExtensionManagementRoute>[
-  ExtensionManagementRoute('POST', '/api/v1/settings'),
-  ExtensionManagementRoute('POST', '/api/v1/data/import'),
-  ExtensionManagementRoute('POST', '/api/v1/data/sync'),
-];
 
 final class _ExtensionManagementModeSnapshot {
   _ExtensionManagementModeSnapshot(this._readRequirement);
@@ -308,172 +333,16 @@ final class ExtensionManagementAuthorization {
   }
 }
 
-Middleware extensionManagementBrowserOriginMiddleware(
-  ExtensionManagementBrowserOrigins origins, {
-  List<ExtensionManagementRoute> routes = extensionManagementRoutes,
-  List<ExtensionManagementRoute> bodyRoutes =
-      extensionManagementBodySensitiveRoutes,
-}) {
-  final byMethod = ExtensionManagementRouteMatcher(routes);
-  final byBody = ExtensionManagementRouteMatcher(bodyRoutes);
-  final guarded = [...routes, ...bodyRoutes];
-  final byRequestedMethod = ExtensionManagementRouteMatcher(guarded);
-  final byPreflight = ExtensionManagementRouteMatcher.paths(guarded);
-  return (Handler inner) {
-    return (Request request) async {
-      final origin = request.headers['origin'];
-      if (origin == null) {
-        return inner(
-          request.change(
-            context: {
-              _browserOriginContextKey: BrowserOriginVerdict.originless,
-            },
-          ),
-        );
-      }
-      final connectionInfo = request.context[_shelfConnectionInfoContextKey];
-      if (request.method == 'OPTIONS') {
-        if (!await _isManagementPreflight(
-          request,
-          byRequestedMethod,
-          byPreflight,
-        )) {
-          return inner(request);
-        }
-        final verdict = await origins.classify(
-          origin,
-          connectionInfo: connectionInfo,
-        );
-        if (verdict != BrowserOriginVerdict.untrusted) {
-          return inner(
-            request.change(context: {_browserOriginContextKey: verdict}),
-          );
-        }
-        _log.warning(
-          'OPTIONS /${request.url.path} refused (403) for an untrusted '
-          'browser origin',
-        );
-        return untrustedBrowserOriginRefusal();
-      }
-      if (await byMethod.matches(request)) {
-        final verdict = await origins.classify(
-          origin,
-          connectionInfo: connectionInfo,
-        );
-        if (verdict == BrowserOriginVerdict.untrusted) {
-          _log.warning(
-            '${request.method} /${request.url.path} refused (403) for an '
-            'untrusted browser origin',
-          );
-          return untrustedBrowserOriginRefusal();
-        }
-        return inner(
-          request.change(context: {_browserOriginContextKey: verdict}),
-        );
-      }
-      if (!await byBody.matches(request)) return inner(request);
-      final verdict = await origins.classify(
-        origin,
-        connectionInfo: connectionInfo,
-      );
-      final response = await inner(
-        request.change(context: {_browserOriginContextKey: verdict}),
-      );
-      if (!_isBrowserOriginRefusal(response)) return response;
-      return _withoutAffirmativeCors(response);
-    };
-  };
-}
-
-const crossOriginRequestError =
-    'This API does not accept requests from this browser origin';
-
-const untrustedBrowserHostError =
-    'This API only answers browsers on the device address';
-
-Middleware apiBrowserBoundaryMiddleware(
-  ExtensionManagementBrowserOrigins origins,
-) {
-  return (Handler inner) {
-    return (Request request) async {
-      final origin = request.headers['origin'];
-      if (origin == null && !request.headers.containsKey('sec-fetch-site')) {
-        return inner(request);
-      }
-      final action = '${request.method} /${request.url.path}';
-      if (!await origins.isDeviceHost(request.requestedUri.host)) {
-        _log.warning('$action refused (403) for a browser on a foreign host');
-        return _json(403, untrustedBrowserHostError);
-      }
-      if (origin == null) return inner(request);
-      final verdict = await origins.classify(
-        origin,
-        connectionInfo: request.context[_shelfConnectionInfoContextKey],
-      );
-      if (verdict != BrowserOriginVerdict.untrusted) return inner(request);
-      if (_isSafeRead(request)) {
-        return _withoutAffirmativeCors(await inner(request));
-      }
-      _log.warning('$action refused (403) for an untrusted browser origin');
-      return _json(403, crossOriginRequestError);
-    };
-  };
-}
-
-bool _isSafeRead(Request request) =>
-    (request.method == 'GET' || request.method == 'HEAD') &&
-    request.headers['upgrade']?.toLowerCase() != 'websocket';
-
-bool _isBrowserOriginRefusal(Response response) =>
-    response.context[_originRefusalContextKey] == true;
-
-final _httpMethodToken = RegExp(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$");
-
-Future<bool> _isManagementPreflight(
-  Request request,
-  ExtensionManagementRouteMatcher byMethod,
-  ExtensionManagementRouteMatcher byPath,
-) {
-  final requested = request.headers['access-control-request-method'];
-  if (requested == null || !_httpMethodToken.hasMatch(requested)) {
-    return byPath.matches(request);
-  }
-  return byMethod.matchesMethod(requested, request);
-}
-
-Response _withoutAffirmativeCors(Response response) {
-  final names = [
-    for (final name in response.headers.keys)
-      if (name.toLowerCase().startsWith('access-control-')) name,
-  ];
-  if (names.isEmpty) return response;
-  return response.change(headers: {for (final name in names) name: null});
-}
-
-Response untrustedBrowserOriginRefusal() => _json(
-  403,
-  untrustedBrowserOriginError,
-).change(context: {_originRefusalContextKey: true});
-
-bool isUntrustedBrowserOrigin(Request request) =>
-    request.context[_browserOriginContextKey] == BrowserOriginVerdict.untrusted;
-
-Response? requireTrustedBrowserOrigin(
-  Request request, {
-  required String action,
-}) {
-  if (!isUntrustedBrowserOrigin(request)) return null;
-  _log.warning('$action refused (403) for an untrusted browser origin');
-  return untrustedBrowserOriginRefusal();
-}
-
 Middleware extensionManagementAuthMiddleware(
   ProxyTokenService? tokens, {
   List<ExtensionManagementRoute> routes = extensionManagementRoutes,
-  List<ExtensionManagementRoute> machineRoutes = machineControlRoutes,
   Future<bool> Function()? requireExtensionManagementAuthorization,
 }) {
-  final policy = ExtensionManagementRouteMatcher([...routes, ...machineRoutes]);
+  final policy = ExtensionManagementRouteMatcher([
+    ...routes,
+    ...privilegedMachineRoutes,
+  ]);
+  final sideEffectGets = ExtensionManagementRouteMatcher(sideEffectGetRoutes);
   return (Handler inner) {
     return (Request request) async {
       final grant = request.context[extensionManagementGrantContextKey];
@@ -488,7 +357,9 @@ Middleware extensionManagementAuthMiddleware(
         ),
       );
 
-      if (await policy.matches(request)) {
+      if (await policy.matches(request) ||
+          (request.context[admittedBrowserRequestContextKey] != true &&
+              await sideEffectGets.matches(request))) {
         final refusal = await _authorize(
           authorization,
           '${request.method} /${request.url.path}',
@@ -589,21 +460,8 @@ final class ExtensionManagementRouteMatcher {
     }
   }
 
-  ExtensionManagementRouteMatcher.paths(
-    Iterable<ExtensionManagementRoute> routes,
-  ) {
-    for (final route in routes) {
-      _router.all(route.path, (Request _) => _matched);
-    }
-  }
-
   Future<bool> matches(Request request) async =>
       identical(await _router.call(request), _matched);
-
-  Future<bool> matchesMethod(String method, Request request) async => identical(
-    await _router.call(Request(method, request.requestedUri, url: request.url)),
-    _matched,
-  );
 }
 
 Response _unauthorized(String error) => Response(

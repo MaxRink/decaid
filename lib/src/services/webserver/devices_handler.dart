@@ -234,6 +234,42 @@ class DevicesHandler {
     _aggregator.dispose();
   }
 
+  Future<Object> _handleScan(Request req) async {
+    final bool quickScan =
+        req.requestedUri.queryParametersAll["quick"]?.firstOrNull == "true";
+    final bool connect =
+        req.requestedUri.queryParametersAll["connect"]?.firstOrNull != "false";
+    _log.info(
+      'Explicit scan source=REST connect=$connect quick=$quickScan '
+      'phase=${_connectionManager.currentStatus.phase.name} '
+      'connectionWorkActive=${_connectionManager.connectionWorkActive} '
+      'action=${_connectionManager.explicitScanDisposition(connect: connect)}',
+    );
+    final scan = _connectionManager.requestExternalScan(
+      connect: connect,
+      connectPreferredScaleEarly:
+          req
+              .requestedUri
+              .queryParametersAll['connectPreferredScaleEarly']
+              ?.firstOrNull ==
+          'true',
+      scanOnly: () async {
+        _controller.scanForDevices();
+        await _controller.scanningStream.firstWhere((s) => s);
+        await _controller.scanningStream.firstWhere((s) => !s);
+      },
+    );
+    if (quickScan) {
+      unawaited(
+        scan.catchError((Object e) => _log.info('Quick REST scan failed: $e')),
+      );
+      return [];
+    }
+    await scan;
+
+    return await _deviceList();
+  }
+
   void addRoutes(RouterPlus app) {
     app.get('/api/v1/devices', () async {
       log.info("handling devices");
@@ -243,44 +279,10 @@ class DevicesHandler {
         return jsonError({'e': e.toString(), 'st': st.toString()});
       }
     });
-    app.get('/api/v1/devices/scan', (Request req) async {
-      final bool quickScan =
-          req.requestedUri.queryParametersAll["quick"]?.firstOrNull == "true";
-      final bool connect =
-          req.requestedUri.queryParametersAll["connect"]?.firstOrNull !=
-          "false";
-      _log.info(
-        'Explicit scan source=REST connect=$connect quick=$quickScan '
-        'phase=${_connectionManager.currentStatus.phase.name} '
-        'connectionWorkActive=${_connectionManager.connectionWorkActive} '
-        'action=${_connectionManager.explicitScanDisposition(connect: connect)}',
-      );
-      final scan = _connectionManager.requestExternalScan(
-        connect: connect,
-        connectPreferredScaleEarly:
-            req
-                .requestedUri
-                .queryParametersAll['connectPreferredScaleEarly']
-                ?.firstOrNull ==
-            'true',
-        scanOnly: () async {
-          _controller.scanForDevices();
-          await _controller.scanningStream.firstWhere((s) => s);
-          await _controller.scanningStream.firstWhere((s) => !s);
-        },
-      );
-      if (quickScan) {
-        unawaited(
-          scan.catchError(
-            (Object e) => _log.info('Quick REST scan failed: $e'),
-          ),
-        );
-        return [];
-      }
-      await scan;
-
-      return await _deviceList();
-    });
+    // POST is the scan route; the GET form is deprecated because a page on
+    // another site can trigger it blind (see sideEffectGetRoutes).
+    app.post('/api/v1/devices/scan', _handleScan);
+    app.get('/api/v1/devices/scan', _handleScan);
 
     app.put('/api/v1/devices/connect', _handleConnect);
     app.put('/api/v1/devices/disconnect', _handleDisconnect);

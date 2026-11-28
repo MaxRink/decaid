@@ -61,6 +61,11 @@ void main() {
       app.call,
       proxyTokenService: tokens,
       requireExtensionManagementAuthorization: () async => false,
+      browserOrigins: ExtensionManagementBrowserOrigins(
+        apiListenerPort: () => 8080,
+        pagePorts: () => const {},
+        deviceAddresses: () async => const {},
+      ),
     );
   });
 

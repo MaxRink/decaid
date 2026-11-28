@@ -125,13 +125,17 @@ const bodyExample = "</body>";
       WebUIService.hostResolutionTtl = const Duration(seconds: 30);
     });
 
-    Future<String> getBodyForHost(String host) async {
+    Future<String> getBodyForHost(
+      String host, {
+      Map<String, String> headers = const {},
+    }) async {
       final client = HttpClient();
       addTearDown(client.close);
       final request = await client.getUrl(
         Uri.parse('http://localhost:${service.port}/'),
       );
       request.headers.set(HttpHeaders.hostHeader, '$host:${service.port}');
+      headers.forEach(request.headers.set);
       final response = await request.close();
       return response.transform(utf8.decoder).join();
     }
@@ -337,31 +341,28 @@ const bodyExample = "</body>";
       expect(body, isNot(contains(skinApiScriptPath)));
     });
 
-    test(
-      'serves a resolving LAN hostname the script without the token',
-      () async {
-        const lanIp = '10.0.0.7';
-        WebUIService.resolveWifiIP = () async => lanIp;
-        WebUIService.resolveHost = (host) async => host == 'decent'
-            ? [InternetAddress(lanIp)]
-            : throw const SocketException('unresolvable');
-        service = WebUIService(listLocalAddresses: () async => [lanIp]);
-        service.skinProxyToken = token;
-        await service.serveFolderAtPath(tempDir.path, port: entryPort);
+    test('serves a resolving LAN hostname the script without the token', () async {
+      const lanIp = '10.0.0.7';
+      WebUIService.resolveWifiIP = () async => lanIp;
+      WebUIService.resolveHost = (host) async => host == 'decent.local'
+          ? [InternetAddress(lanIp)]
+          : throw const SocketException('unresolvable');
+      service = WebUIService(listLocalAddresses: () async => [lanIp]);
+      service.skinProxyToken = token;
+      await service.serveFolderAtPath(tempDir.path, port: entryPort);
 
-        final body = await getBodyForHost('decent');
+      final body = await getBodyForHost('decent.local');
 
-        expect(
-          body,
-          contains(
-            '<script src="http://decent:${service.port}$skinApiScriptPath">'
-            '</script>',
-          ),
-        );
-        expect(body, isNot(contains('reaprime-proxy-token')));
-        expect(body, isNot(contains(token)));
-      },
-    );
+      expect(
+        body,
+        contains(
+          '<script src="http://decent.local:${service.port}$skinApiScriptPath">'
+          '</script>',
+        ),
+      );
+      expect(body, isNot(contains('reaprime-proxy-token')));
+      expect(body, isNot(contains(token)));
+    });
 
     test('keeps the token for a literal device address', () async {
       const lanIp = '10.0.0.7';
@@ -377,6 +378,102 @@ const bodyExample = "</body>";
       expect(body, contains(skinApiScriptPath));
     });
 
+    test('forwarding headers cannot borrow a device address', () async {
+      const lanIp = '10.0.0.7';
+      WebUIService.resolveWifiIP = () async => lanIp;
+      WebUIService.resolveHost = (_) async => [];
+      service = WebUIService(listLocalAddresses: () async => [lanIp]);
+      service.skinProxyToken = token;
+      await service.serveFolderAtPath(tempDir.path, port: entryPort);
+
+      for (final headers in [
+        {'x-forwarded-host': '$lanIp:${service.port}'},
+        {'forwarded': 'host=$lanIp:${service.port}'},
+      ]) {
+        for (final host in ['rebind.attacker.example', lanIp]) {
+          final body = await getBodyForHost(host, headers: headers);
+          expect(body, isNot(contains('reaprime-proxy-token')), reason: host);
+          expect(body, isNot(contains(token)), reason: host);
+          expect(body, isNot(contains(skinApiScriptPath)), reason: host);
+        }
+      }
+      expect(await getBodyForHost(lanIp), contains('content="$token"'));
+    });
+
+    test('the entry redirect ignores forwarding headers', () async {
+      const lanIp = '10.0.0.7';
+      WebUIService.resolveWifiIP = () async => lanIp;
+      WebUIService.resolveHost = (_) async => [];
+      service = WebUIService(listLocalAddresses: () async => [lanIp]);
+      await service.serveFolderAtPath(tempDir.path, port: entryPort);
+
+      final client = HttpClient();
+      addTearDown(client.close);
+      final request = await client.getUrl(
+        Uri.parse('http://localhost:$entryPort/'),
+      );
+      request.followRedirects = false;
+      request.headers
+        ..set(HttpHeaders.hostHeader, 'rebind.attacker.example:$entryPort')
+        ..set('x-forwarded-host', '$lanIp:$entryPort');
+      final response = await request.close();
+      await response.drain<void>();
+
+      expect(response.statusCode, HttpStatus.forbidden);
+    });
+
+    test('every skin port refuses a host name that is not admitted', () async {
+      const lanIp = '10.0.0.7';
+      WebUIService.resolveWifiIP = () async => lanIp;
+      WebUIService.resolveHost = (_) async => [InternetAddress(lanIp)];
+      service = WebUIService(listLocalAddresses: () async => [lanIp]);
+      service.allowedHostNamesProvider = () => ['Decent.LAN.'];
+      await service.serveFolderAtPath(tempDir.path, port: entryPort);
+
+      Future<int> statusOf(String method, int port, String host) async {
+        final client = HttpClient();
+        addTearDown(client.close);
+        final request = await client.open(method, 'localhost', port, '/');
+        request.followRedirects = false;
+        request.headers.set(HttpHeaders.hostHeader, '$host:$port');
+        final response = await request.close();
+        final body = await response.transform(utf8.decoder).join();
+        if (response.statusCode == HttpStatus.forbidden) {
+          expect(body, contains('allowedHostNames'));
+        }
+        return response.statusCode;
+      }
+
+      for (final port in [service.port, entryPort]) {
+        for (final method in ['GET', 'POST']) {
+          expect(
+            await statusOf(method, port, 'rebind.attacker.example'),
+            HttpStatus.forbidden,
+            reason: '$method $port',
+          );
+        }
+        await expectLater(
+          WebSocket.connect(
+            'ws://localhost:$port/',
+            headers: {'host': 'rebind.attacker.example:$port'},
+          ),
+          throwsA(isA<WebSocketException>()),
+        );
+      }
+      for (final host in [lanIp, 'localhost', 'decent.local', 'decent.lan']) {
+        expect(
+          await statusOf('GET', service.port, host),
+          HttpStatus.ok,
+          reason: host,
+        );
+        expect(
+          await statusOf('GET', entryPort, host),
+          HttpStatus.temporaryRedirect,
+          reason: host,
+        );
+      }
+    });
+
     test('re-resolves a hostname after its cached entry expires', () async {
       const lanIp = '10.0.0.7';
       var resolves = false;
@@ -389,13 +486,13 @@ const bodyExample = "</body>";
       await service.serveFolderAtPath(tempDir.path, port: entryPort);
 
       expect(
-        await getBodyForHost('decent'),
+        await getBodyForHost('decent.local'),
         isNot(contains(skinApiScriptPath)),
       );
 
       resolves = true;
 
-      expect(await getBodyForHost('decent'), contains(skinApiScriptPath));
+      expect(await getBodyForHost('decent.local'), contains(skinApiScriptPath));
     });
 
     test('rechecks cached addresses against the current interfaces', () async {
@@ -406,12 +503,12 @@ const bodyExample = "</body>";
       service = WebUIService(listLocalAddresses: () async => interfaces);
       await service.serveFolderAtPath(tempDir.path, port: entryPort);
 
-      expect(await getBodyForHost('decent'), contains(skinApiScriptPath));
+      expect(await getBodyForHost('decent.local'), contains(skinApiScriptPath));
 
       interfaces = ['10.0.0.9'];
 
       expect(
-        await getBodyForHost('decent'),
+        await getBodyForHost('decent.local'),
         isNot(contains(skinApiScriptPath)),
       );
     });
@@ -432,7 +529,7 @@ const bodyExample = "</body>";
     });
 
     test(
-      'entry redirect follows a LAN hostname that resolves to this device',
+      'entry redirect sends a LAN hostname to the numeric address',
       () async {
         const lanIp = '10.0.0.7';
         WebUIService.resolveWifiIP = () async => lanIp;
@@ -446,14 +543,15 @@ const bodyExample = "</body>";
           Uri.parse('http://localhost:$entryPort/'),
         );
         request.followRedirects = false;
-        request.headers.set(HttpHeaders.hostHeader, 'decent:$entryPort');
+        request.headers.set(HttpHeaders.hostHeader, 'decent.local:$entryPort');
         final response = await request.close();
         await response.drain<void>();
 
         expect(response.statusCode, HttpStatus.temporaryRedirect);
         expect(
           response.headers.value(HttpHeaders.locationHeader),
-          'http://decent:${service.port}/',
+          'http://127.0.0.1:${service.port}/',
+          reason: 'a hostname is canonicalised to the numeric address',
         );
       },
     );
