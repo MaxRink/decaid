@@ -933,44 +933,59 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
           expect(invalid.error, 'manifest object is required');
         });
 
-        test('PUT source adds permissions only with a manager token', () async {
-          const id = 'growing.reaplugin';
-          final created = await send(
-            'PUT',
-            '/api/v1/plugins/$id/source',
-            authorization: bearer(),
-            body: {
-              'manifest': _manifestJson(id, permissions: ['log']),
-              'plugin': _echoPluginJs(id),
-            },
-          );
-          expect(created.status, 200, reason: '$created');
-
-          if (!required) {
-            final tokenless = await send(
+        test(
+          'PUT source adds permissions only with an approving manager token',
+          () async {
+            const id = 'growing.reaplugin';
+            final created = await send(
               'PUT',
               '/api/v1/plugins/$id/source',
+              authorization: bearer(),
+              body: {
+                'manifest': _manifestJson(id, permissions: ['log']),
+                'plugin': _echoPluginJs(id),
+              },
+            );
+            expect(created.status, 200, reason: '$created');
+
+            if (!required) {
+              final tokenless = await send(
+                'PUT',
+                '/api/v1/plugins/$id/source',
+                body: {
+                  'manifest': _manifestJson(id, version: '1.0.1'),
+                  'plugin': _echoPluginJs(id),
+                },
+              );
+              expect(tokenless.status, 409, reason: '$tokenless');
+              expect(service.getPluginManifest(id)?.version, '1.0.0');
+            }
+
+            final withToken = await send(
+              'PUT',
+              '/api/v1/plugins/$id/source',
+              authorization: 'Bearer $managerToken',
               body: {
                 'manifest': _manifestJson(id, version: '1.0.1'),
                 'plugin': _echoPluginJs(id),
               },
             );
-            expect(tokenless.status, 409, reason: '$tokenless');
-            expect(service.getPluginManifest(id)?.version, '1.0.0');
-          }
+            expect(withToken.status, 409, reason: 'approvePermissions missing');
 
-          final withToken = await send(
-            'PUT',
-            '/api/v1/plugins/$id/source',
-            authorization: 'Bearer $managerToken',
-            body: {
-              'manifest': _manifestJson(id, version: '1.0.1'),
-              'plugin': _echoPluginJs(id),
-            },
-          );
-          expect(withToken.status, 200, reason: '$withToken');
-          expect(service.getPluginManifest(id)?.version, '1.0.1');
-        });
+            final approved = await send(
+              'PUT',
+              '/api/v1/plugins/$id/source',
+              authorization: 'Bearer $managerToken',
+              body: {
+                'manifest': _manifestJson(id, version: '1.0.1'),
+                'plugin': _echoPluginJs(id),
+                'approvePermissions': ['api'],
+              },
+            );
+            expect(approved.status, 200, reason: '$approved');
+            expect(service.getPluginManifest(id)?.version, '1.0.1');
+          },
+        );
 
         test(
           'enable, disable, settings and delete apply; unknown ids are 404',
@@ -1117,10 +1132,17 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
             'proxy.decent_api',
           ]);
 
+          if (!required) {
+            final tokenless = await send(
+              'POST',
+              '/api/v1/plugins/$_releasedId/update/approve',
+            );
+            expect(tokenless.status, 403, reason: '$tokenless');
+          }
           final approved = await send(
             'POST',
             '/api/v1/plugins/$_releasedId/update/approve',
-            authorization: bearer(),
+            authorization: 'Bearer $managerToken',
           );
           expect(approved.status, 200, reason: '$approved');
           final after = await listedPlugin(_releasedId);
@@ -1460,7 +1482,6 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
             id,
             manifestJson: _manifestJson(id),
             pluginJs: _echoPluginJs(id),
-            authorized: true,
           );
           final reply = await send(
             'DELETE',
@@ -2621,7 +2642,6 @@ void defineExtensionManagementPipelineTests(PipelinePart part) {
           id,
           manifestJson: visualizerManifest(),
           pluginJs: _echoPluginJs(id),
-          authorized: true,
         );
       });
 

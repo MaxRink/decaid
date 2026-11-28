@@ -112,43 +112,7 @@ final class PluginsHandler {
       }
     });
 
-    app.post('/api/v1/plugins/<id>/update/approve', (
-      Request request,
-      String id,
-    ) async {
-      if (pluginService.getPluginManifest(id) == null) {
-        return jsonNotFound({'error': 'Plugin not found: $id'});
-      }
-      if (!holdsExtensionManagementCredential(request) &&
-          await pluginService.hasStoredSecureSettings(id)) {
-        return jsonForbidden({
-          'error':
-              'Approving an update of a plugin with stored secrets needs the '
-              'native Plugins screen or an extensions:manage token',
-        });
-      }
-      try {
-        final manifest = await pluginSourceService.approvePendingUpdate(id);
-        return jsonOk({
-          'message': 'Plugin updated',
-          'id': id,
-          'version': manifest.version,
-          'loaded': pluginService.isPluginLoaded(id),
-        });
-      } on PluginApprovalRequiredException catch (e) {
-        return jsonConflict({'error': e.message});
-      } on FormatException catch (e, st) {
-        _log.warning('Invalid plugin update', e, st);
-        return jsonBadRequest({
-          'error': remoteErrorMessage(e, action: 'update the plugin'),
-        });
-      } catch (e, st) {
-        _log.warning('Failed to approve update of plugin $id', e, st);
-        return jsonError({
-          'error': remoteErrorMessage(e, action: 'update the plugin'),
-        });
-      }
-    });
+    app.post('/api/v1/plugins/<id>/update/approve', _handleApproveUpdate);
 
     app.delete('/api/v1/plugins/<id>', (Request request, String id) async {
       try {
@@ -164,6 +128,84 @@ final class PluginsHandler {
 
     app.get('/ws/v1/plugins/<id>/<endpoint>', _handlePluginSocketEndpoint);
     app.all('/api/v1/plugins/<id>/<endpoint>', _handlePluginApiEndpoint);
+  }
+
+  Future<Response> _handleApproveUpdate(Request request, String id) async {
+    if (pluginService.getPluginManifest(id) == null) {
+      return jsonNotFound({'error': 'Plugin not found: $id'});
+    }
+    final _ReplacementApproval approval;
+    try {
+      final body = await readBoundedRequestBodyString(
+        request,
+        maxBytes: smallRequestBodyBytes,
+        timeout: smallRequestBodyTimeout,
+      );
+      approval = _ReplacementApproval(
+        request,
+        body.trim().isEmpty ? const {} : _jsonObject(body),
+        acceptsPermissions: false,
+      );
+    } on RequestBodyReadException {
+      rethrow;
+    } on FormatException catch (e) {
+      return jsonBadRequest({'error': e.message});
+    }
+    final refusal =
+        approval.refusal ?? await _unattendedApprovalRefusal(id, approval);
+    if (refusal != null) return refusal;
+
+    try {
+      final heldSecureSettings = await pluginService.hasStoredSecureSettings(
+        id,
+      );
+      final manifest = await pluginSourceService.approvePendingUpdate(
+        id,
+        keepSecureSettings: approval.keepSecureSettings,
+      );
+      return jsonOk({
+        'message': 'Plugin updated',
+        'id': id,
+        'version': manifest.version,
+        'loaded': pluginService.isPluginLoaded(id),
+        'secureSettingsCleared':
+            heldSecureSettings &&
+            !await pluginService.hasStoredSecureSettings(id),
+      });
+    } on PluginApprovalRequiredException catch (e) {
+      return jsonConflict({'error': e.message});
+    } on PluginReplacementApprovalRequiredException catch (e) {
+      return approval.conflict(e);
+    } on FormatException catch (e, st) {
+      _log.warning('Invalid plugin update', e, st);
+      return jsonBadRequest({
+        'error': remoteErrorMessage(e, action: 'update the plugin'),
+      });
+    } catch (e, st) {
+      _log.warning('Failed to approve update of plugin $id', e, st);
+      return jsonError({
+        'error': remoteErrorMessage(e, action: 'update the plugin'),
+      });
+    }
+  }
+
+  Future<Response?> _unattendedApprovalRefusal(
+    String id,
+    _ReplacementApproval approval,
+  ) async {
+    if (approval.credential) return null;
+    final pending = pluginSourceService.sourceFor(id)?.pendingUpdate;
+    if (pending == null) return null;
+    if (pending.addedPermissions.isEmpty &&
+        !await pluginService.hasStoredSecureSettings(id)) {
+      return null;
+    }
+    return jsonForbidden({
+      'error':
+          'Approving an update that adds permissions or reaches stored '
+          'secure settings needs the native Plugins screen or an '
+          'extensions:manage credential',
+    });
   }
 
   Map<String, dynamic> _sourceJson(PluginSource source) {
@@ -202,11 +244,13 @@ final class PluginsHandler {
     }
 
     return _install(
-      () => pluginSourceService.installFromGitHubRelease(
+      request,
+      json,
+      (approval) => pluginSourceService.installFromGitHubRelease(
         repo,
         assetName: assetName as String?,
         includePrerelease: (includePrerelease as bool?) ?? false,
-        authorized: holdsExtensionManagementCredential(request),
+        approveReplacement: approval.decide,
       ),
     );
   }
@@ -237,27 +281,43 @@ final class PluginsHandler {
     }
 
     return _install(
-      () => pluginSourceService.installFromGitHubBranch(
+      request,
+      json,
+      (approval) => pluginSourceService.installFromGitHubBranch(
         repo,
         branch: (branch as String?) ?? 'main',
-        authorized: holdsExtensionManagementCredential(request),
+        approveReplacement: approval.decide,
       ),
     );
   }
 
-  Future<Response> _install(Future<PluginManifest> Function() install) async {
+  Future<Response> _install(
+    Request request,
+    Map<String, dynamic> json,
+    Future<PluginManifest> Function(_ReplacementApproval approval) install,
+  ) async {
+    final _ReplacementApproval approval;
     try {
-      final manifest = await install();
+      approval = _ReplacementApproval(request, json);
+    } on FormatException catch (e) {
+      return jsonBadRequest({'error': e.message});
+    }
+    final refusal = approval.refusal;
+    if (refusal != null) return refusal;
+
+    try {
+      final manifest = await install(approval);
       return jsonOk({
         'message': 'Plugin installed',
         'id': manifest.id,
         'version': manifest.version,
         'loaded': pluginService.isPluginLoaded(manifest.id),
+        'secureSettingsCleared': approval.clearedSecureSettings,
       });
     } on PluginDowngradeException catch (e) {
       return jsonConflict({'error': e.message});
-    } on PluginPermissionApprovalRequiredException catch (e) {
-      return jsonConflict({'error': e.message});
+    } on PluginReplacementApprovalRequiredException catch (e) {
+      return approval.conflict(e);
     } on FormatException catch (e, st) {
       _log.warning('Invalid plugin installation', e, st);
       return jsonBadRequest({
@@ -324,24 +384,33 @@ final class PluginsHandler {
     if (pluginJs is! String || pluginJs.isEmpty) {
       return jsonBadRequest({'error': 'plugin source is required'});
     }
+    final _ReplacementApproval approval;
+    try {
+      approval = _ReplacementApproval(request, json);
+    } on FormatException catch (e) {
+      return jsonBadRequest({'error': e.message});
+    }
+    final refusal = approval.refusal;
+    if (refusal != null) return refusal;
 
     try {
       final manifest = await pluginService.updatePluginSource(
         id,
         manifestJson: manifestJson,
         pluginJs: pluginJs,
-        authorized: holdsExtensionManagementCredential(request),
+        approveReplacement: approval.decide,
       );
       return jsonOk({
         'message': 'Plugin source updated',
         'id': id,
         'version': manifest.version,
         'loaded': pluginService.isPluginLoaded(id),
+        'secureSettingsCleared': approval.clearedSecureSettings,
       });
     } on PluginDowngradeException catch (e) {
       return jsonConflict({'error': e.message});
-    } on PluginPermissionApprovalRequiredException catch (e) {
-      return jsonConflict({'error': e.message});
+    } on PluginReplacementApprovalRequiredException catch (e) {
+      return approval.conflict(e);
     } on FormatException catch (e) {
       return jsonBadRequest({'error': e.message});
     } catch (e) {
@@ -530,5 +599,79 @@ final class PluginsHandler {
       }
       return jsonOk(await pluginService.pluginSettings(id));
     });
+  }
+}
+
+Map<String, dynamic> _jsonObject(String body) {
+  final decoded = jsonDecode(body);
+  if (decoded is! Map<String, dynamic>) {
+    throw const FormatException('Request body must be a JSON object');
+  }
+  return decoded;
+}
+
+final class _ReplacementApproval {
+  _ReplacementApproval(
+    Request request,
+    Map<String, dynamic> json, {
+    bool acceptsPermissions = true,
+  }) : credential = holdsExtensionManagementCredential(request),
+       approvedPermissions = acceptsPermissions
+           ? _permissionNames(json['approvePermissions'])
+           : const {},
+       keepSecureSettings = _flag(json['keepSecureSettings']);
+
+  final bool credential;
+  final Set<String> approvedPermissions;
+  final bool keepSecureSettings;
+  bool clearedSecureSettings = false;
+
+  Response? get refusal {
+    if (credential || (approvedPermissions.isEmpty && !keepSecureSettings)) {
+      return null;
+    }
+    return jsonForbidden({
+      'error':
+          'approvePermissions and keepSecureSettings need an '
+          'extensions:manage credential',
+    });
+  }
+
+  PluginReplacementDecision decide(PluginReplacement replacement) {
+    final decision = credential
+        ? PluginReplacementDecision(
+            approvedPermissions: approvedPermissions,
+            keepSecureSettings: keepSecureSettings,
+          )
+        : PluginReplacementDecision.unattended;
+    clearedSecureSettings =
+        replacement.handsOverSecureSettings && !decision.keepSecureSettings;
+    return decision;
+  }
+
+  Response conflict(PluginReplacementApprovalRequiredException e) =>
+      jsonConflict({
+        'error': e.message,
+        'id': e.replacement.candidate.id,
+        'addedPermissions': e.replacement.addedPermissions,
+        'credentialRequired': !credential,
+      });
+
+  static Set<String> _permissionNames(Object? value) {
+    if (value == null) return const {};
+    if (value is! List || value.any((name) => name is! String)) {
+      throw const FormatException(
+        'approvePermissions must be an array of permission names',
+      );
+    }
+    return value.cast<String>().toSet();
+  }
+
+  static bool _flag(Object? value) {
+    if (value == null) return false;
+    if (value is! bool) {
+      throw const FormatException('keepSecureSettings must be a boolean');
+    }
+    return value;
   }
 }

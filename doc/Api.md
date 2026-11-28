@@ -89,6 +89,9 @@ firmware, calibration and advanced machine settings). The rest of the API is
 unchanged (general API authentication is tracked in #1135). Both modes run the same
 handlers with the same validation, manifest checks, pending-update rules,
 rollback and secure-value handling, so the setting changes authorization only.
+Replacing an installed plugin is the one place where holding the credential
+changes the outcome in both modes; see
+[Replacing an installed plugin](#replacing-an-installed-plugin).
 
 The OpenAPI spec lists both security alternatives on each of these operations
 (`{}` and `extensionsManage`), so a generated client treats the token as
@@ -181,6 +184,58 @@ The scope is independent of the account-proxy scopes: an `extensions:manage`
 token cannot use `/api/v1/account/proxy/`, and an `account:proxy` token
 (including the skin token injected into served skin pages) gets 403 here while
 protection is ON. The account proxy keeps its own scopes in both modes.
+
+### Replacing an installed plugin
+
+`PUT /api/v1/plugins/:id/source`, `POST /api/v1/plugins/install/github-release`
+and `POST /api/v1/plugins/install/github-branch` can target a plugin that is
+already installed: the source write by its path id, the GitHub installs when the
+package declares an installed id. Every such replacement, and every update
+installed by `POST /api/v1/plugins/update` or
+`POST /api/v1/plugins/:id/update/approve`, goes through one review in both
+modes:
+
+- **Added permissions** are never granted silently. The request has to carry an
+  `extensions:manage` credential (a bearer with that scope or a
+  `manage.extensions` plugin via `host.localApi`) and list every added
+  permission in `approvePermissions`. A device driver that is new or whose
+  type or BLE matcher changed is listed as `driver:<id>` and approved the same
+  way. Otherwise it is refused with `409` before anything changes:
+
+  ```json
+  {
+    "error": "Replacing my.reaplugin adds permissions that need approval: api",
+    "id": "my.reaplugin",
+    "addedPermissions": ["api"],
+    "credentialRequired": true
+  }
+  ```
+
+  `credentialRequired` is `true` when the request had no credential, so
+  resending with `approvePermissions` cannot help; a credentialed client resends
+  the same request with `"approvePermissions": ["api"]`.
+- **Stored secure settings** stay with the code they were configured for. When
+  the replacement brings a different `plugin.js`, or comes from another
+  repository than the installed copy, the plugin's secure settings are cleared
+  before the new code loads unless the request carries the credential and sets
+  `"keepSecureSettings": true`. The `200` response reports
+  `"secureSettingsCleared": true` when that happened. Ordinary settings are
+  kept.
+- `approvePermissions` or `keepSecureSettings` sent without a credential is
+  refused with `403`.
+- `POST /api/v1/plugins/:id/update/approve` approves the recorded
+  `pendingUpdate` and accepts an optional `{"keepSecureSettings": true}` body.
+  Without a credential it is refused with `403` when the update adds
+  permissions or the plugin has stored secure settings.
+- Update checks never decide on their own: an update that adds permissions or
+  would hand stored secure settings to new code is recorded as a
+  `pendingUpdate` (`handsOverSecureSettings: true` for the latter).
+
+A write that leaves `plugin.js` unchanged from the same source, and a first
+install of a plugin id, need no review. A source write also records the
+plugin's provenance as `local_source`, replacing any GitHub record, so update
+checks stop tracking the previous repository. See doc/Plugins.md,
+"Replacing an installed plugin", for the full lifecycle.
 
 ### Browser origins
 

@@ -621,6 +621,7 @@ void main() {
         body: {
           'manifest': pluginManifestJson(actor, version: '1.1.0'),
           'plugin': probePluginJs(actor),
+          'approvePermissions': ['network.tcp', 'network.websocket'],
         },
       );
       expect(dropped.status, 200, reason: dropped.body);

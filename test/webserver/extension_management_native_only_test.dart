@@ -37,7 +37,6 @@ void main() {
               },
             },
             pluginJs: probePluginJs(declared),
-            authorized: true,
           );
           await harness.loader.enablePlugin(declared);
           await harness.install(plain, permissions: managementOnlyPermissions);

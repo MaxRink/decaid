@@ -1031,7 +1031,7 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
 
         test(
           'a tokenless manual check keeps a permission escalation pending '
-          'until it is approved',
+          'and cannot approve it',
           () => withManagement(false, (harness) async {
             final climber = uniqueId('climber');
             gitHub.publish(
@@ -1065,7 +1065,10 @@ void definePluginExtensionManagementBypassTests(BypassPart part) {
               'POST',
               '/api/v1/plugins/$climber/update/approve',
             );
-            expect(approve.status, 200, reason: approve.body);
+            expect(approve.status, 403, reason: approve.body);
+            expect(harness.loader.getPluginManifest(climber)?.version, '1.0.0');
+
+            await harness.sourceService.approvePendingUpdate(climber);
             expect(harness.loader.getPluginManifest(climber)?.version, '1.1.0');
             expect(harness.loader.isPluginLoaded(climber), isTrue);
           }),
