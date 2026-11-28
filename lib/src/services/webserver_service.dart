@@ -750,7 +750,9 @@ Handler buildWebServerHandler(
   return pipeline
       .addMiddleware(browserAdmissionMiddleware(browserOrigins))
       .addMiddleware(accountProxyCorsMiddleware(accountProxyAllowedOrigins))
-      .addMiddleware(frameProtectionMiddleware(skinPorts: origins?.pagePorts))
+      .addMiddleware(
+        frameProtectionMiddleware(skinPorts: browserOrigins.pagePorts),
+      )
       .addMiddleware(logRequestsWithClientIp())
       .addMiddleware(browserCorsMiddleware())
       .addMiddleware(

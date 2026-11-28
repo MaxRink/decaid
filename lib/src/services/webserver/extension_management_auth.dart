@@ -124,7 +124,7 @@ final class ExtensionManagementBrowserOrigins {
   }
 
   Future<bool> isDevicePeer(Request request) async {
-    final peer = _socketPeer(request.context[_shelfConnectionInfoContextKey]);
+    final peer = _socketPeer(request.context['shelf.io.connection_info']);
     return peer != null &&
         await _isDeviceAddress(peer, 'the request from ${peer.address}');
   }
